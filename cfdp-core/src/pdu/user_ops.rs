@@ -1,13 +1,15 @@
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive, ToPrimitive};
 use std::io::Read;
+
+use num_traits::{FromPrimitive, ToPrimitive};
 
 use super::{
     error::{PDUError, PDUResult},
+    fault_handler::FaultHandlerOverride,
+    filestore::{FilestoreRequest, FilestoreResponse},
     header::{
         read_length_value_pair, Condition, DeliveryCode, Direction, FileSizeSensitive,
-        FileStatusCode, MessageType, PDUDirective, PDUHeader, SegmentationControl, TraceControl,
-        TransactionStatus, TransmissionMode,
+        FileStatusCode, MessageType, PDUDirective, PDUEncode, PDUHeader, SegmentationControl,
+        TraceControl, TransactionStatus, TransmissionMode,
     },
 };
 
@@ -30,12 +32,12 @@ pub enum UserOperation {
     ProxyPutRequest(ProxyPutRequest),
     ProxyPutResponse(ProxyPutResponse),
     ProxyMessageToUser(ProxyMessageToUser),
-    ProxyFilestoreRequest(ProxyFilestoreRequest),
-    ProxyFaultHandlerOverride(ProxyFaultHandlerOverride),
+    ProxyFilestoreRequest(FilestoreRequest),
+    ProxyFilestoreResponse(FilestoreResponse),
+    ProxyFaultHandlerOverride(FaultHandlerOverride),
     ProxyTransmissionMode(ProxyTransmissionMode),
     ProxyFlowLabel(ProxyFlowLabel),
     ProxySegmentationControl(ProxySegmentationControl),
-    ProxyFilestoreResponse(ProxyFilestoreResponse),
     ProxyPutCancel,
     DirectoryListingRequest(DirectoryListingRequest),
     DirectoryListingResponse(DirectoryListingResponse),
@@ -48,9 +50,9 @@ pub enum UserOperation {
     SFORequest(SFORequest),
     SFOMessageToUser(SFOMessageToUser),
     SFOFlowLabel(SFOFlowLabel),
-    SFOFaultHandlerOverride(SFOFaultHandlerOverride),
-    SFOFilestoreRequest(SFOFilestoreRequest),
-    SFOFilestoreResponse(SFOFilestoreResponse),
+    SFOFaultHandlerOverride(FaultHandlerOverride),
+    SFOFilestoreRequest(FilestoreRequest),
+    SFOFilestoreResponse(FilestoreResponse),
     SFOReport(SFOReport),
 }
 impl UserOperation {
@@ -86,8 +88,10 @@ impl UserOperation {
             Self::SFOReport(_) => MessageType::SFOReport,
         }
     }
-
-    pub fn to_bytes(self) -> Vec<u8> {
+}
+impl PDUEncode for UserOperation {
+    type PDUType = Self;
+    fn encode(self) -> Vec<u8> {
         let mut buffer: Vec<u8> = USER_OPS_IDENTIFIER.to_vec();
         buffer.push(self.get_message_type().to_u8().unwrap());
         let message_buffer = match self {
@@ -96,7 +100,7 @@ impl UserOperation {
             Self::ProxyPutResponse(msg) => msg.to_bytes(),
             Self::ProxyMessageToUser(msg) => msg.to_bytes(),
             Self::ProxyFilestoreRequest(msg) => msg.to_bytes(),
-            Self::ProxyFaultHandlerOverride(msg) => msg.to_bytes(),
+            Self::ProxyFaultHandlerOverride(msg) => msg.encode(),
             Self::ProxyTransmissionMode(msg) => msg.to_bytes(),
             Self::ProxyFlowLabel(msg) => msg.to_bytes(),
             Self::ProxySegmentationControl(msg) => msg.to_bytes(),
@@ -113,7 +117,7 @@ impl UserOperation {
             Self::SFORequest(msg) => msg.to_bytes(),
             Self::SFOMessageToUser(msg) => msg.to_bytes(),
             Self::SFOFlowLabel(msg) => msg.to_bytes(),
-            Self::SFOFaultHandlerOverride(msg) => msg.to_bytes(),
+            Self::SFOFaultHandlerOverride(msg) => msg.encode(),
             Self::SFOFilestoreRequest(msg) => msg.to_bytes(),
             Self::SFOFilestoreResponse(msg) => msg.to_bytes(),
             Self::SFOReport(msg) => msg.to_bytes(),
@@ -121,7 +125,7 @@ impl UserOperation {
         buffer.extend(message_buffer);
         buffer
     }
-    pub fn parse_user_op<T: Read>(buffer: &mut T) -> PDUResult<Self> {
+    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
         let mut cfdp_buff = vec![0u8; 4];
         buffer.read_exact(&mut cfdp_buff)?;
         if cfdp_buff != USER_OPS_IDENTIFIER.to_vec() {
@@ -143,10 +147,13 @@ impl UserOperation {
                 Ok(Self::ProxyMessageToUser(ProxyMessageToUser::parse(buffer)?))
             }
             MessageType::ProxyFilestoreRequest => Ok(Self::ProxyFilestoreRequest(
-                ProxyFilestoreRequest::parse(buffer)?,
+                FilestoreRequest::parse(buffer)?,
+            )),
+            MessageType::ProxyFilestoreResponse => Ok(Self::ProxyFilestoreResponse(
+                FilestoreResponse::parse(buffer)?,
             )),
             MessageType::ProxyFaultHandlerOverride => Ok(Self::ProxyFaultHandlerOverride(
-                ProxyFaultHandlerOverride::parse(buffer)?,
+                FaultHandlerOverride::decode(buffer)?,
             )),
             MessageType::ProxyTransmissionMode => Ok(Self::ProxyTransmissionMode(
                 ProxyTransmissionMode::parse(buffer)?,
@@ -158,9 +165,6 @@ impl UserOperation {
             MessageType::ProxyPutResponse => {
                 Ok(Self::ProxyPutResponse(ProxyPutResponse::parse(buffer)?))
             }
-            MessageType::ProxyFilestoreResponse => Ok(Self::ProxyFilestoreResponse(
-                ProxyFilestoreResponse::parse(buffer)?,
-            )),
             MessageType::ProxyPutCancel => Ok(Self::ProxyPutCancel),
             MessageType::OriginatingTransactionIDMessage => {
                 Ok(Self::OriginatingTransactionIDMessage(
@@ -198,14 +202,14 @@ impl UserOperation {
             }
             MessageType::SFOFlowLabel => Ok(Self::SFOFlowLabel(SFOFlowLabel::parse(buffer)?)),
             MessageType::SFOFaultHandlerOverride => Ok(Self::SFOFaultHandlerOverride(
-                SFOFaultHandlerOverride::parse(buffer)?,
+                FaultHandlerOverride::decode(buffer)?,
             )),
-            MessageType::SFOFilestoreRequest => Ok(Self::SFOFilestoreRequest(
-                SFOFilestoreRequest::parse(buffer)?,
-            )),
+            MessageType::SFOFilestoreRequest => {
+                Ok(Self::SFOFilestoreRequest(FilestoreRequest::parse(buffer)?))
+            }
             MessageType::SFOReport => Ok(Self::SFOReport(SFOReport::parse(buffer)?)),
             MessageType::SFOFilestoreResponse => Ok(Self::SFOFilestoreResponse(
-                SFOFilestoreResponse::parse(buffer)?,
+                FilestoreResponse::parse(buffer)?,
             )),
         }
     }
@@ -347,24 +351,6 @@ impl ProxyMessageToUser {
     pub fn parse<T: Read>(buffer: &mut T) -> PDUResult<Self> {
         let message_text = read_length_value_pair(buffer)?;
         Ok(Self { message_text })
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProxyFaultHandlerOverride {
-    fault_handler_code: u8,
-}
-impl ProxyFaultHandlerOverride {
-    pub fn to_bytes(self) -> Vec<u8> {
-        vec![self.fault_handler_code]
-    }
-
-    pub fn parse<T: Read>(buffer: &mut T) -> PDUResult<Self> {
-        let mut u8_buff = [0u8; 1];
-        buffer.read_exact(&mut u8_buff)?;
-        Ok(Self {
-            fault_handler_code: u8_buff[0],
-        })
     }
 }
 
@@ -956,24 +942,6 @@ impl SFOFlowLabel {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SFOFaultHandlerOverride {
-    message: Vec<u8>,
-}
-impl SFOFaultHandlerOverride {
-    pub fn to_bytes(self) -> Vec<u8> {
-        let mut buffer = vec![self.message.len() as u8];
-        buffer.extend(self.message);
-        buffer
-    }
-
-    pub fn parse<T: Read>(buffer: &mut T) -> PDUResult<Self> {
-        let message = read_length_value_pair(buffer)?;
-
-        Ok(Self { message })
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SFOFilestoreRequest {
     filestore_message: Vec<u8>,
 }
@@ -1100,6 +1068,14 @@ mod test {
     #![allow(clippy::too_many_arguments)]
     use super::*;
 
+    use crate::{
+        assert_err,
+        pdu::{
+            fault_handler::HandlerCode,
+            filestore::{DenyStatus, FilestoreAction, FilestoreStatus, RenameStatus},
+        },
+    };
+
     use rstest::rstest;
 
     #[rstest]
@@ -1161,7 +1137,10 @@ mod test {
     fn user_op_bad_sync() {
         let mut buffer = USER_OPS_IDENTIFIER.to_vec();
         buffer[0] -= 10;
-        assert!(UserOperation::parse_user_op(&mut &buffer[..]).is_err())
+        assert_err!(
+            UserOperation::decode(&mut &buffer[..]),
+            Err(PDUError::UnexpectedIdentifier(_, _))
+        )
     }
 
     #[rstest]
@@ -1191,13 +1170,23 @@ mod test {
         })
     )]
     #[case::proxy_filestore_request(UserOperation::ProxyFilestoreRequest(
-        ProxyFilestoreRequest{
-            value: vec![0u8, 1u8, 32u8, 213u8]
-        })
-    )]
+        FilestoreRequest{
+            action_code: FilestoreAction::AppendFile,
+            first_filename: "/the/first/file/to/append.dat".as_bytes().to_vec(),
+            second_filename: "/an/additional/file/to/append.txt".as_bytes().to_vec(),
+        }
+    ))]
+    #[case::proxy_filestore_response(UserOperation::ProxyFilestoreResponse(
+        FilestoreResponse{
+            action_and_status: FilestoreStatus::DenyDirectory(DenyStatus::NotAllowed),
+            first_filename: "/this/is/a/test/directory/".as_bytes().to_vec(),
+            second_filename: vec![],
+            filestore_message: vec![]
+        }
+    ))]
     #[case::proxy_fault_override(UserOperation::ProxyFaultHandlerOverride(
-        ProxyFaultHandlerOverride{
-            fault_handler_code: 222u8
+        FaultHandlerOverride{
+            fault_handler_code: HandlerCode::IgnoreError
         }
     ))]
     #[case::transmission_mode(UserOperation::ProxyTransmissionMode(
@@ -1213,11 +1202,6 @@ mod test {
     #[case::segmentation_control(UserOperation::ProxySegmentationControl(
         ProxySegmentationControl{
             control: SegmentationControl::Preserved
-        }
-    ))]
-    #[case::proxy_filestore_response(UserOperation::ProxyFilestoreResponse(
-        ProxyFilestoreResponse{
-            value: vec![213u8, 154u8, 3u8, 17u8, 54u8, 127u8]
         }
     ))]
     #[case::proxy_put_cancel(UserOperation::ProxyPutCancel)]
@@ -1310,18 +1294,23 @@ mod test {
     ))]
     #[case::sfo_fault_handler_override(
         UserOperation::SFOFaultHandlerOverride(
-            SFOFaultHandlerOverride{
-                message: "This is a user message. Please respond.".as_bytes().to_vec(),
+            FaultHandlerOverride{
+                fault_handler_code: HandlerCode::NoticeOfSuspension
             }
     ))]
     #[case::sfo_filestore_request(UserOperation::SFOFilestoreRequest(
-        SFOFilestoreRequest{
-            filestore_message: vec![0u8, 1u8, 33u8, 138u8, 213u8]
+        FilestoreRequest{
+            action_code: FilestoreAction::RemoveDirectory,
+            first_filename: "/home/user/ops".as_bytes().to_vec(),
+            second_filename: vec![],
         }
     ))]
     #[case::sfo_filestore_response(UserOperation::SFOFilestoreResponse(
-        SFOFilestoreResponse{
-            filestore_response: vec![73u8, 65, 123, 84, 33, 207]
+        FilestoreResponse{
+           action_and_status: FilestoreStatus::RenameFile(RenameStatus::NotPerformed),
+           first_filename: "/this/is/a/test.dat".as_bytes().to_vec(),
+           second_filename: "/another/test/file.txt".as_bytes().to_vec(),
+           filestore_message: vec![]
         }
     ))]
     #[case::sfo_report(UserOperation::SFOReport(
@@ -1339,8 +1328,8 @@ mod test {
         }
     ))]
     fn user_op_roundtrip(#[case] expected: UserOperation) {
-        let buffer = expected.clone().to_bytes();
-        let recovered = UserOperation::parse_user_op(&mut &buffer[..]).unwrap();
+        let buffer = expected.clone().encode();
+        let recovered = UserOperation::decode(&mut &buffer[..]).unwrap();
 
         assert_eq!(expected, recovered)
     }

@@ -1,6 +1,6 @@
 use std::fmt;
 
-use super::header::MessageType;
+use super::{filestore::FilestoreAction, header::MessageType};
 
 #[derive(Debug)]
 pub enum PDUError {
@@ -15,6 +15,9 @@ pub enum PDUError {
     InvalidTransmissionMode(u8),
     InvalidSegmentControl(u8),
     InvalidTransactionStatus(u8),
+    InvalidFilestoreAction(u8),
+    InvalidFilestoreStatus(u8, FilestoreAction),
+    InvalidFaultHandlerCode(u8),
     ReadError(std::io::Error),
 }
 impl fmt::Display for PDUError {
@@ -47,6 +50,15 @@ impl fmt::Display for PDUError {
             &Self::InvalidTransactionStatus(val) => {
                 write!(f, "Invalid Transaction Status {:}.", val)
             }
+            &Self::InvalidFilestoreAction(val) => write!(f, "Inavlide Filestore Action {:}.", val),
+            Self::InvalidFilestoreStatus(val, action) => write!(
+                f,
+                "Inavlid Filestore Status {:} for Action {:?}.",
+                val, action
+            ),
+            &Self::InvalidFaultHandlerCode(val) => {
+                write!(f, "Invalid Fault Handler Code: {:}.", val)
+            }
             Self::ReadError(source) => write!(f, "Error Reading PDU Buffer. {:}", source),
         }
     }
@@ -65,6 +77,9 @@ impl std::error::Error for PDUError {
             Self::InvalidTransmissionMode(_) => None,
             Self::InvalidSegmentControl(_) => None,
             Self::InvalidTransactionStatus(_) => None,
+            Self::InvalidFilestoreAction(_) => None,
+            Self::InvalidFilestoreStatus(_, _) => None,
+            Self::InvalidFaultHandlerCode(_) => None,
             Self::ReadError(source) => Some(source),
         }
     }

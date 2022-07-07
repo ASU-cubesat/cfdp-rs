@@ -1,0 +1,418 @@
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive;
+
+use std::io::Read;
+
+use super::{
+    error::{PDUError, PDUResult},
+    header::read_length_value_pair,
+};
+
+#[repr(u8)]
+#[derive(Debug, Clone, PartialEq, Eq, FromPrimitive)]
+/// Actions which can be take via a Filestore Request to a CFDP entity.
+pub enum FilestoreAction {
+    /// Create a new file on disk.
+    CreateFile = 0b0000,
+    /// Delete an existing file on disk. Errors if the file does not exist.
+    DeleteFile = 0b0001,
+    /// Rename a file on disk. Requires a second filename.
+    RenameFile = 0b0010,
+    /// Append to a filename on disk. Requires a second filename
+    AppendFile = 0b0011,
+    /// Replace a file with one of a different name. Requites a second filename
+    ReplaceFile = 0b0100,
+    /// Create a new directory
+    CreateDirectory = 0b0101,
+    /// Delete a directory. Errors if it does not exist.
+    RemoveDirectory = 0b0110,
+    /// Delete a file if present. Does not fail if file does not exist.
+    DenyFile = 0b0111,
+    /// Remove a directory if present. Does not fail if directory does not exit.
+    DenyDirectory = 0b1000,
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
+pub enum CreateFileStatus {
+    Successful = 0b0000,
+    NotAllowed = 0b0001,
+    NotPerformed = 0b1111,
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
+pub enum DeleteFileStatus {
+    Successful = 0b0000,
+    FileDoesNotExist = 0b0001,
+    DeleteNotAllowed = 0b0010,
+    NotPerformed = 0b1111,
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
+pub enum RenameStatus {
+    Successful = 0b0000,
+    OldFilenameDoesNotExist = 0b0001,
+    NewFilenameAlreadyExists = 0b0010,
+    RenameNotAllowed = 0b0011,
+    NotPerformed = 0b1111,
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
+pub enum AppendStatus {
+    Successful = 0b0000,
+    Filename1DoesNotExist = 0b0001,
+    Filename2DoesNotExist = 0b0010,
+    NotAllowed = 0b0011,
+    NotPerformed = 0b1111,
+}
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
+pub enum ReplaceStatus {
+    Successful = 0b0000,
+    Filename1DoesNotExist = 0b0001,
+    Filename2DoesNotExist = 0b0010,
+    NotAllowed = 0b0011,
+    NotPerformed = 0b1111,
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
+pub enum CreateDirectoryStatus {
+    Successful = 0b0000,
+    DirectoryCannotBeCreated = 0b0001,
+    NotPerformed = 0b1111,
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
+pub enum RemoveDirectoryStatus {
+    Successful = 0b0000,
+    DirectoryDoesNotExist = 0b0001,
+    DeleteNotAllowed = 0b0110,
+    NotPerformed = 0b1111,
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
+pub enum DenyStatus {
+    Successful = 0b0000,
+    NotAllowed = 0b0010,
+    NotPerformed = 0b1111,
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilestoreStatus {
+    CreateFile(CreateFileStatus),
+    DeleteFile(DeleteFileStatus),
+    RenameFile(RenameStatus),
+    AppendFile(AppendStatus),
+    ReplaceFile(ReplaceStatus),
+    CreateDirectory(CreateDirectoryStatus),
+    RemoveDirectory(RemoveDirectoryStatus),
+    DenyFile(DenyStatus),
+    DenyDirectory(DenyStatus),
+}
+impl FilestoreStatus {
+    pub fn as_u8(&self) -> u8 {
+        match self {
+            Self::CreateFile(val) => ((FilestoreAction::CreateFile as u8) << 4) | *val as u8,
+            Self::DeleteFile(val) => ((FilestoreAction::DeleteFile as u8) << 4) | *val as u8,
+            Self::RenameFile(val) => ((FilestoreAction::RenameFile as u8) << 4) | *val as u8,
+            Self::AppendFile(val) => ((FilestoreAction::AppendFile as u8) << 4) | *val as u8,
+            Self::ReplaceFile(val) => ((FilestoreAction::ReplaceFile as u8) << 4) | *val as u8,
+            Self::CreateDirectory(val) => {
+                ((FilestoreAction::CreateDirectory as u8) << 4) | *val as u8
+            }
+            Self::RemoveDirectory(val) => {
+                ((FilestoreAction::RemoveDirectory as u8) << 4) | *val as u8
+            }
+            Self::DenyFile(val) => ((FilestoreAction::DenyFile as u8) << 4) | *val as u8,
+            Self::DenyDirectory(val) => ((FilestoreAction::DenyDirectory as u8) << 4) | *val as u8,
+        }
+    }
+
+    pub fn get_status(action: &FilestoreAction, status: u8) -> PDUResult<Self> {
+        match action {
+            FilestoreAction::CreateFile => {
+                let stat: CreateFileStatus = CreateFileStatus::from_u8(status).ok_or(
+                    PDUError::InvalidFilestoreStatus(status, FilestoreAction::CreateFile),
+                )?;
+                Ok(Self::CreateFile(stat))
+            }
+            FilestoreAction::DeleteFile => {
+                let stat: DeleteFileStatus = DeleteFileStatus::from_u8(status).ok_or(
+                    PDUError::InvalidFilestoreStatus(status, FilestoreAction::DeleteFile),
+                )?;
+                Ok(Self::DeleteFile(stat))
+            }
+            FilestoreAction::RenameFile => {
+                let stat = RenameStatus::from_u8(status).ok_or(
+                    PDUError::InvalidFilestoreStatus(status, FilestoreAction::RenameFile),
+                )?;
+                Ok(Self::RenameFile(stat))
+            }
+            FilestoreAction::AppendFile => {
+                let stat = AppendStatus::from_u8(status).ok_or(
+                    PDUError::InvalidFilestoreStatus(status, FilestoreAction::AppendFile),
+                )?;
+                Ok(Self::AppendFile(stat))
+            }
+            FilestoreAction::ReplaceFile => {
+                let stat = ReplaceStatus::from_u8(status).ok_or(
+                    PDUError::InvalidFilestoreStatus(status, FilestoreAction::ReplaceFile),
+                )?;
+                Ok(Self::ReplaceFile(stat))
+            }
+            FilestoreAction::CreateDirectory => {
+                let stat = CreateDirectoryStatus::from_u8(status).ok_or(
+                    PDUError::InvalidFilestoreStatus(status, FilestoreAction::CreateDirectory),
+                )?;
+                Ok(Self::CreateDirectory(stat))
+            }
+            FilestoreAction::RemoveDirectory => {
+                let stat = RemoveDirectoryStatus::from_u8(status).ok_or(
+                    PDUError::InvalidFilestoreStatus(status, FilestoreAction::RemoveDirectory),
+                )?;
+                Ok(Self::RemoveDirectory(stat))
+            }
+            FilestoreAction::DenyFile => {
+                let stat = DenyStatus::from_u8(status).ok_or(PDUError::InvalidFilestoreStatus(
+                    status,
+                    FilestoreAction::DenyFile,
+                ))?;
+                Ok(Self::DenyFile(stat))
+            }
+            FilestoreAction::DenyDirectory => {
+                let stat = DenyStatus::from_u8(status).ok_or(PDUError::InvalidFilestoreStatus(
+                    status,
+                    FilestoreAction::DenyDirectory,
+                ))?;
+                Ok(Self::DenyDirectory(stat))
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilestoreRequest {
+    pub action_code: FilestoreAction,
+    /// LV type field, omitted when length 0.
+    pub first_filename: Vec<u8>,
+    /// LV type field, omitted when length 0.
+    /// Only has non-zero length for rename, append, and replace actions.
+    pub second_filename: Vec<u8>,
+}
+impl FilestoreRequest {
+    pub fn to_bytes(self) -> Vec<u8> {
+        let first_byte = (self.action_code as u8) << 4;
+        let mut buffer = vec![first_byte];
+
+        buffer.push(self.first_filename.len() as u8);
+        buffer.extend(self.first_filename);
+
+        buffer.push(self.second_filename.len() as u8);
+        buffer.extend(self.second_filename);
+
+        buffer
+    }
+
+    pub fn parse<T: Read>(buffer: &mut T) -> PDUResult<Self> {
+        let action_code = {
+            let mut u8_buff = [0u8; 1];
+            buffer.read_exact(&mut u8_buff)?;
+            let possible_action = (u8_buff[0] & 0xF0) >> 4;
+            FilestoreAction::from_u8(possible_action)
+                .ok_or(PDUError::InvalidFilestoreAction(possible_action))?
+        };
+        let first_filename = read_length_value_pair(buffer)?;
+        let second_filename = read_length_value_pair(buffer)?;
+        Ok(Self {
+            action_code,
+            first_filename,
+            second_filename,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilestoreResponse {
+    pub action_and_status: FilestoreStatus,
+    /// LV type field, omitted when length 0
+    pub first_filename: Vec<u8>,
+    /// LV type field, omitted when length 0
+    /// Only has non-zero length for rename, append, and replace actions.
+    pub second_filename: Vec<u8>,
+    /// LV type field, omitted when length 0
+    pub filestore_message: Vec<u8>,
+}
+impl FilestoreResponse {
+    pub fn to_bytes(self) -> Vec<u8> {
+        let mut buffer = vec![self.action_and_status.as_u8()];
+
+        buffer.push(self.first_filename.len() as u8);
+        buffer.extend(self.first_filename);
+
+        buffer.push(self.second_filename.len() as u8);
+        buffer.extend(self.second_filename);
+
+        buffer.push(self.filestore_message.len() as u8);
+        buffer.extend(self.filestore_message);
+
+        buffer
+    }
+
+    pub fn parse<T: Read>(buffer: &mut T) -> PDUResult<Self> {
+        let mut u8_buff = [0u8; 1];
+        buffer.read_exact(&mut u8_buff)?;
+        let first_byte = u8_buff[0];
+
+        let action_code = {
+            let possible_action = (first_byte & 0xF0) >> 4;
+            FilestoreAction::from_u8(possible_action)
+                .ok_or(PDUError::InvalidFilestoreAction(possible_action))?
+        };
+
+        let action_and_status = FilestoreStatus::get_status(&action_code, first_byte & 0xF)?;
+
+        let first_filename = read_length_value_pair(buffer)?;
+        let second_filename = read_length_value_pair(buffer)?;
+        let filestore_message = read_length_value_pair(buffer)?;
+        Ok(Self {
+            action_and_status,
+            first_filename,
+            second_filename,
+            filestore_message,
+        })
+    }
+}
+
+#[cfg(test)]
+mod test {
+
+    use super::*;
+    use crate::assert_err;
+
+    use rstest::rstest;
+
+    #[rstest]
+    #[case("", "/a/longer/second/name")]
+    #[case("/b/longer/first/name", "")]
+    #[case("/b/longer/first/name", "/a/longer/second/name")]
+    #[case("", "")]
+    fn filestore_request(
+        #[values(
+            FilestoreAction::CreateFile,
+            FilestoreAction::DeleteFile,
+            FilestoreAction::RenameFile,
+            FilestoreAction::AppendFile,
+            FilestoreAction::CreateDirectory,
+            FilestoreAction::RemoveDirectory,
+            FilestoreAction::DenyFile,
+            FilestoreAction::DenyDirectory
+        )]
+        action_code: FilestoreAction,
+        #[case] first_filename: &str,
+        #[case] second_filename: &str,
+    ) {
+        let expected = FilestoreRequest {
+            action_code,
+            first_filename: first_filename.as_bytes().to_vec(),
+            second_filename: second_filename.as_bytes().to_vec(),
+        };
+
+        let buffer = expected.clone().to_bytes();
+        let recovered = FilestoreRequest::parse(&mut &buffer[..]).unwrap();
+
+        assert_eq!(expected, recovered)
+    }
+
+    #[rstest]
+    #[case(FilestoreAction::CreateFile, 0b1110)]
+    #[case(FilestoreAction::DeleteFile, 0b0100)]
+    #[case(FilestoreAction::RenameFile, 0b0100)]
+    #[case(FilestoreAction::AppendFile, 0b1000)]
+    #[case(FilestoreAction::ReplaceFile, 0b1000)]
+    #[case(FilestoreAction::CreateDirectory, 0b1000)]
+    #[case(FilestoreAction::RemoveDirectory, 0b0100)]
+    #[case(FilestoreAction::DenyFile, 0b0100)]
+    #[case(FilestoreAction::DenyDirectory, 0b0100)]
+    fn filestore_status_errors(#[case] action: FilestoreAction, #[case] status: u8) {
+        assert_err!(
+            FilestoreStatus::get_status(&action, status),
+            Err(PDUError::InvalidFilestoreStatus(_, _))
+        )
+    }
+
+    #[rstest]
+    #[case("", "", "")]
+    #[case("/a/longer/first/name", "", "")]
+    #[case("/a/longer/first/name", "/b/longer/second/name", "")]
+    #[case("/a/longer/first/name", "", "a non trivial message")]
+    #[case(
+        "/a/longer/first/name",
+        "/b/longer/second/name",
+        "a non trivial message"
+    )]
+    #[case("", "/b/longer/second/name", "")]
+    #[case("", "/b/longer/second/name", "a non trivial message")]
+    #[case("", "", "a non trivial message")]
+    fn filestore_response(
+        #[case] first_filename: &str,
+        #[case] second_filename: &str,
+        #[case] filestore_message: &str,
+        #[values(
+            FilestoreStatus::CreateFile(CreateFileStatus::Successful),
+            FilestoreStatus::CreateFile(CreateFileStatus::NotAllowed),
+            FilestoreStatus::CreateFile(CreateFileStatus::NotPerformed),
+            FilestoreStatus::DeleteFile(DeleteFileStatus::Successful),
+            FilestoreStatus::DeleteFile(DeleteFileStatus::FileDoesNotExist),
+            FilestoreStatus::DeleteFile(DeleteFileStatus::DeleteNotAllowed),
+            FilestoreStatus::DeleteFile(DeleteFileStatus::NotPerformed),
+            FilestoreStatus::RenameFile(RenameStatus::Successful),
+            FilestoreStatus::RenameFile(RenameStatus::OldFilenameDoesNotExist),
+            FilestoreStatus::RenameFile(RenameStatus::NewFilenameAlreadyExists),
+            FilestoreStatus::RenameFile(RenameStatus::RenameNotAllowed),
+            FilestoreStatus::RenameFile(RenameStatus::NotPerformed),
+            FilestoreStatus::AppendFile(AppendStatus::Successful),
+            FilestoreStatus::AppendFile(AppendStatus::Filename1DoesNotExist),
+            FilestoreStatus::AppendFile(AppendStatus::Filename2DoesNotExist),
+            FilestoreStatus::AppendFile(AppendStatus::NotAllowed),
+            FilestoreStatus::AppendFile(AppendStatus::NotPerformed),
+            FilestoreStatus::ReplaceFile(ReplaceStatus::Successful),
+            FilestoreStatus::ReplaceFile(ReplaceStatus::Filename1DoesNotExist),
+            FilestoreStatus::ReplaceFile(ReplaceStatus::Filename2DoesNotExist),
+            FilestoreStatus::ReplaceFile(ReplaceStatus::NotAllowed),
+            FilestoreStatus::ReplaceFile(ReplaceStatus::NotPerformed),
+            FilestoreStatus::CreateDirectory(CreateDirectoryStatus::Successful),
+            FilestoreStatus::CreateDirectory(CreateDirectoryStatus::DirectoryCannotBeCreated),
+            FilestoreStatus::CreateDirectory(CreateDirectoryStatus::NotPerformed),
+            FilestoreStatus::RemoveDirectory(RemoveDirectoryStatus::Successful),
+            FilestoreStatus::RemoveDirectory(RemoveDirectoryStatus::DirectoryDoesNotExist),
+            FilestoreStatus::RemoveDirectory(RemoveDirectoryStatus::DeleteNotAllowed),
+            FilestoreStatus::RemoveDirectory(RemoveDirectoryStatus::NotPerformed),
+            FilestoreStatus::DenyFile(DenyStatus::Successful),
+            FilestoreStatus::DenyFile(DenyStatus::NotAllowed),
+            FilestoreStatus::DenyFile(DenyStatus::NotPerformed),
+            FilestoreStatus::DenyDirectory(DenyStatus::Successful),
+            FilestoreStatus::DenyDirectory(DenyStatus::NotAllowed),
+            FilestoreStatus::DenyDirectory(DenyStatus::NotPerformed)
+        )]
+        action_and_status: FilestoreStatus,
+    ) {
+        let expected = FilestoreResponse {
+            action_and_status,
+            first_filename: first_filename.as_bytes().to_vec(),
+            second_filename: second_filename.as_bytes().to_vec(),
+            filestore_message: filestore_message.as_bytes().to_vec(),
+        };
+
+        let buffer = expected.clone().to_bytes();
+        let recovered = FilestoreResponse::parse(&mut &buffer[..]).unwrap();
+
+        assert_eq!(expected, recovered)
+    }
+}

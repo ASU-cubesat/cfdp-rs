@@ -31,7 +31,7 @@ pub enum UserOperation {
     OriginatingTransactionIDMessage(OriginatingTransactionIDMessage),
     ProxyPutRequest(ProxyPutRequest),
     ProxyPutResponse(ProxyPutResponse),
-    ProxyMessageToUser(ProxyMessageToUser),
+    ProxyMessageToUser(MessageToUser),
     ProxyFilestoreRequest(FilestoreRequest),
     ProxyFilestoreResponse(FilestoreResponse),
     ProxyFaultHandlerOverride(FaultHandlerOverride),
@@ -48,7 +48,7 @@ pub enum UserOperation {
     RemoteResumeRequest(RemoteResumeRequest),
     RemoteResumeResponse(RemoteResumeResponse),
     SFORequest(SFORequest),
-    SFOMessageToUser(SFOMessageToUser),
+    SFOMessageToUser(MessageToUser),
     SFOFlowLabel(SFOFlowLabel),
     SFOFaultHandlerOverride(FaultHandlerOverride),
     SFOFilestoreRequest(FilestoreRequest),
@@ -98,13 +98,13 @@ impl PDUEncode for UserOperation {
             Self::OriginatingTransactionIDMessage(msg) => msg.to_bytes(),
             Self::ProxyPutRequest(msg) => msg.to_bytes(),
             Self::ProxyPutResponse(msg) => msg.to_bytes(),
-            Self::ProxyMessageToUser(msg) => msg.to_bytes(),
-            Self::ProxyFilestoreRequest(msg) => msg.to_bytes(),
+            Self::ProxyMessageToUser(msg) => msg.encode(),
+            Self::ProxyFilestoreRequest(msg) => msg.encode(),
             Self::ProxyFaultHandlerOverride(msg) => msg.encode(),
             Self::ProxyTransmissionMode(msg) => msg.to_bytes(),
             Self::ProxyFlowLabel(msg) => msg.to_bytes(),
             Self::ProxySegmentationControl(msg) => msg.to_bytes(),
-            Self::ProxyFilestoreResponse(msg) => msg.to_bytes(),
+            Self::ProxyFilestoreResponse(msg) => msg.encode(),
             Self::ProxyPutCancel => vec![],
             Self::DirectoryListingRequest(msg) => msg.to_bytes(),
             Self::DirectoryListingResponse(msg) => msg.to_bytes(),
@@ -115,11 +115,11 @@ impl PDUEncode for UserOperation {
             Self::RemoteResumeRequest(msg) => msg.to_bytes(),
             Self::RemoteResumeResponse(msg) => msg.to_bytes(),
             Self::SFORequest(msg) => msg.to_bytes(),
-            Self::SFOMessageToUser(msg) => msg.to_bytes(),
+            Self::SFOMessageToUser(msg) => msg.encode(),
             Self::SFOFlowLabel(msg) => msg.to_bytes(),
             Self::SFOFaultHandlerOverride(msg) => msg.encode(),
-            Self::SFOFilestoreRequest(msg) => msg.to_bytes(),
-            Self::SFOFilestoreResponse(msg) => msg.to_bytes(),
+            Self::SFOFilestoreRequest(msg) => msg.encode(),
+            Self::SFOFilestoreResponse(msg) => msg.encode(),
             Self::SFOReport(msg) => msg.to_bytes(),
         };
         buffer.extend(message_buffer);
@@ -144,13 +144,13 @@ impl PDUEncode for UserOperation {
                 Ok(Self::ProxyPutRequest(ProxyPutRequest::parse(buffer)?))
             }
             MessageType::ProxyMessageToUser => {
-                Ok(Self::ProxyMessageToUser(ProxyMessageToUser::parse(buffer)?))
+                Ok(Self::ProxyMessageToUser(MessageToUser::decode(buffer)?))
             }
             MessageType::ProxyFilestoreRequest => Ok(Self::ProxyFilestoreRequest(
-                FilestoreRequest::parse(buffer)?,
+                FilestoreRequest::decode(buffer)?,
             )),
             MessageType::ProxyFilestoreResponse => Ok(Self::ProxyFilestoreResponse(
-                FilestoreResponse::parse(buffer)?,
+                FilestoreResponse::decode(buffer)?,
             )),
             MessageType::ProxyFaultHandlerOverride => Ok(Self::ProxyFaultHandlerOverride(
                 FaultHandlerOverride::decode(buffer)?,
@@ -198,18 +198,18 @@ impl PDUEncode for UserOperation {
             )),
             MessageType::SFORequest => Ok(Self::SFORequest(SFORequest::parse(buffer)?)),
             MessageType::SFOMessageToUser => {
-                Ok(Self::SFOMessageToUser(SFOMessageToUser::parse(buffer)?))
+                Ok(Self::SFOMessageToUser(MessageToUser::decode(buffer)?))
             }
             MessageType::SFOFlowLabel => Ok(Self::SFOFlowLabel(SFOFlowLabel::parse(buffer)?)),
             MessageType::SFOFaultHandlerOverride => Ok(Self::SFOFaultHandlerOverride(
                 FaultHandlerOverride::decode(buffer)?,
             )),
             MessageType::SFOFilestoreRequest => {
-                Ok(Self::SFOFilestoreRequest(FilestoreRequest::parse(buffer)?))
+                Ok(Self::SFOFilestoreRequest(FilestoreRequest::decode(buffer)?))
             }
             MessageType::SFOReport => Ok(Self::SFOReport(SFOReport::parse(buffer)?)),
             MessageType::SFOFilestoreResponse => Ok(Self::SFOFilestoreResponse(
-                FilestoreResponse::parse(buffer)?,
+                FilestoreResponse::decode(buffer)?,
             )),
         }
     }
@@ -339,16 +339,17 @@ impl ProxyPutResponse {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProxyMessageToUser {
+pub struct MessageToUser {
     message_text: Vec<u8>,
 }
-impl ProxyMessageToUser {
-    pub fn to_bytes(self) -> Vec<u8> {
+impl PDUEncode for MessageToUser {
+    type PDUType = Self;
+    fn encode(self) -> Vec<u8> {
         let mut buffer = vec![self.message_text.len() as u8];
         buffer.extend(self.message_text);
         buffer
     }
-    pub fn parse<T: Read>(buffer: &mut T) -> PDUResult<Self> {
+    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
         let message_text = read_length_value_pair(buffer)?;
         Ok(Self { message_text })
     }
@@ -906,24 +907,6 @@ impl SFORequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SFOMessageToUser {
-    message: Vec<u8>,
-}
-impl SFOMessageToUser {
-    pub fn to_bytes(self) -> Vec<u8> {
-        let mut buffer = vec![self.message.len() as u8];
-        buffer.extend(self.message);
-        buffer
-    }
-
-    pub fn parse<T: Read>(buffer: &mut T) -> PDUResult<Self> {
-        let message = read_length_value_pair(buffer)?;
-
-        Ok(Self { message })
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SFOFlowLabel {
     flow_label: Vec<u8>,
 }
@@ -1165,7 +1148,7 @@ mod test {
         })
     )]
     #[case::proxy_message(
-        UserOperation::ProxyMessageToUser(ProxyMessageToUser{
+        UserOperation::ProxyMessageToUser(MessageToUser{
             message_text: "Test Hello World".as_bytes().to_vec()
         })
     )]
@@ -1283,8 +1266,8 @@ mod test {
             }
     ))]
     #[case::sfo_message(UserOperation::SFOMessageToUser(
-        SFOMessageToUser{
-            message: "This is a test message!".as_bytes().to_vec(),
+        MessageToUser{
+            message_text: "This is a test message!".as_bytes().to_vec(),
     }))]
     #[case::sfo_flow_label(
         UserOperation::SFOFlowLabel(

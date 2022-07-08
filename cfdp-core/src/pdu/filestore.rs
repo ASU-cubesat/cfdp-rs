@@ -5,7 +5,7 @@ use std::io::Read;
 
 use super::{
     error::{PDUError, PDUResult},
-    header::read_length_value_pair,
+    header::{read_length_value_pair, PDUEncode},
 };
 
 #[repr(u8)]
@@ -206,8 +206,9 @@ pub struct FilestoreRequest {
     /// Only has non-zero length for rename, append, and replace actions.
     pub second_filename: Vec<u8>,
 }
-impl FilestoreRequest {
-    pub fn to_bytes(self) -> Vec<u8> {
+impl PDUEncode for FilestoreRequest {
+    type PDUType = Self;
+    fn encode(self) -> Vec<u8> {
         let first_byte = (self.action_code as u8) << 4;
         let mut buffer = vec![first_byte];
 
@@ -220,7 +221,7 @@ impl FilestoreRequest {
         buffer
     }
 
-    pub fn parse<T: Read>(buffer: &mut T) -> PDUResult<Self> {
+    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
         let action_code = {
             let mut u8_buff = [0u8; 1];
             buffer.read_exact(&mut u8_buff)?;
@@ -249,8 +250,9 @@ pub struct FilestoreResponse {
     /// LV type field, omitted when length 0
     pub filestore_message: Vec<u8>,
 }
-impl FilestoreResponse {
-    pub fn to_bytes(self) -> Vec<u8> {
+impl PDUEncode for FilestoreResponse {
+    type PDUType = Self;
+    fn encode(self) -> Vec<u8> {
         let mut buffer = vec![self.action_and_status.as_u8()];
 
         buffer.push(self.first_filename.len() as u8);
@@ -265,7 +267,7 @@ impl FilestoreResponse {
         buffer
     }
 
-    pub fn parse<T: Read>(buffer: &mut T) -> PDUResult<Self> {
+    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
         let mut u8_buff = [0u8; 1];
         buffer.read_exact(&mut u8_buff)?;
         let first_byte = u8_buff[0];
@@ -324,8 +326,8 @@ mod test {
             second_filename: second_filename.as_bytes().to_vec(),
         };
 
-        let buffer = expected.clone().to_bytes();
-        let recovered = FilestoreRequest::parse(&mut &buffer[..]).unwrap();
+        let buffer = expected.clone().encode();
+        let recovered = FilestoreRequest::decode(&mut &buffer[..]).unwrap();
 
         assert_eq!(expected, recovered)
     }
@@ -410,8 +412,8 @@ mod test {
             filestore_message: filestore_message.as_bytes().to_vec(),
         };
 
-        let buffer = expected.clone().to_bytes();
-        let recovered = FilestoreResponse::parse(&mut &buffer[..]).unwrap();
+        let buffer = expected.clone().encode();
+        let recovered = FilestoreResponse::decode(&mut &buffer[..]).unwrap();
 
         assert_eq!(expected, recovered)
     }

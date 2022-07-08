@@ -3,8 +3,6 @@ use std::io::Read;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 
-use crate::PDUType;
-
 use super::{
     error::{PDUError, PDUResult},
     header::PDUEncode,

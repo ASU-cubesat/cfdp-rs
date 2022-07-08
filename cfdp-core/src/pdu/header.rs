@@ -188,6 +188,12 @@ pub enum MessageType {
     SFOFilestoreResponse = 0x46,
 }
 
+pub trait PDUEncode {
+    type PDUType;
+    fn encode(self) -> Vec<u8>;
+    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType>;
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PDUHeader {
     version: U3,

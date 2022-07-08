@@ -108,7 +108,7 @@ pub enum SegmentationControl {
 
 #[repr(u8)]
 #[derive(Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
-enum SegmentMetadata {
+enum SegmentedData {
     NotPresent = 0,
     Present = 1,
 }
@@ -205,18 +205,23 @@ pub struct PDUHeader {
     pdu_data_field_length: u16,
     segmentation_control: SegmentationControl,
     entity_ids_length: U3,
-    segment_metadata_flag: SegmentMetadata,
+    segment_metadata_flag: SegmentedData,
     transaction_sequence_number_length: U3,
     source_entity_id: Vec<u8>,
     transaction_sequence_number: Vec<u8>,
     destination_entity_id: Vec<u8>,
 }
-impl PDUHeader {
-    fn to_bytes(self) -> Vec<u8> {
-        let mut buffer = Vec::<u8>::new();
-        buffer
-    }
-}
+// impl PDUEncode for PDUHeader {
+//     type PDUType = Self;
+//     fn encode(self) -> Vec<u8> {
+//         let mut buffer = Vec::<u8>::new();
+//         buffer
+//     }
+
+//     fn decode<T: Read>(buffer: &mut T) -> PDUResult<PDUType> {
+//         Ok(Self {})
+//     }
+// }
 
 pub fn read_length_value_pair<T: Read>(buffer: &mut T) -> PDUResult<Vec<u8>> {
     let mut u8_buff = [0u8; 1];
@@ -252,13 +257,15 @@ mod test {
         #[values(
             "Hello World",
             "Goodbye world!>",
-            "A much longer message really but we need to be sure."
+            "A much longer message really but we need to be sure.",
+            ""
         )]
         input_message: &str,
     ) {
         let mut buffer: Vec<u8> = vec![input_message.as_bytes().len() as u8];
         buffer.extend_from_slice(input_message.as_bytes());
         let mut input_buffer = &buffer[..];
+        assert_ne!(0, input_buffer.len());
         let recovered = read_length_value_pair(&mut input_buffer).unwrap();
         assert_eq!(input_message.as_bytes(), recovered)
     }

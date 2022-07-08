@@ -5,6 +5,7 @@ mod header;
 mod ops;
 mod user_ops;
 
+pub use fault_handler::*;
 pub use filestore::*;
 pub use header::*;
 pub use ops::*;

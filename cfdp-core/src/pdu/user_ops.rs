@@ -7,27 +7,17 @@ use super::{
     fault_handler::FaultHandlerOverride,
     filestore::{FilestoreRequest, FilestoreResponse},
     header::{
-        read_length_value_pair, Condition, DeliveryCode, Direction, FileSizeSensitive,
-        FileStatusCode, MessageType, PDUDirective, PDUEncode, PDUHeader, SegmentationControl,
-        TraceControl, TransactionStatus, TransmissionMode,
+        read_length_value_pair, Condition, DeliveryCode, Direction, FileStatusCode, MessageType,
+        PDUEncode, SegmentationControl, TraceControl, TransactionStatus, TransmissionMode,
     },
-    ops::FlowLabel,
+    ops::{FlowLabel, MessageToUser},
 };
 
 const USER_OPS_IDENTIFIER: &[u8] = "cfdp".as_bytes();
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MetadataPDU {
-    header: PDUHeader,
-    directive: PDUDirective,
-    closure_requested: bool,
-    filesize: FileSizeSensitive,
-    source_filename: Vec<u8>,
-    destination_filename: Vec<u8>,
-    metadata_tlvs: Vec<u8>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// User Operations are transported as the paylod of a [MessageToUser]
+/// in a metadataPDU. A reserved "CFDP" identifier is used to delinate User Operations.
 pub enum UserOperation {
     OriginatingTransactionIDMessage(OriginatingTransactionIDMessage),
     ProxyPutRequest(ProxyPutRequest),
@@ -371,23 +361,6 @@ impl PDUEncode for ProxyPutResponse {
             delivery_code,
             file_status,
         })
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MessageToUser {
-    message_text: Vec<u8>,
-}
-impl PDUEncode for MessageToUser {
-    type PDUType = Self;
-    fn encode(self) -> Vec<u8> {
-        let mut buffer = vec![self.message_text.len() as u8];
-        buffer.extend(self.message_text);
-        buffer
-    }
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let message_text = read_length_value_pair(buffer)?;
-        Ok(Self { message_text })
     }
 }
 

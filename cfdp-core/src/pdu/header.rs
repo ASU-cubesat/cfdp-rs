@@ -1,26 +1,36 @@
 use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::FromPrimitive;
 use std::io::Read;
 
-use super::error::{PDUError, PDUResult};
+use super::error::PDUResult;
 
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
-pub enum PDUDirective {
-    EoF = 0x04,
-    Finished = 0x05,
-    Ack = 0x06,
-    Metadata = 0x07,
-    Nak = 0x08,
-    Prompt = 0x09,
-    KeepAlive = 0x0C,
-}
-
-#[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileSizeSensitive {
-    Small = 32,
-    Large = 64,
+    Small(u32),
+    Large(u64),
+}
+impl FileSizeSensitive {
+    pub fn to_be_bytes(self) -> Vec<u8> {
+        match self {
+            Self::Small(val) => val.to_be_bytes().to_vec(),
+            Self::Large(val) => val.to_be_bytes().to_vec(),
+        }
+    }
+
+    pub fn from_be_bytes<T: Read>(buffer: &mut T, file_size_flag: FileSizeFlag) -> PDUResult<Self> {
+        match file_size_flag {
+            FileSizeFlag::Small => {
+                let mut u32_buffer = [0_u8; 4];
+                buffer.read_exact(&mut u32_buffer)?;
+                Ok(Self::Small(u32::from_be_bytes(u32_buffer)))
+            }
+            FileSizeFlag::Large => {
+                let mut u64_buffer = [0_u8; 8];
+                buffer.read_exact(&mut u64_buffer)?;
+                Ok(Self::Large(u64::from_be_bytes(u64_buffer)))
+            }
+        }
+    }
 }
 
 #[repr(u8)]
@@ -93,7 +103,7 @@ pub enum CRCFlag {
 }
 
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum FileSizeFlag {
     Small = 0,
     Large = 1,
@@ -108,20 +118,9 @@ pub enum SegmentationControl {
 
 #[repr(u8)]
 #[derive(Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
-enum SegmentedData {
+pub enum SegmentedData {
     NotPresent = 0,
     Present = 1,
-}
-
-#[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
-pub enum FieldCode {
-    FilestoreRequest = 0x00,
-    FilestoreResponse = 0x01,
-    MessageToUser = 0x02,
-    FaultHandlerOverrides = 0x04,
-    FlowLabel = 0x05,
-    EntityID = 0x06,
 }
 
 #[repr(u8)]
@@ -157,7 +156,7 @@ pub enum TransactionStatus {
 }
 
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, ToPrimitive, FromPrimitive)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ToPrimitive, FromPrimitive)]
 pub enum MessageType {
     ProxyPutRequest = 0x00,
     ProxyMessageToUser = 0x01,
@@ -192,6 +191,22 @@ pub trait PDUEncode {
     type PDUType;
     fn encode(self) -> Vec<u8>;
     fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType>;
+}
+
+pub trait FSSEncode {
+    type PDUType;
+    fn encode(self) -> Vec<u8>;
+    fn decode<T: Read>(buffer: &mut T, file_size_flag: FileSizeFlag) -> PDUResult<Self::PDUType>;
+}
+
+pub trait SegmentEncode {
+    type PDUType;
+    fn encode(self) -> Vec<u8>;
+    fn decode<T: Read>(
+        buffer: &mut T,
+        segmentation_flag: SegmentedData,
+        file_size_flag: FileSizeFlag,
+    ) -> PDUResult<Self::PDUType>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -232,13 +247,13 @@ pub fn read_length_value_pair<T: Read>(buffer: &mut T) -> PDUResult<Vec<u8>> {
     Ok(vector)
 }
 
-pub fn read_type<T: Read>(buffer: &mut T) -> PDUResult<MessageType> {
+pub fn read_type<T: Read>(buffer: &mut T) -> PDUResult<u8> {
     let mut u8_buff = [0u8];
     buffer.read_exact(&mut u8_buff)?;
-    MessageType::from_u8(u8_buff[0]).ok_or(PDUError::MessageType(u8_buff[0]))
+    Ok(u8_buff[0])
 }
 
-pub fn read_type_length_value<T: Read>(buffer: &mut T) -> PDUResult<(MessageType, Vec<u8>)> {
+pub fn read_type_length_value<T: Read>(buffer: &mut T) -> PDUResult<(u8, Vec<u8>)> {
     let message_type = read_type(buffer)?;
     let vector = read_length_value_pair(buffer)?;
 
@@ -249,7 +264,7 @@ pub fn read_type_length_value<T: Read>(buffer: &mut T) -> PDUResult<(MessageType
 mod test {
     use super::*;
 
-    use num_traits::ToPrimitive;
+    use num_traits::FromPrimitive;
     use rstest::rstest;
 
     #[rstest]
@@ -285,12 +300,12 @@ mod test {
         )]
         input_message: &str,
     ) {
-        let mut buffer: Vec<u8> = vec![message_type.to_u8().unwrap()];
+        let mut buffer: Vec<u8> = vec![message_type as u8];
         buffer.push(input_message.as_bytes().len() as u8);
         buffer.extend_from_slice(input_message.as_bytes());
         let mut input_buffer = &buffer[..];
-        let recovered = read_type_length_value(&mut input_buffer).unwrap();
-        assert_eq!(message_type, recovered.0);
-        assert_eq!(input_message.as_bytes(), recovered.1)
+        let (msg_type, message) = read_type_length_value(&mut input_buffer).unwrap();
+        assert_eq!(message_type, MessageType::from_u8(msg_type).unwrap());
+        assert_eq!(input_message.as_bytes(), message)
     }
 }

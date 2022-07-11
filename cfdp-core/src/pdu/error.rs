@@ -1,14 +1,15 @@
 use std::fmt;
 
-use super::{filestore::FilestoreAction, header::MessageType};
+use super::filestore::FilestoreAction;
 
 #[derive(Debug)]
 pub enum PDUError {
     MessageType(u8),
-    UnexpectedMessage(MessageType, MessageType),
+    UnexpectedMessage(String, String),
     UnexpectedIdentifier(Vec<u8>, Vec<u8>),
     InvalidCondition(u8),
     InvalidDirection(u8),
+    InvalidDirective(u8),
     InvalidDeliveryCode(u8),
     InvalidFileStatus(u8),
     InvalidTraceControl(u8),
@@ -18,6 +19,8 @@ pub enum PDUError {
     InvalidFilestoreAction(u8),
     InvalidFilestoreStatus(u8, FilestoreAction),
     InvalidFaultHandlerCode(u8),
+    InvalidACKDirectiveSubType(u8),
+    InvalidPrompt(u8),
     ReadError(std::io::Error),
 }
 impl fmt::Display for PDUError {
@@ -37,6 +40,7 @@ impl fmt::Display for PDUError {
                 m1, m2
             ),
             &Self::InvalidCondition(val) => write!(f, "Invalid Condition value: {:}.", val),
+            &Self::InvalidDirective(val) => write!(f, "Invalid Directive value: {:}.", val),
             &Self::InvalidDirection(val) => write!(f, "Invalid Direction value: {:}.", val),
             &Self::InvalidDeliveryCode(val) => write!(f, "Invalid Delivery Code: {:}.", val),
             &Self::InvalidFileStatus(val) => write!(f, "Invalid File Status: {:}.", val),
@@ -59,6 +63,11 @@ impl fmt::Display for PDUError {
             &Self::InvalidFaultHandlerCode(val) => {
                 write!(f, "Invalid Fault Handler Code: {:}.", val)
             }
+
+            Self::InvalidACKDirectiveSubType(val) => {
+                write!(f, "Invalid ACK SubDirective Code: {:}.", val)
+            }
+            Self::InvalidPrompt(val) => write!(f, "Invalid Prompt value {:}.", val),
             Self::ReadError(source) => write!(f, "Error Reading PDU Buffer. {:}", source),
         }
     }
@@ -71,6 +80,7 @@ impl std::error::Error for PDUError {
             Self::UnexpectedIdentifier(_, _) => None,
             Self::InvalidCondition(_) => None,
             Self::InvalidDirection(_) => None,
+            Self::InvalidDirective(_) => None,
             Self::InvalidDeliveryCode(_) => None,
             Self::InvalidFileStatus(_) => None,
             Self::InvalidTraceControl(_) => None,
@@ -80,6 +90,8 @@ impl std::error::Error for PDUError {
             Self::InvalidFilestoreAction(_) => None,
             Self::InvalidFilestoreStatus(_, _) => None,
             Self::InvalidFaultHandlerCode(_) => None,
+            Self::InvalidACKDirectiveSubType(_) => None,
+            Self::InvalidPrompt(_) => None,
             Self::ReadError(source) => Some(source),
         }
     }

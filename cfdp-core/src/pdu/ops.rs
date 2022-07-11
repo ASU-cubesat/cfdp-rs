@@ -1,4 +1,9 @@
+use std::io::Read;
+
+use crate::{read_length_value_pair, PDUEncode};
+
 use super::{
+    error::PDUResult,
     filestore::FilestoreResponse,
     header::{
         Condition, DeliveryCode, FileSizeSensitive, FileStatusCode, NakOrKeepAlive, PDUDirective,
@@ -84,12 +89,50 @@ pub struct KeepAlivePDU {
     pub value: FileSizeSensitive,
 }
 
+pub struct EntityID {
+    id: Vec<u8>,
+}
+impl PDUEncode for EntityID {
+    type PDUType = Self;
+
+    fn encode(self) -> Vec<u8> {
+        let mut buffer = vec![self.id.len() as u8 - 1_u8];
+        buffer.extend(self.id);
+        buffer
+    }
+
+    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
+        let mut u8_buff = [0u8; 1];
+        buffer.read_exact(&mut u8_buff)?;
+        let length = u8_buff[0] + 1;
+        let mut id = vec![0u8; length as usize];
+        buffer.read_exact(id.as_mut_slice())?;
+        Ok(Self { id })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FlowLabel {
+    pub value: Vec<u8>,
+}
+impl PDUEncode for FlowLabel {
+    type PDUType = Self;
+    fn encode(self) -> Vec<u8> {
+        let mut buffer = vec![self.value.len() as u8];
+        buffer.extend(self.value);
+        buffer
+    }
+    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
+        let value = read_length_value_pair(buffer)?;
+        Ok(Self { value })
+    }
+}
 pub struct EndOfFile {
     pub directive: PDUDirective,
     pub condition_code: Condition,
     pub checksum: u32,
     pub filesize: FileSizeSensitive,
-    pub fault_location: Vec<u8>,
+    pub fault_location: Vec<EntityID>,
 }
 
 pub struct Finished {
@@ -98,7 +141,7 @@ pub struct Finished {
     pub delivery_code: DeliveryCode,
     pub file_status: FileStatusCode,
     pub filestore_response: Vec<FilestoreResponse>,
-    pub fault_location: Vec<u8>,
+    pub fault_location: Vec<EntityID>,
 }
 
 pub struct PositiveAcknowledgePDU {

@@ -1,8 +1,8 @@
 use super::{
     filestore::FilestoreResponse,
     header::{
-        Condition, DeliveryCode, FieldCode, FileSizeSensitive, FileStatusCode, NakOrKeepAlive,
-        PDUDirective, TransactionStatus,
+        Condition, DeliveryCode, FileSizeSensitive, FileStatusCode, NakOrKeepAlive, PDUDirective,
+        TransactionStatus,
     },
 };
 

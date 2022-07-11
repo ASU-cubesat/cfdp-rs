@@ -99,12 +99,24 @@ impl PDUEncode for UserOperation {
             Self::ProxyPutRequest(msg) => msg.to_bytes(),
             Self::ProxyPutResponse(msg) => msg.to_bytes(),
             Self::ProxyMessageToUser(msg) => msg.encode(),
-            Self::ProxyFilestoreRequest(msg) => msg.encode(),
+            Self::ProxyFilestoreRequest(msg) => {
+                let mut bytes = msg.encode();
+                bytes.insert(0, bytes.len() as u8);
+                bytes
+            }
+            Self::ProxyFilestoreResponse(msg) => {
+                let mut bytes = msg.encode();
+                bytes.insert(0, bytes.len() as u8);
+                bytes
+            }
             Self::ProxyFaultHandlerOverride(msg) => msg.encode(),
             Self::ProxyTransmissionMode(msg) => msg.to_bytes(),
-            Self::ProxyFlowLabel(msg) => msg.to_bytes(),
+            Self::ProxyFlowLabel(msg) => {
+                let mut bytes = msg.to_bytes();
+                bytes.insert(0, bytes.len() as u8);
+                bytes
+            }
             Self::ProxySegmentationControl(msg) => msg.to_bytes(),
-            Self::ProxyFilestoreResponse(msg) => msg.encode(),
             Self::ProxyPutCancel => vec![],
             Self::DirectoryListingRequest(msg) => msg.to_bytes(),
             Self::DirectoryListingResponse(msg) => msg.to_bytes(),
@@ -118,8 +130,16 @@ impl PDUEncode for UserOperation {
             Self::SFOMessageToUser(msg) => msg.encode(),
             Self::SFOFlowLabel(msg) => msg.to_bytes(),
             Self::SFOFaultHandlerOverride(msg) => msg.encode(),
-            Self::SFOFilestoreRequest(msg) => msg.encode(),
-            Self::SFOFilestoreResponse(msg) => msg.encode(),
+            Self::SFOFilestoreRequest(msg) => {
+                let mut bytes = msg.encode();
+                bytes.insert(0, bytes.len() as u8);
+                bytes
+            }
+            Self::SFOFilestoreResponse(msg) => {
+                let mut bytes = msg.encode();
+                bytes.insert(0, bytes.len() as u8);
+                bytes
+            }
             Self::SFOReport(msg) => msg.to_bytes(),
         };
         buffer.extend(message_buffer);
@@ -146,19 +166,32 @@ impl PDUEncode for UserOperation {
             MessageType::ProxyMessageToUser => {
                 Ok(Self::ProxyMessageToUser(MessageToUser::decode(buffer)?))
             }
-            MessageType::ProxyFilestoreRequest => Ok(Self::ProxyFilestoreRequest(
-                FilestoreRequest::decode(buffer)?,
-            )),
-            MessageType::ProxyFilestoreResponse => Ok(Self::ProxyFilestoreResponse(
-                FilestoreResponse::decode(buffer)?,
-            )),
+            MessageType::ProxyFilestoreRequest => {
+                let mut u8_buff = [0u8];
+                buffer.read_exact(&mut u8_buff)?;
+                Ok(Self::ProxyFilestoreRequest(FilestoreRequest::decode(
+                    buffer,
+                )?))
+            }
+            MessageType::ProxyFilestoreResponse => {
+                let mut u8_buff = [0u8];
+                buffer.read_exact(&mut u8_buff)?;
+                Ok(Self::ProxyFilestoreResponse(FilestoreResponse::decode(
+                    buffer,
+                )?))
+            }
+
             MessageType::ProxyFaultHandlerOverride => Ok(Self::ProxyFaultHandlerOverride(
                 FaultHandlerOverride::decode(buffer)?,
             )),
             MessageType::ProxyTransmissionMode => Ok(Self::ProxyTransmissionMode(
                 ProxyTransmissionMode::parse(buffer)?,
             )),
-            MessageType::ProxyFlowLabel => Ok(Self::ProxyFlowLabel(ProxyFlowLabel::parse(buffer)?)),
+            MessageType::ProxyFlowLabel => {
+                let mut u8_buff = [0u8];
+                buffer.read_exact(&mut u8_buff)?;
+                Ok(Self::ProxyFlowLabel(ProxyFlowLabel::parse(buffer)?))
+            }
             MessageType::ProxySegmentationControl => Ok(Self::ProxySegmentationControl(
                 ProxySegmentationControl::parse(buffer)?,
             )),
@@ -205,12 +238,18 @@ impl PDUEncode for UserOperation {
                 FaultHandlerOverride::decode(buffer)?,
             )),
             MessageType::SFOFilestoreRequest => {
+                let mut u8_buff = [0u8];
+                buffer.read_exact(&mut u8_buff)?;
                 Ok(Self::SFOFilestoreRequest(FilestoreRequest::decode(buffer)?))
             }
             MessageType::SFOReport => Ok(Self::SFOReport(SFOReport::parse(buffer)?)),
-            MessageType::SFOFilestoreResponse => Ok(Self::SFOFilestoreResponse(
-                FilestoreResponse::decode(buffer)?,
-            )),
+            MessageType::SFOFilestoreResponse => {
+                let mut u8_buff = [0u8];
+                buffer.read_exact(&mut u8_buff)?;
+                Ok(Self::SFOFilestoreResponse(FilestoreResponse::decode(
+                    buffer,
+                )?))
+            }
         }
     }
 }

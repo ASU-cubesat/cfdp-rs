@@ -153,23 +153,36 @@ mod test {
     }
 
     #[rstest]
-    fn pdu_encoding(
-        #[values(CRCFlag::NotPresent, CRCFlag::Present)] crc_flag: CRCFlag,
-    ) -> PDUResult<()> {
-        let payload: PDUPayload = PDUPayload::Directive(Operations::EoF(EndOfFile {
+    #[case(
+        PDUPayload::Directive(Operations::EoF(EndOfFile {
             condition: Condition::NoError,
             checksum: 123749_u32,
             file_size: FileSizeSensitive::Large(7738949_u64),
             fault_location: None,
-        }));
+        }))
+    )]
+    #[case(
+        PDUPayload::FileData(FileDataPDU::Unsegmented(UnsegmentedFileData{
+            offset: FileSizeSensitive::Large(16_u64),
+            file_data: "test some information".as_bytes().to_vec(),
+        }))
+    )]
+    fn pdu_encoding(
+        #[case] payload: PDUPayload,
+        #[values(CRCFlag::NotPresent, CRCFlag::Present)] crc_flag: CRCFlag,
+    ) -> PDUResult<()> {
         let pdu_data_field_length = match &crc_flag {
             CRCFlag::NotPresent => payload.clone().encode().len() as u16,
             CRCFlag::Present => payload.clone().encode().len() as u16 + 2_u16,
         };
+        let pdu_type = match &payload {
+            PDUPayload::Directive(_) => PDUType::FileDirective,
+            PDUPayload::FileData(_) => PDUType::FileData,
+        };
         let expected: PDU = PDU {
             header: PDUHeader {
                 version: U3::One,
-                pdu_type: PDUType::FileDirective,
+                pdu_type,
                 direction: Direction::ToReceiver,
                 transmission_mode: TransmissionMode::Acknowledged,
                 crc_flag,

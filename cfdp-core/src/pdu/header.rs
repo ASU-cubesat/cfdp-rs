@@ -1,4 +1,4 @@
-use num_derive::{FromPrimitive, ToPrimitive};
+use num_derive::FromPrimitive;
 use std::io::Read;
 
 use super::error::PDUResult;
@@ -34,7 +34,7 @@ impl FileSizeSensitive {
 }
 
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum Condition {
     NoError = 0b0000,
     PositiveLimitReached = 0b0001,
@@ -53,7 +53,7 @@ pub enum Condition {
 }
 
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum U3 {
     Zero = 0b000,
     One = 0b001,
@@ -66,28 +66,28 @@ pub enum U3 {
 }
 
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum PDUType {
     FileDirective = 0,
     FileData = 1,
 }
 
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum Direction {
     ToReceiver = 0,
     ToSender = 1,
 }
 
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum TransmissionMode {
     Acknowledged = 0,
     Unacknowledged = 1,
 }
 
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum TraceControl {
     NoTrace = 0x0,
     SourceOnly = 0x1,
@@ -96,49 +96,49 @@ pub enum TraceControl {
 }
 
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum CRCFlag {
     NotPresent = 0,
     Present = 1,
 }
 
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum FileSizeFlag {
     Small = 0,
     Large = 1,
 }
 
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum SegmentationControl {
     NotPreserved = 0,
     Preserved = 1,
 }
 
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum SegmentedData {
     NotPresent = 0,
     Present = 1,
 }
 
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum NakOrKeepAlive {
     Nak = 0,
     KeepAlive = 1,
 }
 
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum DeliveryCode {
     Complete = 0,
     Incomplete = 1,
 }
 
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum FileStatusCode {
     Discarded = 0b00,
     FilestoreRejection = 0b01,
@@ -147,7 +147,7 @@ pub enum FileStatusCode {
 }
 
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum TransactionStatus {
     Undefined = 0b00,
     Active = 0b01,
@@ -156,7 +156,7 @@ pub enum TransactionStatus {
 }
 
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ToPrimitive, FromPrimitive)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum MessageType {
     ProxyPutRequest = 0x00,
     ProxyMessageToUser = 0x01,
@@ -219,9 +219,7 @@ pub struct PDUHeader {
     large_file_flag: FileSizeFlag,
     pdu_data_field_length: u16,
     segmentation_control: SegmentationControl,
-    entity_ids_length: U3,
     segment_metadata_flag: SegmentedData,
-    transaction_sequence_number_length: U3,
     source_entity_id: Vec<u8>,
     transaction_sequence_number: Vec<u8>,
     destination_entity_id: Vec<u8>,

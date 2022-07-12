@@ -1,6 +1,6 @@
 use std::io::Read;
 
-use num_traits::{FromPrimitive, ToPrimitive};
+use num_traits::FromPrimitive;
 
 use super::{
     error::{PDUError, PDUResult},
@@ -84,7 +84,7 @@ impl PDUEncode for UserOperation {
     type PDUType = Self;
     fn encode(self) -> Vec<u8> {
         let mut buffer: Vec<u8> = USER_OPS_IDENTIFIER.to_vec();
-        buffer.push(self.get_message_type().to_u8().unwrap());
+        buffer.push(self.get_message_type() as u8);
         let message_buffer = match self {
             Self::OriginatingTransactionIDMessage(msg) => msg.encode(),
             Self::ProxyPutRequest(msg) => msg.encode(),
@@ -911,10 +911,10 @@ impl PDUEncode for SFOReport {
         buffer.extend(self.reporting_entity_id);
         buffer.push(self.prior_waypoints);
         buffer.push(self.report_code);
-        let last_byte: u8 = self.condition.to_u8().unwrap() << 4
-            | self.direction.to_u8().unwrap() << 3
-            | self.delivery_code.to_u8().unwrap() << 2
-            | self.file_status.to_u8().unwrap();
+        let last_byte: u8 = ((self.condition as u8) << 4)
+            | ((self.direction as u8) << 3)
+            | ((self.delivery_code as u8) << 2)
+            | (self.file_status as u8);
         buffer.push(last_byte);
         buffer
     }

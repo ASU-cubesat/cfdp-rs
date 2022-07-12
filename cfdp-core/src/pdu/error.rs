@@ -21,6 +21,11 @@ pub enum PDUError {
     InvalidFaultHandlerCode(u8),
     InvalidACKDirectiveSubType(u8),
     InvalidPrompt(u8),
+    InvalidVersion(u8),
+    InvalidPDUType(u8),
+    InvalidCRCFlag(u8),
+    InvalidFileSizeFlag(u8),
+    InvalidSegmentMetadataFlag(u8),
     ReadError(std::io::Error),
 }
 impl fmt::Display for PDUError {
@@ -68,6 +73,15 @@ impl fmt::Display for PDUError {
                 write!(f, "Invalid ACK SubDirective Code: {:}.", val)
             }
             Self::InvalidPrompt(val) => write!(f, "Invalid Prompt value {:}.", val),
+            Self::InvalidVersion(val) => {
+                write!(f, "Invalid CCSDS Version Code: {:}.", val)
+            }
+            Self::InvalidPDUType(val) => write!(f, "Invalid PDU Type {:}.", val),
+            Self::InvalidCRCFlag(val) => write!(f, "Invalid CRC Flag {:}.", val),
+            Self::InvalidFileSizeFlag(val) => write!(f, "Invalid File Size Flag {:}.", val),
+            Self::InvalidSegmentMetadataFlag(val) => {
+                write!(f, "Invalid Segment Metadata Flag {:}.", val)
+            }
             Self::ReadError(source) => write!(f, "Error Reading PDU Buffer. {:}", source),
         }
     }
@@ -92,6 +106,11 @@ impl std::error::Error for PDUError {
             Self::InvalidFaultHandlerCode(_) => None,
             Self::InvalidACKDirectiveSubType(_) => None,
             Self::InvalidPrompt(_) => None,
+            Self::InvalidVersion(_) => None,
+            Self::InvalidPDUType(_) => None,
+            Self::InvalidCRCFlag(_) => None,
+            Self::InvalidFileSizeFlag(_) => None,
+            Self::InvalidSegmentMetadataFlag(_) => None,
             Self::ReadError(source) => Some(source),
         }
     }

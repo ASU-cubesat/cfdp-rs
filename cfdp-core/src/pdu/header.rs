@@ -1,7 +1,9 @@
 use num_derive::FromPrimitive;
+use num_traits::FromPrimitive;
+
 use std::io::Read;
 
-use super::error::PDUResult;
+use super::error::{PDUError, PDUResult};
 
 #[repr(u8)]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -224,17 +226,124 @@ pub struct PDUHeader {
     transaction_sequence_number: Vec<u8>,
     destination_entity_id: Vec<u8>,
 }
-// impl PDUEncode for PDUHeader {
-//     type PDUType = Self;
-//     fn encode(self) -> Vec<u8> {
-//         let mut buffer = Vec::<u8>::new();
-//         buffer
-//     }
+impl PDUEncode for PDUHeader {
+    type PDUType = Self;
 
-//     fn decode<T: Read>(buffer: &mut T) -> PDUResult<PDUType> {
-//         Ok(Self {})
-//     }
-// }
+    fn encode(self) -> Vec<u8> {
+        let first_byte = ((self.version as u8) << 5)
+            | ((self.pdu_type as u8) << 4)
+            | ((self.direction as u8) << 3)
+            | ((self.transmission_mode as u8) << 2)
+            | ((self.crc_flag as u8) << 1)
+            | self.large_file_flag as u8;
+        let mut buffer = vec![first_byte];
+        buffer.extend(self.pdu_data_field_length.to_be_bytes());
+        buffer.push(
+            ((self.segmentation_control as u8) << 7)
+                | ((self.source_entity_id.len() as u8 - 1) << 4)
+                | ((self.segment_metadata_flag as u8) << 3)
+                | (self.transaction_sequence_number.len() as u8 - 1),
+        );
+        buffer.extend(self.source_entity_id);
+        buffer.extend(self.transaction_sequence_number);
+        buffer.extend(self.destination_entity_id);
+        buffer
+    }
+
+    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
+        let mut u8_buff = [0_u8; 1];
+        buffer.read_exact(&mut u8_buff)?;
+
+        let version = {
+            let possible = (u8_buff[0] & 0xE0) >> 5;
+            U3::from_u8(possible).ok_or(PDUError::InvalidVersion(possible))?
+        };
+
+        let pdu_type = {
+            let possible = (u8_buff[0] & 0x10) >> 4;
+            PDUType::from_u8(possible).ok_or(PDUError::InvalidVersion(possible))?
+        };
+
+        let direction = {
+            let possible = (u8_buff[0] & 0x8) >> 3;
+            Direction::from_u8(possible).ok_or(PDUError::InvalidDirection(possible))?
+        };
+
+        let transmission_mode = {
+            let possible = (u8_buff[0] & 0x4) >> 2;
+            TransmissionMode::from_u8(possible)
+                .ok_or(PDUError::InvalidTransmissionMode(possible))?
+        };
+
+        let crc_flag = {
+            let possible = (u8_buff[0] & 0x2) >> 1;
+            CRCFlag::from_u8(possible).ok_or(PDUError::InvalidTransmissionMode(possible))?
+        };
+
+        let large_file_flag = {
+            let possible = u8_buff[0] & 0x1;
+            FileSizeFlag::from_u8(possible).ok_or(PDUError::InvalidFileSizeFlag(possible))?
+        };
+
+        let pdu_data_field_length = {
+            let mut u16_buff = [0_u8; 2];
+            buffer.read_exact(&mut u16_buff)?;
+            u16::from_be_bytes(u16_buff)
+        };
+
+        buffer.read_exact(&mut u8_buff)?;
+
+        let segmentation_control = {
+            let possible = (u8_buff[0] & 0x80) >> 7;
+            SegmentationControl::from_u8(possible)
+                .ok_or(PDUError::InvalidSegmentControl(possible))?
+        };
+
+        let segment_metadata_flag = {
+            let possible = (u8_buff[0] & 8) >> 3;
+            SegmentedData::from_u8(possible)
+                .ok_or(PDUError::InvalidSegmentMetadataFlag(possible))?
+        };
+
+        // CCSDS defines the lengths to be encoded as length - 1.
+        // add one back to get actual value.
+        let entity_id_length = ((u8_buff[0] & 0x70) >> 4) + 1;
+        let transaction_sequence_length = (u8_buff[0] & 0x7) + 1;
+
+        let source_entity_id = {
+            let mut buff = vec![0_u8; entity_id_length as usize];
+            buffer.read_exact(buff.as_mut_slice())?;
+            buff.to_vec()
+        };
+
+        let transaction_sequence_number = {
+            let mut buff = vec![0_u8; transaction_sequence_length as usize];
+            buffer.read_exact(buff.as_mut_slice())?;
+            buff.to_vec()
+        };
+
+        let destination_entity_id = {
+            let mut buff = vec![0_u8; entity_id_length as usize];
+            buffer.read_exact(buff.as_mut_slice())?;
+            buff.to_vec()
+        };
+
+        Ok(Self {
+            version,
+            pdu_type,
+            direction,
+            transmission_mode,
+            crc_flag,
+            large_file_flag,
+            pdu_data_field_length,
+            segmentation_control,
+            segment_metadata_flag,
+            source_entity_id,
+            transaction_sequence_number,
+            destination_entity_id,
+        })
+    }
+}
 
 pub fn read_length_value_pair<T: Read>(buffer: &mut T) -> PDUResult<Vec<u8>> {
     let mut u8_buff = [0u8; 1];
@@ -260,6 +369,8 @@ pub fn read_type_length_value<T: Read>(buffer: &mut T) -> PDUResult<(u8, Vec<u8>
 
 #[cfg(test)]
 mod test {
+    #![allow(clippy::too_many_arguments)]
+
     use super::*;
 
     use num_traits::FromPrimitive;
@@ -305,5 +416,47 @@ mod test {
         let (msg_type, message) = read_type_length_value(&mut input_buffer).unwrap();
         assert_eq!(message_type, MessageType::from_u8(msg_type).unwrap());
         assert_eq!(input_message.as_bytes(), message)
+    }
+
+    #[rstest]
+    #[case(12_u16, u16::MAX.to_be_bytes().to_vec(), 1485_u16.to_be_bytes().to_vec(), 22_u16.to_be_bytes().to_vec())]
+    #[case(8745_u16, u32::MAX.to_be_bytes().to_vec(), 88654_u32.to_be_bytes().to_vec(), 76_u32.to_be_bytes().to_vec())]
+    #[case(65531_u16, u64::MAX.to_be_bytes().to_vec(), 5673452001_u64.to_be_bytes().to_vec(), 5_u64.to_be_bytes().to_vec())]
+    fn pdu_header(
+        #[values(U3::Zero, U3::One, U3::Seven)] version: U3,
+        #[values(PDUType::FileDirective, PDUType::FileData)] pdu_type: PDUType,
+        #[values(Direction::ToReceiver, Direction::ToSender)] direction: Direction,
+        #[values(TransmissionMode::Acknowledged, TransmissionMode::Unacknowledged)]
+        transmission_mode: TransmissionMode,
+        #[values(CRCFlag::NotPresent, CRCFlag::Present)] crc_flag: CRCFlag,
+        #[values(FileSizeFlag::Small, FileSizeFlag::Large)] large_file_flag: FileSizeFlag,
+        #[values(SegmentationControl::NotPreserved, SegmentationControl::Preserved)]
+        segmentation_control: SegmentationControl,
+        #[values(SegmentedData::NotPresent, SegmentedData::Present)]
+        segment_metadata_flag: SegmentedData,
+        #[case] pdu_data_field_length: u16,
+        #[case] source_entity_id: Vec<u8>,
+        #[case] transaction_sequence_number: Vec<u8>,
+        #[case] destination_entity_id: Vec<u8>,
+    ) -> PDUResult<()> {
+        let expected = PDUHeader {
+            version,
+            pdu_type,
+            direction,
+            transmission_mode,
+            crc_flag,
+            large_file_flag,
+            pdu_data_field_length,
+            segmentation_control,
+            segment_metadata_flag,
+            source_entity_id,
+            transaction_sequence_number,
+            destination_entity_id,
+        };
+        let buffer = expected.clone().encode();
+        let recovered = PDUHeader::decode(&mut buffer.as_slice())?;
+
+        assert_eq!(expected, recovered);
+        Ok(())
     }
 }

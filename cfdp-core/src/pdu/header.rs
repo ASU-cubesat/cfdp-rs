@@ -213,18 +213,18 @@ pub trait SegmentEncode {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PDUHeader {
-    version: U3,
-    pdu_type: PDUType,
-    direction: Direction,
-    transmission_mode: TransmissionMode,
-    crc_flag: CRCFlag,
-    large_file_flag: FileSizeFlag,
-    pdu_data_field_length: u16,
-    segmentation_control: SegmentationControl,
-    segment_metadata_flag: SegmentedData,
-    source_entity_id: Vec<u8>,
-    transaction_sequence_number: Vec<u8>,
-    destination_entity_id: Vec<u8>,
+    pub version: U3,
+    pub pdu_type: PDUType,
+    pub direction: Direction,
+    pub transmission_mode: TransmissionMode,
+    pub crc_flag: CRCFlag,
+    pub large_file_flag: FileSizeFlag,
+    pub pdu_data_field_length: u16,
+    pub segmentation_control: SegmentationControl,
+    pub segment_metadata_flag: SegmentedData,
+    pub source_entity_id: Vec<u8>,
+    pub transaction_sequence_number: Vec<u8>,
+    pub destination_entity_id: Vec<u8>,
 }
 impl PDUEncode for PDUHeader {
     type PDUType = Self;

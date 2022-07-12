@@ -26,6 +26,7 @@ pub enum PDUError {
     InvalidCRCFlag(u8),
     InvalidFileSizeFlag(u8),
     InvalidSegmentMetadataFlag(u8),
+    CRCFailure(u16, u16),
     ReadError(std::io::Error),
 }
 impl fmt::Display for PDUError {
@@ -82,6 +83,10 @@ impl fmt::Display for PDUError {
             Self::InvalidSegmentMetadataFlag(val) => {
                 write!(f, "Invalid Segment Metadata Flag {:}.", val)
             }
+            Self::CRCFailure(expected, received) => write!(
+                f,
+                "CRC Failure on PDU. Expected 0x{expected:X} Receieved 0x{received:X}"
+            ),
             Self::ReadError(source) => write!(f, "Error Reading PDU Buffer. {:}", source),
         }
     }
@@ -111,6 +116,7 @@ impl std::error::Error for PDUError {
             Self::InvalidCRCFlag(_) => None,
             Self::InvalidFileSizeFlag(_) => None,
             Self::InvalidSegmentMetadataFlag(_) => None,
+            Self::CRCFailure(_, _) => None,
             Self::ReadError(source) => Some(source),
         }
     }

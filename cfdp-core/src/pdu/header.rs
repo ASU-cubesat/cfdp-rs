@@ -423,22 +423,23 @@ mod test {
     #[case(8745_u16, u32::MAX.to_be_bytes().to_vec(), 88654_u32.to_be_bytes().to_vec(), 76_u32.to_be_bytes().to_vec())]
     #[case(65531_u16, u64::MAX.to_be_bytes().to_vec(), 5673452001_u64.to_be_bytes().to_vec(), 5_u64.to_be_bytes().to_vec())]
     fn pdu_header(
-        #[values(U3::Zero, U3::One, U3::Seven)] version: U3,
+        #[values(U3::One, U3::Seven)] version: U3,
         #[values(PDUType::FileDirective, PDUType::FileData)] pdu_type: PDUType,
         #[values(Direction::ToReceiver, Direction::ToSender)] direction: Direction,
         #[values(TransmissionMode::Acknowledged, TransmissionMode::Unacknowledged)]
         transmission_mode: TransmissionMode,
         #[values(CRCFlag::NotPresent, CRCFlag::Present)] crc_flag: CRCFlag,
         #[values(FileSizeFlag::Small, FileSizeFlag::Large)] large_file_flag: FileSizeFlag,
-        #[values(SegmentationControl::NotPreserved, SegmentationControl::Preserved)]
-        segmentation_control: SegmentationControl,
-        #[values(SegmentedData::NotPresent, SegmentedData::Present)]
-        segment_metadata_flag: SegmentedData,
         #[case] pdu_data_field_length: u16,
         #[case] source_entity_id: Vec<u8>,
         #[case] transaction_sequence_number: Vec<u8>,
         #[case] destination_entity_id: Vec<u8>,
     ) -> PDUResult<()> {
+        let (segmentation_control, segment_metadata_flag) = match &pdu_type {
+            PDUType::FileData => (SegmentationControl::Preserved, SegmentedData::Present),
+            PDUType::FileDirective => (SegmentationControl::NotPreserved, SegmentedData::Present),
+        };
+
         let expected = PDUHeader {
             version,
             pdu_type,

@@ -913,13 +913,7 @@ mod test {
             Condition::FilestoreRejection,
             Condition::FileChecksumFailure,
             Condition::FilesizeError,
-            Condition::NakLimitReached,
-            Condition::InactivityDetected,
-            Condition::InvalidFileStructure,
-            Condition::CheckLimitReached,
-            Condition::UnsupportedChecksumType,
-            Condition::SuspendReceived,
-            Condition::CancelReceived
+            Condition::NakLimitReached
         )]
         condition: Condition,
         #[values(
@@ -1014,13 +1008,6 @@ mod test {
         )]
         file_status: FileStatusCode,
         #[values(
-            Condition::PositiveLimitReached,
-            Condition::KeepAliveLimitReached,
-            Condition::InvalidTransmissionMode,
-            Condition::FilestoreRejection,
-            Condition::FileChecksumFailure,
-            Condition::FilesizeError,
-            Condition::NakLimitReached,
             Condition::InactivityDetected,
             Condition::InvalidFileStructure,
             Condition::CheckLimitReached,
@@ -1081,18 +1068,9 @@ mod test {
         #[case] directive_subtype_code: ACKSubDirective,
         #[values(
             Condition::NoError,
-            Condition::PositiveLimitReached,
-            Condition::KeepAliveLimitReached,
             Condition::InvalidTransmissionMode,
             Condition::FilestoreRejection,
             Condition::FileChecksumFailure,
-            Condition::FilesizeError,
-            Condition::NakLimitReached,
-            Condition::InactivityDetected,
-            Condition::InvalidFileStructure,
-            Condition::CheckLimitReached,
-            Condition::UnsupportedChecksumType,
-            Condition::SuspendReceived,
             Condition::CancelReceived
         )]
         condition: Condition,

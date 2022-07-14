@@ -3,15 +3,14 @@ use std::{fmt::Display, io::Read};
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 
-use crate::read_length_value_pair;
-
 use super::{
     error::{PDUError, PDUResult},
     fault_handler::FaultHandlerOverride,
-    filestore::{FilestoreRequest, FilestoreResponse},
+    filestore::{FileStoreRequest, FileStoreResponse},
     header::{
-        Condition, DeliveryCode, FSSEncode, FileSizeFlag, FileSizeSensitive, FileStatusCode,
-        NakOrKeepAlive, PDUEncode, SegmentEncode, SegmentedData, TransactionStatus,
+        read_length_value_pair, Condition, DeliveryCode, FSSEncode, FileSizeFlag,
+        FileSizeSensitive, FileStatusCode, NakOrKeepAlive, PDUEncode, SegmentEncode, SegmentedData,
+        TransactionStatus,
     },
 };
 
@@ -77,8 +76,8 @@ impl PDUEncode for MessageToUser {
 #[repr(u8)]
 #[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum MetadataTLVFieldCode {
-    FilestoreRequest = 0x00,
-    FilestoreResponse = 0x01,
+    FileStoreRequest = 0x00,
+    FileStoreResponse = 0x01,
     MessageToUser = 0x02,
     FaultHandlerOverride = 0x04,
     FlowLabel = 0x05,
@@ -92,8 +91,8 @@ impl Display for MetadataTLVFieldCode {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MetadataTLV {
-    FilestoreRequest(FilestoreRequest),
-    FilestoreResponse(FilestoreResponse),
+    FileStoreRequest(FileStoreRequest),
+    FileStoreResponse(FileStoreResponse),
     MessageToUser(MessageToUser),
     FaultHandlerOverride(FaultHandlerOverride),
     FlowLabel(FlowLabel),
@@ -102,8 +101,8 @@ pub enum MetadataTLV {
 impl MetadataTLV {
     pub fn get_field_code(&self) -> MetadataTLVFieldCode {
         match self {
-            Self::FilestoreRequest(_) => MetadataTLVFieldCode::FilestoreRequest,
-            Self::FilestoreResponse(_) => MetadataTLVFieldCode::FilestoreResponse,
+            Self::FileStoreRequest(_) => MetadataTLVFieldCode::FileStoreRequest,
+            Self::FileStoreResponse(_) => MetadataTLVFieldCode::FileStoreResponse,
             Self::MessageToUser(_) => MetadataTLVFieldCode::MessageToUser,
             Self::FaultHandlerOverride(_) => MetadataTLVFieldCode::FaultHandlerOverride,
             Self::FlowLabel(_) => MetadataTLVFieldCode::FlowLabel,
@@ -117,8 +116,8 @@ impl PDUEncode for MetadataTLV {
     fn encode(self) -> Vec<u8> {
         let mut buffer: Vec<u8> = vec![self.get_field_code() as u8];
         let message_buffer = match self {
-            Self::FilestoreRequest(msg) => msg.encode(),
-            Self::FilestoreResponse(msg) => msg.encode(),
+            Self::FileStoreRequest(msg) => msg.encode(),
+            Self::FileStoreResponse(msg) => msg.encode(),
             Self::MessageToUser(msg) => msg.encode(),
             Self::FaultHandlerOverride(msg) => msg.encode(),
             Self::FlowLabel(msg) => msg.encode(),
@@ -132,11 +131,11 @@ impl PDUEncode for MetadataTLV {
         let mut u8_buff = [0u8];
         buffer.read_exact(&mut u8_buff)?;
         match MetadataTLVFieldCode::from_u8(u8_buff[0]).ok_or(PDUError::MessageType(u8_buff[0]))? {
-            MetadataTLVFieldCode::FilestoreRequest => {
-                Ok(Self::FilestoreRequest(FilestoreRequest::decode(buffer)?))
+            MetadataTLVFieldCode::FileStoreRequest => {
+                Ok(Self::FileStoreRequest(FileStoreRequest::decode(buffer)?))
             }
-            MetadataTLVFieldCode::FilestoreResponse => {
-                Ok(Self::FilestoreResponse(FilestoreResponse::decode(buffer)?))
+            MetadataTLVFieldCode::FileStoreResponse => {
+                Ok(Self::FileStoreResponse(FileStoreResponse::decode(buffer)?))
             }
             MetadataTLVFieldCode::MessageToUser => {
                 Ok(Self::MessageToUser(MessageToUser::decode(buffer)?))
@@ -419,7 +418,7 @@ pub struct Finished {
     pub condition: Condition,
     pub delivery_code: DeliveryCode,
     pub file_status: FileStatusCode,
-    pub filestore_response: Vec<FilestoreResponse>,
+    pub filestore_response: Vec<FileStoreResponse>,
     pub fault_location: Option<EntityID>,
 }
 impl PDUEncode for Finished {
@@ -432,7 +431,7 @@ impl PDUEncode for Finished {
         let mut buffer = vec![first_byte];
         self.filestore_response.into_iter().for_each(|response| {
             let msg = response.encode();
-            buffer.push(MetadataTLVFieldCode::FilestoreResponse as u8);
+            buffer.push(MetadataTLVFieldCode::FileStoreResponse as u8);
             buffer.push(msg.len() as u8);
             buffer.extend(msg);
         });
@@ -483,22 +482,22 @@ impl PDUEncode for Finished {
                 &condition,
                 MetadataTLVFieldCode::from_u8(type_code).ok_or(PDUError::MessageType(type_code))?,
             ) {
-                // When no error is present, the only TLVS will be FilestoreResponses
-                (Condition::NoError, MetadataTLVFieldCode::FilestoreResponse) => {
+                // When no error is present, the only TLVS will be FileStoreResponses
+                (Condition::NoError, MetadataTLVFieldCode::FileStoreResponse) => {
                     let value = read_length_value_pair(remaining_buffer)?;
-                    filestore_response.push(FilestoreResponse::decode(&mut value.as_slice())?)
+                    filestore_response.push(FileStoreResponse::decode(&mut value.as_slice())?)
                 }
                 // Any other TLV code is unexpectd. Probably a bit flip error.
                 (Condition::NoError, code) => {
                     return Err(PDUError::UnexpectedMessage(
-                        MetadataTLVFieldCode::FilestoreResponse.to_string(),
+                        MetadataTLVFieldCode::FileStoreResponse.to_string(),
                         code.to_string(),
                     ))
                 }
-                // Otherwise look for Filestore Responses first
-                (_, MetadataTLVFieldCode::FilestoreResponse) => {
+                // Otherwise look for FileStore Responses first
+                (_, MetadataTLVFieldCode::FileStoreResponse) => {
                     let value = read_length_value_pair(remaining_buffer)?;
-                    filestore_response.push(FilestoreResponse::decode(&mut value.as_slice())?)
+                    filestore_response.push(FileStoreResponse::decode(&mut value.as_slice())?)
                 }
                 // Then a Fault Entity ID
                 (_, MetadataTLVFieldCode::EntityID) => {
@@ -770,15 +769,15 @@ mod test {
     use super::*;
 
     use crate::pdu::{
-        AppendStatus, CreateFileStatus, DenyStatus, FilestoreAction, FilestoreResponse,
-        FilestoreStatus, HandlerCode, RenameStatus, ReplaceStatus, UserOperation,
+        AppendStatus, CreateFileStatus, DenyStatus, FileStoreAction, FileStoreResponse,
+        FileStoreStatus, HandlerCode, RenameStatus, ReplaceStatus, UserOperation,
     };
 
     use rstest::rstest;
 
     #[rstest]
-    #[case(MetadataTLVFieldCode::FilestoreRequest, "FilestoreRequest".to_owned() )]
-    #[case(MetadataTLVFieldCode::FilestoreResponse, "FilestoreResponse".to_owned() )]
+    #[case(MetadataTLVFieldCode::FileStoreRequest, "FileStoreRequest".to_owned() )]
+    #[case(MetadataTLVFieldCode::FileStoreResponse, "FileStoreResponse".to_owned() )]
     #[case(MetadataTLVFieldCode::MessageToUser, "MessageToUser".to_owned() )]
     #[case(MetadataTLVFieldCode::FaultHandlerOverride, "FaultHandlerOverride".to_owned() )]
     #[case(MetadataTLVFieldCode::FlowLabel, "FlowLabel".to_owned() )]
@@ -910,7 +909,7 @@ mod test {
             Condition::PositiveLimitReached,
             Condition::KeepAliveLimitReached,
             Condition::InvalidTransmissionMode,
-            Condition::FilestoreRejection,
+            Condition::FileStoreRejection,
             Condition::FileChecksumFailure,
             Condition::FilesizeError,
             Condition::NakLimitReached
@@ -955,7 +954,7 @@ mod test {
         #[values(DeliveryCode::Complete, DeliveryCode::Incomplete)] delivery_code: DeliveryCode,
         #[values(
             FileStatusCode::Discarded,
-            FileStatusCode::FilestoreRejection,
+            FileStatusCode::FileStoreRejection,
             FileStatusCode::Retained,
             FileStatusCode::Unreported
         )]
@@ -966,22 +965,22 @@ mod test {
             delivery_code,
             file_status,
             filestore_response: vec![
-                FilestoreResponse {
-                    action_and_status: FilestoreStatus::CreateFile(CreateFileStatus::Successful),
+                FileStoreResponse {
+                    action_and_status: FileStoreStatus::CreateFile(CreateFileStatus::Successful),
                     first_filename: "/path/to/a/file".as_bytes().to_vec(),
                     second_filename: vec![],
                     filestore_message: vec![],
                 },
-                FilestoreResponse {
-                    action_and_status: FilestoreStatus::RenameFile(
+                FileStoreResponse {
+                    action_and_status: FileStoreStatus::RenameFile(
                         RenameStatus::NewFilenameAlreadyExists,
                     ),
                     first_filename: "/path/to/a/file".as_bytes().to_vec(),
                     second_filename: "/path/to/a/new/file".as_bytes().to_vec(),
                     filestore_message: vec![1_u8, 3, 58],
                 },
-                FilestoreResponse {
-                    action_and_status: FilestoreStatus::ReplaceFile(ReplaceStatus::NotAllowed),
+                FileStoreResponse {
+                    action_and_status: FileStoreStatus::ReplaceFile(ReplaceStatus::NotAllowed),
                     first_filename: "/the/first/file".as_bytes().to_vec(),
                     second_filename: "/the/newest/file".as_bytes().to_vec(),
                     filestore_message: "a use message".as_bytes().to_vec(),
@@ -1002,7 +1001,7 @@ mod test {
         #[values(DeliveryCode::Complete, DeliveryCode::Incomplete)] delivery_code: DeliveryCode,
         #[values(
             FileStatusCode::Discarded,
-            FileStatusCode::FilestoreRejection,
+            FileStatusCode::FileStoreRejection,
             FileStatusCode::Retained,
             FileStatusCode::Unreported
         )]
@@ -1029,22 +1028,22 @@ mod test {
             delivery_code,
             file_status,
             filestore_response: vec![
-                FilestoreResponse {
-                    action_and_status: FilestoreStatus::CreateFile(CreateFileStatus::Successful),
+                FileStoreResponse {
+                    action_and_status: FileStoreStatus::CreateFile(CreateFileStatus::Successful),
                     first_filename: "/some/path/to/a/file".as_bytes().to_vec(),
                     second_filename: vec![],
                     filestore_message: vec![],
                 },
-                FilestoreResponse {
-                    action_and_status: FilestoreStatus::AppendFile(
+                FileStoreResponse {
+                    action_and_status: FileStoreStatus::AppendFile(
                         AppendStatus::Filename2DoesNotExist,
                     ),
                     first_filename: "/path/to/a/file".as_bytes().to_vec(),
                     second_filename: "/path/to/a/new/file".as_bytes().to_vec(),
                     filestore_message: vec![1_u8, 3, 58],
                 },
-                FilestoreResponse {
-                    action_and_status: FilestoreStatus::DenyDirectory(DenyStatus::NotPerformed),
+                FileStoreResponse {
+                    action_and_status: FileStoreStatus::DenyDirectory(DenyStatus::NotPerformed),
                     first_filename: "/the/first/dir/".as_bytes().to_vec(),
                     second_filename: "".as_bytes().to_vec(),
                     filestore_message: "Error occurred it seems.".as_bytes().to_vec(),
@@ -1069,7 +1068,7 @@ mod test {
         #[values(
             Condition::NoError,
             Condition::InvalidTransmissionMode,
-            Condition::FilestoreRejection,
+            Condition::FileStoreRejection,
             Condition::FileChecksumFailure,
             Condition::CancelReceived
         )]
@@ -1098,16 +1097,16 @@ mod test {
     #[rstest]
     #[case(vec![])]
     #[case(vec![
-        MetadataTLV::FilestoreRequest(
-            FilestoreRequest{
-                action_code: FilestoreAction::AppendFile,
+        MetadataTLV::FileStoreRequest(
+            FileStoreRequest{
+                action_code: FileStoreAction::AppendFile,
                 first_filename: "/the/first/file/to/append.dat".as_bytes().to_vec(),
                 second_filename: "/an/additional/file/to/append.txt".as_bytes().to_vec(),
             }
         ),
-        MetadataTLV::FilestoreResponse(
-            FilestoreResponse{
-                action_and_status: FilestoreStatus::AppendFile(AppendStatus::NotAllowed),
+        MetadataTLV::FileStoreResponse(
+            FileStoreResponse{
+                action_and_status: FileStoreStatus::AppendFile(AppendStatus::NotAllowed),
                 first_filename: "/this/is/a/test/directory/".as_bytes().to_vec(),
                 second_filename: "the/sescond/bad/file.txt".as_bytes().to_vec(),
                 filestore_message: vec![0_u8, 1, 3, 5]

@@ -1,6 +1,6 @@
 use std::fmt;
 
-use super::filestore::FilestoreAction;
+use super::filestore::FileStoreAction;
 
 #[derive(Debug)]
 pub enum PDUError {
@@ -16,8 +16,8 @@ pub enum PDUError {
     InvalidTransmissionMode(u8),
     InvalidSegmentControl(u8),
     InvalidTransactionStatus(u8),
-    InvalidFilestoreAction(u8),
-    InvalidFilestoreStatus(u8, FilestoreAction),
+    InvalidFileStoreAction(u8),
+    InvalidFileStoreStatus(u8, FileStoreAction),
     InvalidFaultHandlerCode(u8),
     InvalidACKDirectiveSubType(u8),
     InvalidPrompt(u8),
@@ -60,10 +60,10 @@ impl fmt::Display for PDUError {
             &Self::InvalidTransactionStatus(val) => {
                 write!(f, "Invalid Transaction Status {:}.", val)
             }
-            &Self::InvalidFilestoreAction(val) => write!(f, "Inavlide Filestore Action {:}.", val),
-            Self::InvalidFilestoreStatus(val, action) => write!(
+            &Self::InvalidFileStoreAction(val) => write!(f, "Inavlide FileStore Action {:}.", val),
+            Self::InvalidFileStoreStatus(val, action) => write!(
                 f,
-                "Inavlid Filestore Status {:} for Action {:?}.",
+                "Inavlid FileStore Status {:} for Action {:?}.",
                 val, action
             ),
             &Self::InvalidFaultHandlerCode(val) => {
@@ -106,8 +106,8 @@ impl std::error::Error for PDUError {
             Self::InvalidTransmissionMode(_) => None,
             Self::InvalidSegmentControl(_) => None,
             Self::InvalidTransactionStatus(_) => None,
-            Self::InvalidFilestoreAction(_) => None,
-            Self::InvalidFilestoreStatus(_, _) => None,
+            Self::InvalidFileStoreAction(_) => None,
+            Self::InvalidFileStoreStatus(_, _) => None,
             Self::InvalidFaultHandlerCode(_) => None,
             Self::InvalidACKDirectiveSubType(_) => None,
             Self::InvalidPrompt(_) => None,

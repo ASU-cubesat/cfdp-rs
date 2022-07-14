@@ -42,7 +42,7 @@ pub enum Condition {
     PositiveLimitReached = 0b0001,
     KeepAliveLimitReached = 0b0010,
     InvalidTransmissionMode = 0b0011,
-    FilestoreRejection = 0b0100,
+    FileStoreRejection = 0b0100,
     FileChecksumFailure = 0b0101,
     FilesizeError = 0b0110,
     NakLimitReached = 0b0111,
@@ -143,7 +143,7 @@ pub enum DeliveryCode {
 #[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum FileStatusCode {
     Discarded = 0b00,
-    FilestoreRejection = 0b01,
+    FileStoreRejection = 0b01,
     Retained = 0b10,
     Unreported = 0b11,
 }
@@ -162,13 +162,13 @@ pub enum TransactionStatus {
 pub enum MessageType {
     ProxyPutRequest = 0x00,
     ProxyMessageToUser = 0x01,
-    ProxyFilestoreRequest = 0x02,
+    ProxyFileStoreRequest = 0x02,
     ProxyFaultHandlerOverride = 0x03,
     ProxyTransmissionMode = 0x04,
     ProxyFlowLabel = 0x05,
     ProxySegmentationControl = 0x06,
     ProxyPutResponse = 0x07,
-    ProxyFilestoreResponse = 0x08,
+    ProxyFileStoreResponse = 0x08,
     ProxyPutCancel = 0x09,
     OriginatingTransactionIDMessage = 0x0A,
     ProxyClosureRequest = 0x0B,
@@ -184,9 +184,9 @@ pub enum MessageType {
     SFOMessageToUser = 0x41,
     SFOFlowLabel = 0x42,
     SFOFaultHandlerOverride = 0x43,
-    SFOFilestoreRequest = 0x44,
+    SFOFileStoreRequest = 0x44,
     SFOReport = 0x45,
-    SFOFilestoreResponse = 0x46,
+    SFOFileStoreResponse = 0x46,
 }
 
 pub trait PDUEncode {

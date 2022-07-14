@@ -526,21 +526,26 @@ mod test {
     fn listdir(test_filestore: &NativeFileStore) -> FileStoreResult<()> {
         test_filestore.create_directory("listing")?;
         let basepath = Path::new("listing");
+
         let input_text = "Hello, world!";
         let input_text2 = "A longer string of text for this file.\n";
 
+        let mut dir_size = HashMap::<&str, u64>::new();
+
         let mut timings = HashMap::<&str, u64>::new();
+
         for dirname in ["one", "two", "three"] {
             let dname = basepath.join(dirname);
             test_filestore.create_directory(&dname)?;
+            let meta = fs::metadata(test_filestore.get_native_path(dname))
+                .expect("No directorr for metadata.");
             timings.insert(
                 dirname,
-                fs::metadata(test_filestore.get_native_path(dname))
-                    .expect("No directorr for metadata.")
-                    .modified()?
+                meta.modified()?
                     .duration_since(SystemTime::UNIX_EPOCH)?
                     .as_secs(),
             );
+            dir_size.insert(dirname, meta.len());
         }
 
         for (filename, text) in ["test.txt", "new.dat"]
@@ -566,9 +571,9 @@ mod test {
 
         let expected_listing = format!(
             "Listing for directory: {dir}\ntype,path,size,timestamp
-d,one,40,{t1}
-d,three,40,{t2}
-d,two,40,{t3}
+d,one,{s1},{t1}
+d,three,{s2},{t2}
+d,two,{s3},{t3}
 f,new.dat,{s4},{t4}
 f,test.txt,{s5},{t5}
 ",
@@ -578,6 +583,9 @@ f,test.txt,{s5},{t5}
             t3 = timings.get("two").unwrap(),
             t4 = timings.get("new.dat").unwrap(),
             t5 = timings.get("test.txt").unwrap(),
+            s1 = dir_size.get("one").unwrap(),
+            s2 = dir_size.get("three").unwrap(),
+            s3 = dir_size.get("two").unwrap(),
             s4 = input_text2.as_bytes().len(),
             s5 = input_text.as_bytes().len(),
         );

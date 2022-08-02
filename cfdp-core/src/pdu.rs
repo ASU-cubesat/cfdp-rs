@@ -98,6 +98,7 @@ impl PDUEncode for PDU {
                 let crc16 = u16::from_be_bytes(u16_buffer);
                 let tmp_buffer = {
                     let mut temp = received_pdu.clone().encode();
+                    // remove the crc from the temporary buffer
                     temp.truncate(temp.len() - 2);
                     temp
                 };

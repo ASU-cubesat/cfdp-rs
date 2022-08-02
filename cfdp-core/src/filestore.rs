@@ -4,11 +4,14 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Error as IOError, Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
+    str::{self, Utf8Error},
     time::{SystemTime, SystemTimeError},
 };
 
 use pathdiff::diff_paths;
 use tempfile::tempfile;
+
+use crate::pdu::{FileStoreAction, FileStoreRequest};
 
 // file path normalization taken from cargo
 // https://github.com/rust-lang/cargo/blob/6d6dd9d9be9c91390da620adf43581619c2fa90e/crates/cargo-util/src/paths.rs#L81
@@ -51,6 +54,7 @@ pub enum FileStoreError {
     Format(std::fmt::Error),
     SystemTime(SystemTimeError),
     PathDiff(String, String),
+    UTF8(Utf8Error),
 }
 impl Display for FileStoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -63,6 +67,7 @@ impl Display for FileStoreError {
                 "Cannot find relative path between {} and {}.",
                 source1, source2
             ),
+            Self::UTF8(source) => source.fmt(f),
         }
     }
 }
@@ -73,6 +78,7 @@ impl Error for FileStoreError {
             Self::Format(source) => Some(source),
             Self::SystemTime(source) => Some(source),
             Self::PathDiff(_, _) => None,
+            Self::UTF8(source) => Some(source),
         }
     }
 }
@@ -93,7 +99,11 @@ impl From<SystemTimeError> for FileStoreError {
         Self::SystemTime(err)
     }
 }
-
+impl From<Utf8Error> for FileStoreError {
+    fn from(err: Utf8Error) -> Self {
+        Self::UTF8(err)
+    }
+}
 /// Defines any necessary actions a CFDP File Store implementation
 /// must perform. Assumes any FileStore has a root path it operates retalive to.
 pub trait FileStore {
@@ -144,6 +154,33 @@ pub trait FileStore {
 
     /// Retuns the size of the file on disk relative to the root path.
     fn get_size<P: AsRef<Path>>(&self, path: P) -> FileStoreResult<u64>;
+
+    /// Executes an action based on an input filestore request
+    fn process_request(&self, request: FileStoreRequest) -> FileStoreResult<()> {
+        let path = str::from_utf8(request.first_filename.as_slice())?;
+        match &request.action_code {
+            FileStoreAction::CreateFile => self.create_file(path),
+            FileStoreAction::DeleteFile => self.delete_file(path),
+            FileStoreAction::RenameFile => {
+                let filename2 = str::from_utf8(&request.second_filename)?;
+                self.rename_file(path, filename2)
+            }
+            FileStoreAction::AppendFile => {
+                let filename2 = str::from_utf8(&request.second_filename)?;
+                self.append_file(path, filename2)
+            }
+            FileStoreAction::ReplaceFile => {
+                let filename2 = str::from_utf8(&request.second_filename)?;
+                self.replace_file(path, filename2)
+            }
+            FileStoreAction::CreateDirectory => self.create_directory(path),
+            FileStoreAction::RemoveDirectory => self.remove_directory(path),
+            // Deny ignores all errors
+            FileStoreAction::DenyFile => self.delete_file(path).or(Ok(())),
+            // Deny ignores all errors
+            FileStoreAction::DenyDirectory => self.remove_directory(path).or(Ok(())),
+        }
+    }
 }
 
 /// Store the root path infomration for a FileStore implementation
@@ -621,6 +658,60 @@ f,test.txt,{s5},{t5}
         };
 
         assert_eq!(expected_checksum, recovered_checksum);
+        Ok(())
+    }
+
+    // We've already tested the functionality of all the actions.
+    // just testing that passthrough works okay.
+    #[rstest]
+    fn process_request(
+        #[values(
+            FileStoreAction::CreateFile,
+            FileStoreAction::DeleteFile,
+            FileStoreAction::RenameFile,
+            FileStoreAction::AppendFile,
+            FileStoreAction::ReplaceFile,
+            FileStoreAction::CreateDirectory,
+            FileStoreAction::RemoveDirectory,
+            FileStoreAction::DenyFile,
+            FileStoreAction::DenyDirectory
+        )]
+        action_code: FileStoreAction,
+    ) -> FileStoreResult<()> {
+        let dir = TempDir::new().unwrap();
+        let filestore = NativeFileStore::new(&dir);
+
+        let path = "/the_first_filename";
+        let path2 = "/the_second_filename";
+
+        match &action_code {
+            FileStoreAction::DeleteFile | FileStoreAction::DenyFile => {
+                println!("file: {:?}", filestore.get_native_path(path));
+                filestore.create_file(path).expect("Unable to create.")
+            }
+            FileStoreAction::RemoveDirectory | FileStoreAction::DenyDirectory => {
+                filestore.create_directory(path)?
+            }
+            FileStoreAction::AppendFile
+            | FileStoreAction::ReplaceFile
+            | FileStoreAction::RenameFile => {
+                let filename1 = filestore.get_native_path(path);
+                println!("{:?}", filename1);
+                fs::write(filename1, "test input\ntext\n")?;
+
+                let filename2 = filestore.get_native_path(path2);
+                fs::write(filename2, "More text\n\n\nhere")?;
+            }
+            FileStoreAction::CreateFile | FileStoreAction::CreateDirectory => {}
+        };
+
+        let request = FileStoreRequest {
+            action_code,
+            first_filename: path.as_bytes().to_vec(),
+            second_filename: path2.as_bytes().to_vec(),
+        };
+        filestore.process_request(request)?;
+        dir.close()?;
         Ok(())
     }
 }

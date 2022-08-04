@@ -21,14 +21,14 @@ pub enum PDUPayload {
     FileData(FileDataPDU),
 }
 impl PDUPayload {
-    fn encode(self) -> Vec<u8> {
+    pub fn encode(self) -> Vec<u8> {
         match self {
             Self::Directive(operation) => operation.encode(),
             Self::FileData(data) => data.encode(),
         }
     }
 
-    fn decode<T: std::io::Read>(
+    pub fn decode<T: std::io::Read>(
         buffer: &mut T,
         pdu_type: PDUType,
         file_size_flag: FileSizeFlag,
@@ -49,8 +49,8 @@ impl PDUPayload {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PDU {
-    header: PDUHeader,
-    payload: PDUPayload,
+    pub header: PDUHeader,
+    pub payload: PDUPayload,
 }
 impl PDUEncode for PDU {
     type PDUType = Self;

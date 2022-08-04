@@ -3,7 +3,10 @@ use num_traits::FromPrimitive;
 
 use std::io::Read;
 
-use super::error::{PDUError, PDUResult};
+use super::{
+    error::{PDUError, PDUResult},
+    EntityID,
+};
 
 #[repr(u8)]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -12,6 +15,13 @@ pub enum FileSizeSensitive {
     Large(u64),
 }
 impl FileSizeSensitive {
+    pub fn as_u64(self) -> u64 {
+        match self {
+            Self::Small(val) => val.into(),
+            Self::Large(val) => val,
+        }
+    }
+
     pub fn to_be_bytes(self) -> Vec<u8> {
         match self {
             Self::Small(val) => val.to_be_bytes().to_vec(),
@@ -222,9 +232,9 @@ pub struct PDUHeader {
     pub pdu_data_field_length: u16,
     pub segmentation_control: SegmentationControl,
     pub segment_metadata_flag: SegmentedData,
-    pub source_entity_id: Vec<u8>,
+    pub source_entity_id: EntityID,
     pub transaction_sequence_number: Vec<u8>,
-    pub destination_entity_id: Vec<u8>,
+    pub destination_entity_id: EntityID,
 }
 impl PDUEncode for PDUHeader {
     type PDUType = Self;
@@ -240,13 +250,13 @@ impl PDUEncode for PDUHeader {
         buffer.extend(self.pdu_data_field_length.to_be_bytes());
         buffer.push(
             ((self.segmentation_control as u8) << 7)
-                | ((self.source_entity_id.len() as u8 - 1) << 4)
+                | ((self.source_entity_id.get_len() as u8 - 1) << 4)
                 | ((self.segment_metadata_flag as u8) << 3)
                 | (self.transaction_sequence_number.len() as u8 - 1),
         );
-        buffer.extend(self.source_entity_id);
+        buffer.extend(self.source_entity_id.to_be_bytes());
         buffer.extend(self.transaction_sequence_number);
-        buffer.extend(self.destination_entity_id);
+        buffer.extend(self.destination_entity_id.to_be_bytes());
         buffer
     }
 
@@ -313,7 +323,7 @@ impl PDUEncode for PDUHeader {
         let source_entity_id = {
             let mut buff = vec![0_u8; entity_id_length as usize];
             buffer.read_exact(buff.as_mut_slice())?;
-            buff.to_vec()
+            EntityID::from(buff.to_vec())
         };
 
         let transaction_sequence_number = {
@@ -325,7 +335,7 @@ impl PDUEncode for PDUHeader {
         let destination_entity_id = {
             let mut buff = vec![0_u8; entity_id_length as usize];
             buffer.read_exact(buff.as_mut_slice())?;
-            buff.to_vec()
+            EntityID::from(buff.to_vec())
         };
 
         Ok(Self {
@@ -419,9 +429,24 @@ mod test {
     }
 
     #[rstest]
-    #[case(12_u16, u16::MAX.to_be_bytes().to_vec(), 1485_u16.to_be_bytes().to_vec(), 22_u16.to_be_bytes().to_vec())]
-    #[case(8745_u16, u32::MAX.to_be_bytes().to_vec(), 88654_u32.to_be_bytes().to_vec(), 76_u32.to_be_bytes().to_vec())]
-    #[case(65531_u16, u64::MAX.to_be_bytes().to_vec(), 5673452001_u64.to_be_bytes().to_vec(), 5_u64.to_be_bytes().to_vec())]
+    #[case(
+        12_u16,
+        EntityID::from(u16::MAX),
+        1485_u16.to_be_bytes().to_vec(),
+        EntityID::from(22_u16)
+    )]
+    #[case(
+        8745_u16,
+        EntityID::from(u32::MAX),
+        88654_u32.to_be_bytes().to_vec(),
+        EntityID::from(76_u32),
+    )]
+    #[case(
+        65531_u16,
+        EntityID::from(u64::MAX),
+        5673452001_u64.to_be_bytes().to_vec(),
+        EntityID::from(5_u64)
+    )]
     fn pdu_header(
         #[values(U3::One, U3::Seven)] version: U3,
         #[values(PDUType::FileDirective, PDUType::FileData)] pdu_type: PDUType,
@@ -431,9 +456,9 @@ mod test {
         #[values(CRCFlag::NotPresent, CRCFlag::Present)] crc_flag: CRCFlag,
         #[values(FileSizeFlag::Small, FileSizeFlag::Large)] large_file_flag: FileSizeFlag,
         #[case] pdu_data_field_length: u16,
-        #[case] source_entity_id: Vec<u8>,
+        #[case] source_entity_id: EntityID,
         #[case] transaction_sequence_number: Vec<u8>,
-        #[case] destination_entity_id: Vec<u8>,
+        #[case] destination_entity_id: EntityID,
     ) -> PDUResult<()> {
         let (segmentation_control, segment_metadata_flag) = match &pdu_type {
             PDUType::FileData => (SegmentationControl::Preserved, SegmentedData::Present),

@@ -191,9 +191,9 @@ mod test {
                 pdu_data_field_length,
                 segmentation_control: SegmentationControl::NotPreserved,
                 segment_metadata_flag: SegmentedData::NotPresent,
-                source_entity_id: 18_u16.to_be_bytes().to_vec(),
+                source_entity_id: EntityID::from(18_u16),
                 transaction_sequence_number: 7533_u16.to_be_bytes().to_vec(),
-                destination_entity_id: 23_u16.to_be_bytes().to_vec(),
+                destination_entity_id: EntityID::from(23_u16),
             },
             payload,
         };

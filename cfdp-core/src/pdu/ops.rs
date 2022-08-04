@@ -14,9 +14,40 @@ use super::{
     },
 };
 
+macro_rules! impl_id {
+    ( $prim:ty ) => {
+        impl From<$prim> for EntityID {
+            fn from(val: $prim) -> Self {
+                Self {
+                    id: val.to_be_bytes().to_vec(),
+                }
+            }
+        }
+    };
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntityID {
     id: Vec<u8>,
+}
+impl_id!(u8);
+impl_id!(u16);
+impl_id!(u32);
+impl_id!(u64);
+impl From<Vec<u8>> for EntityID {
+    fn from(vec: Vec<u8>) -> Self {
+        Self { id: vec }
+    }
+}
+impl EntityID {
+    pub fn get_len(&self) -> u8 {
+        // largest values supported are u64s so this should always
+        // be castable down to a u8.
+        self.id.len() as u8
+    }
+    pub fn to_be_bytes(self) -> Vec<u8> {
+        self.id
+    }
 }
 impl PDUEncode for EntityID {
     type PDUType = Self;

@@ -1,6 +1,7 @@
 pub mod filestore;
 pub mod pdu;
 mod timer;
+pub mod transaction;
 pub mod transport;
 
 #[cfg(test)]

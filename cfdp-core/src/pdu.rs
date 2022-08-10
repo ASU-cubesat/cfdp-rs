@@ -90,6 +90,7 @@ impl PDUEncode for PDU {
 
         let received_pdu = Self { header, payload };
 
+        // TODO! Make this CRC check first for a faster failure mode
         match &received_pdu.header.crc_flag {
             CRCFlag::NotPresent => {}
             CRCFlag::Present => {

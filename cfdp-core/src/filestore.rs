@@ -2,16 +2,21 @@ use std::{
     error::Error,
     fmt::{self, Display, Write as _Write},
     fs::{self, File, OpenOptions},
-    io::{Error as IOError, Read, Seek, SeekFrom, Write},
+    io::{Error as IOError, ErrorKind, Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
     str::{self, Utf8Error},
     time::{SystemTime, SystemTimeError},
 };
 
+use num_derive::FromPrimitive;
 use pathdiff::diff_paths;
 use tempfile::tempfile;
 
-use crate::pdu::{FileStoreAction, FileStoreRequest};
+use crate::pdu::{
+    AppendStatus, CreateDirectoryStatus, CreateFileStatus, DeleteFileStatus, DenyStatus,
+    FileStoreAction, FileStoreRequest, FileStoreResponse, FileStoreStatus, RemoveDirectoryStatus,
+    RenameStatus, ReplaceStatus,
+};
 
 // file path normalization taken from cargo
 // https://github.com/rust-lang/cargo/blob/6d6dd9d9be9c91390da620adf43581619c2fa90e/crates/cargo-util/src/paths.rs#L81
@@ -156,29 +161,166 @@ pub trait FileStore {
     fn get_size<P: AsRef<Path>>(&self, path: P) -> FileStoreResult<u64>;
 
     /// Executes an action based on an input filestore request
-    fn process_request(&self, request: FileStoreRequest) -> FileStoreResult<()> {
-        let path = str::from_utf8(request.first_filename.as_slice())?;
-        match &request.action_code {
-            FileStoreAction::CreateFile => self.create_file(path),
-            FileStoreAction::DeleteFile => self.delete_file(path),
-            FileStoreAction::RenameFile => {
-                let filename2 = str::from_utf8(&request.second_filename)?;
-                self.rename_file(path, filename2)
-            }
-            FileStoreAction::AppendFile => {
-                let filename2 = str::from_utf8(&request.second_filename)?;
-                self.append_file(path, filename2)
-            }
-            FileStoreAction::ReplaceFile => {
-                let filename2 = str::from_utf8(&request.second_filename)?;
-                self.replace_file(path, filename2)
-            }
-            FileStoreAction::CreateDirectory => self.create_directory(path),
-            FileStoreAction::RemoveDirectory => self.remove_directory(path),
+    /// This is meant to be executed by a [Transaction](crate::transaction::Transaction)
+    /// instance which requires errors be mapped to a status.
+    fn process_request(&self, request: &FileStoreRequest) -> FileStoreResponse {
+        let path = str::from_utf8(request.first_filename.as_slice());
+        let action_and_status = match request.action_code {
+            FileStoreAction::CreateFile => match path {
+                Ok(filename) => match self.create_file(filename) {
+                    Ok(()) => FileStoreStatus::CreateFile(CreateFileStatus::Successful),
+                    Err(_) => FileStoreStatus::CreateFile(CreateFileStatus::NotAllowed),
+                },
+                Err(_) => FileStoreStatus::CreateFile(CreateFileStatus::NotPerformed),
+            },
+            FileStoreAction::DeleteFile => match path {
+                Ok(filename) => match self.delete_file(filename) {
+                    Ok(()) => FileStoreStatus::DeleteFile(DeleteFileStatus::Successful),
+                    Err(FileStoreError::IO(val)) => {
+                        if val.kind() == ErrorKind::NotFound {
+                            FileStoreStatus::DeleteFile(DeleteFileStatus::FileDoesNotExist)
+                        } else {
+                            FileStoreStatus::DeleteFile(DeleteFileStatus::DeleteNotAllowed)
+                        }
+                    }
+                    Err(_) => FileStoreStatus::DeleteFile(DeleteFileStatus::DeleteNotAllowed),
+                },
+                Err(_) => FileStoreStatus::DeleteFile(DeleteFileStatus::NotPerformed),
+            },
+            FileStoreAction::RenameFile => match path {
+                Ok(filename1) => match str::from_utf8(&request.second_filename) {
+                    Ok(filename2) => match self.rename_file(filename1, filename2) {
+                        Ok(()) => FileStoreStatus::RenameFile(RenameStatus::Successful),
+                        Err(FileStoreError::IO(err)) => match err.kind() {
+                            ErrorKind::AlreadyExists => {
+                                FileStoreStatus::RenameFile(RenameStatus::NewFilenameAlreadyExists)
+                            }
+                            ErrorKind::NotFound => {
+                                FileStoreStatus::RenameFile(RenameStatus::OldFilenameDoesNotExist)
+                            }
+                            _ => FileStoreStatus::RenameFile(RenameStatus::RenameNotAllowed),
+                        },
+                        _ => FileStoreStatus::RenameFile(RenameStatus::NotPerformed),
+                    },
+                    Err(_) => FileStoreStatus::RenameFile(RenameStatus::NotPerformed),
+                },
+                Err(_) => FileStoreStatus::RenameFile(RenameStatus::NotPerformed),
+            },
+            FileStoreAction::AppendFile => match path {
+                Ok(filename1) => match str::from_utf8(&request.second_filename) {
+                    Ok(filename2) => match self.append_file(filename1, filename2) {
+                        Ok(()) => FileStoreStatus::AppendFile(AppendStatus::Successful),
+                        Err(FileStoreError::IO(err)) => match err.kind() {
+                            ErrorKind::NotFound => {
+                                if !self.get_native_path(filename1).exists() {
+                                    FileStoreStatus::AppendFile(AppendStatus::Filename1DoesNotExist)
+                                } else if !self.get_native_path(filename2).exists() {
+                                    FileStoreStatus::AppendFile(AppendStatus::Filename2DoesNotExist)
+                                } else {
+                                    FileStoreStatus::AppendFile(AppendStatus::NotPerformed)
+                                }
+                            }
+                            ErrorKind::PermissionDenied => {
+                                FileStoreStatus::AppendFile(AppendStatus::NotAllowed)
+                            }
+                            _ => FileStoreStatus::AppendFile(AppendStatus::NotPerformed),
+                        },
+                        Err(_) => FileStoreStatus::AppendFile(AppendStatus::NotPerformed),
+                    },
+                    Err(_) => FileStoreStatus::AppendFile(AppendStatus::Filename2DoesNotExist),
+                },
+                Err(_) => FileStoreStatus::AppendFile(AppendStatus::Filename1DoesNotExist),
+            },
+            FileStoreAction::ReplaceFile => match path {
+                Ok(filename1) => match str::from_utf8(&request.second_filename) {
+                    Ok(filename2) => match self.replace_file(filename1, filename2) {
+                        Ok(()) => FileStoreStatus::ReplaceFile(ReplaceStatus::Successful),
+                        Err(FileStoreError::IO(err)) => match err.kind() {
+                            ErrorKind::NotFound => {
+                                if !self.get_native_path(filename1).exists() {
+                                    FileStoreStatus::ReplaceFile(
+                                        ReplaceStatus::Filename1DoesNotExist,
+                                    )
+                                } else if !self.get_native_path(filename2).exists() {
+                                    FileStoreStatus::ReplaceFile(
+                                        ReplaceStatus::Filename2DoesNotExist,
+                                    )
+                                } else {
+                                    FileStoreStatus::ReplaceFile(ReplaceStatus::NotPerformed)
+                                }
+                            }
+                            ErrorKind::PermissionDenied => {
+                                FileStoreStatus::ReplaceFile(ReplaceStatus::NotAllowed)
+                            }
+                            _ => FileStoreStatus::ReplaceFile(ReplaceStatus::NotPerformed),
+                        },
+                        Err(_) => FileStoreStatus::ReplaceFile(ReplaceStatus::NotPerformed),
+                    },
+                    Err(_) => FileStoreStatus::ReplaceFile(ReplaceStatus::Filename2DoesNotExist),
+                },
+                Err(_) => FileStoreStatus::ReplaceFile(ReplaceStatus::Filename1DoesNotExist),
+            },
+            FileStoreAction::CreateDirectory => match path {
+                Ok(directory) => match self.create_directory(directory) {
+                    Ok(()) => FileStoreStatus::CreateDirectory(CreateDirectoryStatus::Successful),
+                    Err(_) => FileStoreStatus::CreateDirectory(
+                        CreateDirectoryStatus::DirectoryCannotBeCreated,
+                    ),
+                },
+                Err(_) => FileStoreStatus::CreateDirectory(CreateDirectoryStatus::NotPerformed),
+            },
+            FileStoreAction::RemoveDirectory => match path {
+                Ok(directory) => match self.remove_directory(directory) {
+                    Ok(()) => FileStoreStatus::RemoveDirectory(RemoveDirectoryStatus::Successful),
+                    Err(FileStoreError::IO(err)) => match err.kind() {
+                        ErrorKind::PermissionDenied => FileStoreStatus::RemoveDirectory(
+                            RemoveDirectoryStatus::DeleteNotAllowed,
+                        ),
+                        ErrorKind::NotFound => FileStoreStatus::RemoveDirectory(
+                            RemoveDirectoryStatus::DirectoryDoesNotExist,
+                        ),
+                        _ => FileStoreStatus::RemoveDirectory(RemoveDirectoryStatus::NotPerformed),
+                    },
+                    Err(_) => FileStoreStatus::RemoveDirectory(RemoveDirectoryStatus::NotPerformed),
+                },
+                Err(_) => FileStoreStatus::RemoveDirectory(RemoveDirectoryStatus::NotPerformed),
+            },
             // Deny ignores all errors
-            FileStoreAction::DenyFile => self.delete_file(path).or(Ok(())),
+            FileStoreAction::DenyFile => match path {
+                Ok(filename) => match self.delete_file(filename) {
+                    Ok(()) => FileStoreStatus::DenyFile(DenyStatus::Successful),
+                    Err(FileStoreError::IO(err)) => {
+                        if err.kind() == ErrorKind::PermissionDenied {
+                            FileStoreStatus::DenyFile(DenyStatus::NotAllowed)
+                        } else {
+                            FileStoreStatus::DenyFile(DenyStatus::NotPerformed)
+                        }
+                    }
+                    Err(_) => FileStoreStatus::DenyFile(DenyStatus::NotPerformed),
+                },
+                Err(_) => FileStoreStatus::DenyFile(DenyStatus::NotPerformed),
+            },
             // Deny ignores all errors
-            FileStoreAction::DenyDirectory => self.remove_directory(path).or(Ok(())),
+            FileStoreAction::DenyDirectory => match path {
+                Ok(filename) => match self.remove_directory(filename) {
+                    Ok(()) => FileStoreStatus::DenyDirectory(DenyStatus::Successful),
+                    Err(FileStoreError::IO(err)) => {
+                        if err.kind() == ErrorKind::PermissionDenied {
+                            FileStoreStatus::DenyDirectory(DenyStatus::NotAllowed)
+                        } else {
+                            FileStoreStatus::DenyDirectory(DenyStatus::NotPerformed)
+                        }
+                    }
+                    Err(_) => FileStoreStatus::DenyDirectory(DenyStatus::NotPerformed),
+                },
+                Err(_) => FileStoreStatus::DenyDirectory(DenyStatus::NotPerformed),
+            },
+        };
+        FileStoreResponse {
+            action_and_status,
+            first_filename: request.first_filename.clone(),
+            second_filename: request.second_filename.clone(),
+            filestore_message: vec![],
         }
     }
 }
@@ -337,7 +479,7 @@ impl FileStore for NativeFileStore {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, FromPrimitive, PartialEq, Eq)]
 pub enum ChecksumType {
     Modular = 0,
     Null = 15,
@@ -710,7 +852,7 @@ f,test.txt,{s5},{t5}
             first_filename: path.as_bytes().to_vec(),
             second_filename: path2.as_bytes().to_vec(),
         };
-        filestore.process_request(request)?;
+        filestore.process_request(&request);
         dir.close()?;
         Ok(())
     }

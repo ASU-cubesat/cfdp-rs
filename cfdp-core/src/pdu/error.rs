@@ -8,6 +8,7 @@ pub enum PDUError {
     UnexpectedMessage(String, String),
     UnexpectedIdentifier(Vec<u8>, Vec<u8>),
     InvalidCondition(u8),
+    InvalidChecksumType(u8),
     InvalidDirection(u8),
     InvalidDirective(u8),
     InvalidDeliveryCode(u8),
@@ -46,13 +47,14 @@ impl fmt::Display for PDUError {
                 m1, m2
             ),
             &Self::InvalidCondition(val) => write!(f, "Invalid Condition value: {:}.", val),
+            &Self::InvalidChecksumType(val) => write!(f, "Invalid ChecksumType: {:}.", val),
             &Self::InvalidDirective(val) => write!(f, "Invalid Directive value: {:}.", val),
             &Self::InvalidDirection(val) => write!(f, "Invalid Direction value: {:}.", val),
             &Self::InvalidDeliveryCode(val) => write!(f, "Invalid Delivery Code: {:}.", val),
             &Self::InvalidFileStatus(val) => write!(f, "Invalid File Status: {:}.", val),
             &Self::InvalidTraceControl(val) => write!(f, "Inavlide Trace Control {:}.", val),
             &Self::InvalidTransmissionMode(val) => {
-                write!(f, "Inavlide Transmission Mode {:}.", val)
+                write!(f, "Invalid Transmission Mode {:}.", val)
             }
             &Self::InvalidSegmentControl(val) => {
                 write!(f, "Invalid Segment Control Mode {:}.", val)
@@ -98,6 +100,7 @@ impl std::error::Error for PDUError {
             Self::UnexpectedMessage(_, _) => None,
             Self::UnexpectedIdentifier(_, _) => None,
             Self::InvalidCondition(_) => None,
+            Self::InvalidChecksumType(_) => None,
             Self::InvalidDirection(_) => None,
             Self::InvalidDirective(_) => None,
             Self::InvalidDeliveryCode(_) => None,

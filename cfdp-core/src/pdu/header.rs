@@ -1,7 +1,7 @@
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 
-use std::io::Read;
+use std::{io::Read, ops::Add};
 
 use super::{
     error::{PDUError, PDUResult},
@@ -9,14 +9,25 @@ use super::{
 };
 
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FileSizeSensitive {
     Small(u32),
     Large(u64),
 }
-impl FileSizeSensitive {
-    pub fn as_u64(self) -> u64 {
+impl Add<usize> for FileSizeSensitive {
+    type Output = Self;
+
+    fn add(self, rhs: usize) -> Self::Output {
         match self {
+            Self::Small(val) => Self::Small(val + rhs as u32),
+            Self::Large(val) => Self::Large(val + rhs as u64),
+        }
+    }
+}
+
+impl FileSizeSensitive {
+    pub fn as_u64(&self) -> u64 {
+        match *self {
             Self::Small(val) => val.into(),
             Self::Large(val) => val,
         }

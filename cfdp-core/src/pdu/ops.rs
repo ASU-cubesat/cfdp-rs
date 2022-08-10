@@ -13,6 +13,7 @@ use super::{
         TransactionStatus,
     },
 };
+use crate::filestore::ChecksumType;
 
 macro_rules! impl_id {
     ( $prim:ty ) => {
@@ -626,7 +627,7 @@ impl PDUEncode for PositiveAcknowledgePDU {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MetadataPDU {
     pub closure_requested: bool,
-    pub checksum_type: u8,
+    pub checksum_type: ChecksumType,
     pub file_size: FileSizeSensitive,
     pub source_filename: Vec<u8>,
     pub destination_filename: Vec<u8>,
@@ -636,7 +637,7 @@ impl FSSEncode for MetadataPDU {
     type PDUType = Self;
 
     fn encode(self) -> Vec<u8> {
-        let first_byte = ((self.closure_requested as u8) << 6) | self.checksum_type;
+        let first_byte = ((self.closure_requested as u8) << 6) | (self.checksum_type as u8);
         let mut buffer = vec![first_byte];
         buffer.extend(self.file_size.to_be_bytes());
 
@@ -658,7 +659,10 @@ impl FSSEncode for MetadataPDU {
         buffer.read_exact(&mut u8_buff)?;
         let first_byte = u8_buff[0];
         let closure_requested = ((first_byte & 0x40) >> 6) != 0;
-        let checksum_type = first_byte & 0xF;
+        let checksum_type = {
+            let possible = first_byte & 0xF;
+            ChecksumType::from_u8(possible).ok_or(PDUError::InvalidChecksumType(possible))?
+        };
 
         let file_size = FileSizeSensitive::from_be_bytes(buffer, file_size_flag)?;
 
@@ -690,6 +694,22 @@ impl FSSEncode for MetadataPDU {
 pub struct SegmentRequestForm {
     pub start_offset: FileSizeSensitive,
     pub end_offset: FileSizeSensitive,
+}
+impl From<(u32, u32)> for SegmentRequestForm {
+    fn from(vals: (u32, u32)) -> Self {
+        Self {
+            start_offset: FileSizeSensitive::Small(vals.0),
+            end_offset: FileSizeSensitive::Small(vals.1),
+        }
+    }
+}
+impl From<(u64, u64)> for SegmentRequestForm {
+    fn from(vals: (u64, u64)) -> Self {
+        Self {
+            start_offset: FileSizeSensitive::Large(vals.0),
+            end_offset: FileSizeSensitive::Large(vals.1),
+        }
+    }
 }
 impl FSSEncode for SegmentRequestForm {
     type PDUType = Self;
@@ -1160,7 +1180,7 @@ mod test {
     #[case(vec![MetadataTLV::EntityID(EntityID{id: 18574_u16.to_be_bytes().to_vec()})])]
     fn metadata_pdu(
         #[values(true, false)] closure_requested: bool,
-        #[values(2_u8, 15_u8, 3_u8)] checksum_type: u8,
+        #[values(ChecksumType::Null, ChecksumType::Modular)] checksum_type: ChecksumType,
         #[values(
             FileSizeSensitive::Small(184574_u32),
             FileSizeSensitive::Large(7574839485_u64)

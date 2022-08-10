@@ -46,7 +46,7 @@ impl FileSizeSensitive {
 }
 
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq, FromPrimitive)]
 pub enum Condition {
     NoError = 0b0000,
     PositiveLimitReached = 0b0001,

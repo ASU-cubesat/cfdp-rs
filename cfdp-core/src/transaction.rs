@@ -417,10 +417,6 @@ impl<T: FileStore> Transaction<T> {
         self.naks = naks
     }
 
-    pub fn get_segement_requests(&self) -> &[SegmentRequestForm] {
-        self.naks.as_slice()
-    }
-
     fn finalize_file(&mut self) -> TransactionResult<FileStatusCode> {
         let id = self.id();
         {

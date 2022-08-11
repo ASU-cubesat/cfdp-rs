@@ -690,7 +690,7 @@ impl FSSEncode for MetadataPDU {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SegmentRequestForm {
     pub start_offset: FileSizeSensitive,
     pub end_offset: FileSizeSensitive,

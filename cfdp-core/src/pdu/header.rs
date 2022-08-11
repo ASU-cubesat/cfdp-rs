@@ -9,7 +9,7 @@ use super::{
 };
 
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FileSizeSensitive {
     Small(u32),
     Large(u64),

@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     error::Error,
     fmt::{self, Display},
     fs::File,
@@ -35,6 +35,7 @@ pub enum TransactionError {
     IntConverstion(TryFromIntError),
     UnexpectedPDU((Vec<u8>, Action, TransmissionMode, String)),
     MissingMetadata((EntityID, Vec<u8>)),
+    MissingNak,
 }
 impl From<FileStoreError> for TransactionError {
     fn from(error: FileStoreError) -> Self {
@@ -75,6 +76,7 @@ impl Display for TransactionError {
                 id, transaction_type, mode, pdu_type
             ),
             Self::MissingMetadata(id) => write!(f, "Metadata missing for transaction: {id:?}."),
+            Self::MissingNak => write!(f, "No NAKs present. Cannot send missing data."),
         }
     }
 }
@@ -89,6 +91,7 @@ impl Error for TransactionError {
             Self::IntConverstion(source) => Some(source),
             Self::UnexpectedPDU(_) => None,
             Self::MissingMetadata(_) => None,
+            Self::MissingNak => None,
         }
     }
 }
@@ -112,6 +115,8 @@ struct Metadata {
     pub file_size: FileSizeSensitive,
     /// List of any filestore requests to take after transaction is complete
     filestore_requests: Vec<FileStoreRequest>,
+    /// Any Messages to user received either from the metadataPDU or as input
+    message_to_user: Vec<MessageToUser>,
     /// Flag to track whether Transaciton Closure will be requested.
     pub closure_requested: bool,
 }
@@ -161,7 +166,7 @@ pub struct Transaction<T: FileStore> {
     /// For a Sender, these are the sent segments.
     saved_segments: BTreeMap<FileSizeSensitive, FileSizeSensitive>,
     /// The list of all missing information
-    naks: Vec<SegmentRequestForm>,
+    naks: VecDeque<SegmentRequestForm>,
     /// Flag to check if metadata on the file has been received
     metadata: Option<Metadata>,
     /// Measurement of how large of a file has been received so far
@@ -180,6 +185,8 @@ pub struct Transaction<T: FileStore> {
     nak_timer: Timer,
     // Timer used to track if the Inactivity limit
     inactivity_timer: Timer,
+    // Timer used to track ACK receipt
+    ack_timer: Timer,
 }
 impl<T: FileStore> Transaction<T> {
     /// Start a new Transaction with the given [configuration](TransactionConfig)
@@ -195,6 +202,7 @@ impl<T: FileStore> Transaction<T> {
         };
         let nak_timer = Timer::new(config.inactivity_timeout, config.max_count);
         let inactivity_timer = Timer::new(config.inactivity_timeout, config.max_count);
+        let ack_timer = Timer::new(config.inactivity_timeout, config.max_count);
 
         let mut transaction = Self {
             config,
@@ -202,7 +210,7 @@ impl<T: FileStore> Transaction<T> {
             transport_tx,
             file_handle: None,
             saved_segments: BTreeMap::new(),
-            naks: Vec::new(),
+            naks: VecDeque::new(),
             metadata: None,
             received_file_size,
             header: None,
@@ -212,6 +220,7 @@ impl<T: FileStore> Transaction<T> {
             filestore_response: Vec::new(),
             nak_timer,
             inactivity_timer,
+            ack_timer,
         };
         transaction.inactivity_timer.restart();
         transaction
@@ -341,8 +350,16 @@ impl<T: FileStore> Transaction<T> {
         Ok((offset, data))
     }
 
-    fn send_file_segment(&mut self) -> TransactionResult<()> {
-        let (offset, file_data) = self.get_file_segment(None, None)?;
+    /// Send a segment of size `length` from position `offset` in the file.
+    /// When offset is [None], reads from the current cursor location.
+    /// when length is [None] uses the maximum length for the receiving Engine.
+    /// This size is set by the `file_size_segment` field in the [TransactionConfig].
+    fn send_file_segment(
+        &mut self,
+        offset: Option<u64>,
+        length: Option<u16>,
+    ) -> TransactionResult<()> {
+        let (offset, file_data) = self.get_file_segment(offset, length)?;
         let offset = match &self.config.file_size_flag {
             FileSizeFlag::Small => FileSizeSensitive::Small(offset.try_into()?),
             FileSizeFlag::Large => FileSizeSensitive::Large(offset),
@@ -373,22 +390,52 @@ impl<T: FileStore> Transaction<T> {
         Ok(())
     }
 
+    fn send_missing_data(&mut self) -> TransactionResult<()> {
+        let request = self.naks.pop_front().ok_or(TransactionError::MissingNak)?;
+
+        let (offset, length) = match (request.start_offset, request.end_offset) {
+            (FileSizeSensitive::Small(s), FileSizeSensitive::Small(e)) => {
+                (s.into(), (e - s).try_into()?)
+            }
+            (FileSizeSensitive::Large(s), FileSizeSensitive::Large(e)) => (s, (e - s).try_into()?),
+            _ => unreachable!(),
+        };
+        match offset == 0 && length == 0 {
+            true => self.send_metadata(),
+            false => {
+                let current_pos = {
+                    let handle = self.get_handle()?;
+                    handle.stream_position().map_err(FileStoreError::IO)?
+                };
+
+                self.send_file_segment(Some(offset), Some(length))?;
+
+                // restore to original location in the file
+                let handle = self.get_handle()?;
+                handle
+                    .seek(SeekFrom::Start(current_pos))
+                    .map_err(FileStoreError::IO)?;
+                Ok(())
+            }
+        }
+    }
+
     fn update_naks(&mut self, file_size: Option<FileSizeSensitive>) {
-        let mut naks: Vec<SegmentRequestForm> = vec![];
+        let mut naks: VecDeque<SegmentRequestForm> = VecDeque::new();
         let mut pointer: FileSizeSensitive = match &self.config.file_size_flag {
             FileSizeFlag::Small => FileSizeSensitive::Small(0_u32),
             FileSizeFlag::Large => FileSizeSensitive::Large(0_u64),
         };
 
         if self.metadata.is_none() {
-            naks.push(match &self.config.file_size_flag {
+            naks.push_back(match &self.config.file_size_flag {
                 FileSizeFlag::Small => SegmentRequestForm::from((0_u32, 0_u32)),
                 FileSizeFlag::Large => SegmentRequestForm::from((0_u64, 0_u64)),
             });
         }
         self.saved_segments.iter().for_each(|(offset, length)| {
             if offset > &pointer {
-                naks.push(SegmentRequestForm {
+                naks.push_back(SegmentRequestForm {
                     start_offset: pointer.clone(),
                     end_offset: offset.clone(),
                 });
@@ -407,7 +454,7 @@ impl<T: FileStore> Transaction<T> {
 
         if let Some(size) = file_size {
             if pointer < size {
-                naks.push(SegmentRequestForm {
+                naks.push_back(SegmentRequestForm {
                     start_offset: pointer,
                     end_offset: size,
                 });
@@ -476,6 +523,31 @@ impl<T: FileStore> Transaction<T> {
         Ok(())
     }
 
+    fn send_ack_finished(&mut self) -> TransactionResult<()> {
+        let ack = PositiveAcknowledgePDU {
+            directive: PDUDirective::Finished,
+            directive_subtype_code: ACKSubDirective::Finished,
+            condition: self.condition.clone(),
+            transaction_status: TransactionStatus::Undefined,
+        };
+        let payload = PDUPayload::Directive(Operations::Ack(ack));
+        let payload_len = payload.clone().encode().len() as u16;
+
+        let header = self.get_header(
+            Direction::ToReceiver,
+            PDUType::FileDirective,
+            payload_len,
+            SegmentationControl::NotPreserved,
+        );
+
+        let destination = header.destination_entity_id.clone();
+        let pdu = PDU { header, payload };
+
+        self.transport_tx.send((destination, pdu))?;
+
+        Ok(())
+    }
+
     fn send_ack_eof(&mut self) -> TransactionResult<()> {
         let ack = PositiveAcknowledgePDU {
             directive: PDUDirective::EoF,
@@ -531,30 +603,36 @@ impl<T: FileStore> Transaction<T> {
     }
 
     fn send_finished(&mut self, fault_location: Option<EntityID>) -> TransactionResult<()> {
-        let finished = Finished {
-            condition: self.condition.clone(),
-            delivery_code: self.delivery_code.clone(),
-            file_status: self.file_status.clone(),
-            filestore_response: self.filestore_response.clone(),
-            fault_location,
-        };
+        self.ack_timer.restart();
+        match self.ack_timer.limit_reached() {
+            true => self.handle_fault(Condition::PositiveLimitReached),
+            false => {
+                let finished = Finished {
+                    condition: self.condition.clone(),
+                    delivery_code: self.delivery_code.clone(),
+                    file_status: self.file_status.clone(),
+                    filestore_response: self.filestore_response.clone(),
+                    fault_location,
+                };
 
-        let payload = PDUPayload::Directive(Operations::Finished(finished));
+                let payload = PDUPayload::Directive(Operations::Finished(finished));
 
-        let payload_len = payload.clone().encode().len() as u16;
+                let payload_len = payload.clone().encode().len() as u16;
 
-        let header = self.get_header(
-            Direction::ToSender,
-            PDUType::FileDirective,
-            payload_len,
-            SegmentationControl::NotPreserved,
-        );
+                let header = self.get_header(
+                    Direction::ToSender,
+                    PDUType::FileDirective,
+                    payload_len,
+                    SegmentationControl::NotPreserved,
+                );
 
-        let destination = header.source_entity_id.clone();
-        let pdu = PDU { header, payload };
+                let destination = header.source_entity_id.clone();
+                let pdu = PDU { header, payload };
 
-        self.transport_tx.send((destination, pdu))?;
-        Ok(())
+                self.transport_tx.send((destination, pdu))?;
+                Ok(())
+            }
+        }
     }
 
     fn send_naks(&mut self) -> TransactionResult<()> {
@@ -568,7 +646,7 @@ impl<T: FileStore> Transaction<T> {
                         FileSizeFlag::Large => FileSizeSensitive::Large(0),
                     },
                     end_of_scope: self.received_file_size.clone(),
-                    segment_requests: self.naks.clone(),
+                    segment_requests: self.naks.clone().into(),
                 };
                 let payload = PDUPayload::Directive(Operations::Nak(nak));
                 let payload_len = payload.clone().encode().len();
@@ -642,11 +720,216 @@ impl<T: FileStore> Transaction<T> {
             payload,
         } = pdu;
         match (&self.config.action_type, &self.config.transmission_mode) {
-            (Action::Send, TransmissionMode::Acknowledged) => {
-                todo!()
-            }
+            (Action::Send, TransmissionMode::Acknowledged) => match payload {
+                PDUPayload::FileData(_data) => Err(TransactionError::UnexpectedPDU((
+                    self.config.sequence_number.clone(),
+                    self.config.action_type,
+                    self.config.transmission_mode.clone(),
+                    "File Data".to_owned(),
+                ))),
+                PDUPayload::Directive(operation) => match operation {
+                    Operations::EoF(_eof) => Err(TransactionError::UnexpectedPDU((
+                        self.config.sequence_number.clone(),
+                        self.config.action_type,
+                        self.config.transmission_mode.clone(),
+                        "End of File".to_owned(),
+                    ))),
+                    Operations::Metadata(_metadata) => Err(TransactionError::UnexpectedPDU((
+                        self.config.sequence_number.clone(),
+                        self.config.action_type,
+                        self.config.transmission_mode.clone(),
+                        "Metadata PDU".to_owned(),
+                    ))),
+                    Operations::Prompt(_prompt) => Err(TransactionError::UnexpectedPDU((
+                        self.config.sequence_number.clone(),
+                        self.config.action_type,
+                        self.config.transmission_mode.clone(),
+                        "Prompt PDU".to_owned(),
+                    ))),
+                    Operations::Finished(finished) => {
+                        self.delivery_code = finished.delivery_code;
+                        if finished.condition == Condition::NoError {
+                            self.send_ack_finished()
+                            // shutdown
+                        } else {
+                            // essentially cancel
+                            // but nothing else to do
+                            self.condition = finished.condition;
+                            self.send_ack_finished()
+                            // shutdown
+                        }
+                    }
+                    Operations::Nak(nak) => {
+                        // check and filter for naks where the length of the request is greater than
+                        // the maximum allowed file size
+                        // as the Receiver we don't care if the length is too big
+                        // But the Sender needs segments to fit in the expected size.
+                        let formatted_segments =
+                            nak.segment_requests
+                                .into_iter()
+                                .flat_map(|form| match form {
+                                    SegmentRequestForm {
+                                        start_offset: FileSizeSensitive::Small(mut s),
+                                        end_offset: FileSizeSensitive::Small(e),
+                                    } => {
+                                        match e - s > (self.config.file_size_segment as u32) {
+                                            // no op this is fine
+                                            false => vec![form].into_iter(),
+                                            true => {
+                                                let mut out = vec![];
+                                                while s < (e - self.config.file_size_segment as u32)
+                                                {
+                                                    out.push(SegmentRequestForm {
+                                                        start_offset: FileSizeSensitive::Small(s),
+                                                        end_offset: FileSizeSensitive::Small(
+                                                            s + self.config.file_size_segment
+                                                                as u32,
+                                                        ),
+                                                    });
+                                                    s += self.config.file_size_segment as u32;
+                                                }
+                                                out.push(SegmentRequestForm {
+                                                    start_offset: FileSizeSensitive::Small(s),
+                                                    end_offset: FileSizeSensitive::Small(e),
+                                                });
+                                                out.into_iter()
+                                            }
+                                        }
+                                    }
+                                    SegmentRequestForm {
+                                        start_offset: FileSizeSensitive::Large(mut s),
+                                        end_offset: FileSizeSensitive::Large(e),
+                                    } => {
+                                        match e - s > (self.config.file_size_segment as u64) {
+                                            // no op this is fine
+                                            false => vec![form].into_iter(),
+                                            true => {
+                                                let mut out = vec![];
+                                                while s < (e - self.config.file_size_segment as u64)
+                                                {
+                                                    out.push(SegmentRequestForm {
+                                                        start_offset: FileSizeSensitive::Large(s),
+                                                        end_offset: FileSizeSensitive::Large(
+                                                            s + self.config.file_size_segment
+                                                                as u64,
+                                                        ),
+                                                    });
+                                                    s += self.config.file_size_segment as u64;
+                                                }
+                                                out.push(SegmentRequestForm {
+                                                    start_offset: FileSizeSensitive::Large(s),
+                                                    end_offset: FileSizeSensitive::Large(e),
+                                                });
+                                                out.into_iter()
+                                            }
+                                        }
+                                    }
+                                    _ => unreachable!(),
+                                });
+                        self.naks.extend(formatted_segments);
+                        // filter out any duplicated NAKS
+                        let mut uniques = HashSet::new();
+                        self.naks.retain(|element| uniques.insert(element.clone()));
+                        Ok(())
+                    }
+                    Operations::Ack(ack) => {
+                        if ack.directive == PDUDirective::EoF {
+                            self.ack_timer.pause();
+                            // all good
+                            Ok(())
+                        } else {
+                            Err(TransactionError::UnexpectedPDU((
+                                self.config.sequence_number.clone(),
+                                self.config.action_type,
+                                self.config.transmission_mode.clone(),
+                                format!("ACK {:?}", ack.directive),
+                            )))
+                        }
+                    }
+                    Operations::KeepAlive(keepalive) => {
+                        self.received_file_size = keepalive.progress;
+                        Ok(())
+                    }
+                },
+            },
             (Action::Send, TransmissionMode::Unacknowledged) => {
-                todo!()
+                match payload {
+                    PDUPayload::FileData(_data) => Err(TransactionError::UnexpectedPDU((
+                        self.config.sequence_number.clone(),
+                        self.config.action_type,
+                        self.config.transmission_mode.clone(),
+                        "File Data".to_owned(),
+                    ))),
+                    PDUPayload::Directive(operation) => match operation {
+                        Operations::EoF(_eof) => Err(TransactionError::UnexpectedPDU((
+                            self.config.sequence_number.clone(),
+                            self.config.action_type,
+                            self.config.transmission_mode.clone(),
+                            "End of File".to_owned(),
+                        ))),
+                        Operations::Metadata(_metadata) => Err(TransactionError::UnexpectedPDU((
+                            self.config.sequence_number.clone(),
+                            self.config.action_type,
+                            self.config.transmission_mode.clone(),
+                            "Metadata PDU".to_owned(),
+                        ))),
+                        Operations::Prompt(_prompt) => Err(TransactionError::UnexpectedPDU((
+                            self.config.sequence_number.clone(),
+                            self.config.action_type,
+                            self.config.transmission_mode.clone(),
+                            "Prompt PDU".to_owned(),
+                        ))),
+                        Operations::Ack(_ack) => Err(TransactionError::UnexpectedPDU((
+                            self.config.sequence_number.clone(),
+                            self.config.action_type,
+                            self.config.transmission_mode.clone(),
+                            "ACK PDU".to_owned(),
+                        ))),
+                        Operations::KeepAlive(_keepalive) => {
+                            Err(TransactionError::UnexpectedPDU((
+                                self.config.sequence_number.clone(),
+                                self.config.action_type,
+                                self.config.transmission_mode.clone(),
+                                "Keep Alive PDU".to_owned(),
+                            )))
+                        }
+                        Operations::Finished(finished) => {
+                            self.delivery_code = finished.delivery_code;
+                            match self
+                                .metadata
+                                .as_ref()
+                                .map(|meta| meta.closure_requested)
+                                .unwrap_or(false)
+                            {
+                                true => {
+                                    if finished.condition == Condition::NoError {
+                                        // self.send_ack_finished()
+                                        // shutdown
+                                    } else {
+                                        // essentially cancel
+                                        // but nothing else to do
+                                        self.condition = finished.condition;
+                                        // self.send_ack_finished()
+                                        // shutdown
+                                    }
+                                    Ok(())
+                                }
+                                false => Err(TransactionError::UnexpectedPDU((
+                                    self.config.sequence_number.clone(),
+                                    self.config.action_type,
+                                    self.config.transmission_mode.clone(),
+                                    "Prompt PDU".to_owned(),
+                                ))),
+                            }
+                        }
+                        Operations::Nak(_) => Err(TransactionError::UnexpectedPDU((
+                            self.config.sequence_number.clone(),
+                            self.config.action_type,
+                            self.config.transmission_mode.clone(),
+                            "NAK PDU".to_owned(),
+                        ))),
+                    },
+                }
             }
             (Action::Receive, TransmissionMode::Acknowledged) => {
                 match payload {
@@ -707,6 +990,7 @@ impl<T: FileStore> Transaction<T> {
                                     && ack.directive_subtype_code == ACKSubDirective::Finished
                                     && ack.condition == Condition::NoError
                                 {
+                                    self.ack_timer.pause();
                                     Ok(())
                                 } else {
                                     // No other ACKs are expected for a receiver
@@ -741,6 +1025,16 @@ impl<T: FileStore> Transaction<T> {
                                             .iter()
                                             .filter_map(|op| match op {
                                                 MetadataTLV::FileStoreRequest(req) => {
+                                                    Some(req.clone())
+                                                }
+                                                _ => None,
+                                            })
+                                            .collect(),
+                                        message_to_user: metadata
+                                            .options
+                                            .iter()
+                                            .filter_map(|op| match op {
+                                                MetadataTLV::MessageToUser(req) => {
                                                     Some(req.clone())
                                                 }
                                                 _ => None,
@@ -886,6 +1180,14 @@ impl<T: FileStore> Transaction<T> {
                                         _ => None,
                                     })
                                     .collect(),
+                                message_to_user: metadata
+                                    .options
+                                    .iter()
+                                    .filter_map(|op| match op {
+                                        MetadataTLV::MessageToUser(req) => Some(req.clone()),
+                                        _ => None,
+                                    })
+                                    .collect(),
                             });
                         }
                         Ok(())
@@ -920,14 +1222,21 @@ impl<T: FileStore> Transaction<T> {
         }
     }
 
-    pub fn put(&mut self, options: Vec<MessageToUser>) -> TransactionResult<()> {
+    fn send_metadata(&mut self) -> TransactionResult<()> {
         let id = self.id();
-        // TODO this assumes a UNIX system presently. Need to add windows support.
         let destination = self.config.destination_entity_id.clone();
         let metadata = MetadataPDU {
-            closure_requested: self.metadata.as_ref().unwrap().closure_requested,
+            closure_requested: self
+                .metadata
+                .as_ref()
+                .map(|meta| meta.closure_requested)
+                .ok_or_else(|| TransactionError::MissingMetadata(id.clone()))?,
             checksum_type: self.config.checksum_type.clone(),
-            file_size: self.metadata.as_ref().unwrap().file_size.clone(),
+            file_size: self
+                .metadata
+                .as_ref()
+                .map(|meta| meta.file_size.clone())
+                .ok_or_else(|| TransactionError::MissingMetadata(id.clone()))?,
             source_filename: self
                 .metadata
                 .as_ref()
@@ -946,10 +1255,21 @@ impl<T: FileStore> Transaction<T> {
                         .map(|str| str.as_bytes().to_vec())
                 })
                 .ok_or_else(|| TransactionError::MissingMetadata(id.clone()))?,
-            options: options
-                .into_iter()
-                .map(MetadataTLV::MessageToUser)
-                .collect(),
+            options: self
+                .metadata
+                .as_ref()
+                .map(|meta| {
+                    meta.filestore_requests
+                        .iter()
+                        .map(|fs| MetadataTLV::FileStoreRequest(fs.clone()))
+                        .chain(
+                            meta.message_to_user
+                                .iter()
+                                .map(|msg| MetadataTLV::MessageToUser(msg.clone())),
+                        )
+                        .collect()
+                })
+                .ok_or_else(|| TransactionError::MissingMetadata(id.clone()))?,
         };
         let payload = PDUPayload::Directive(Operations::Metadata(metadata));
         let payload_len: u16 = payload.clone().encode().len().try_into()?;
@@ -966,5 +1286,9 @@ impl<T: FileStore> Transaction<T> {
 
         self.transport_tx.send((destination, pdu))?;
         Ok(())
+    }
+
+    pub fn put(&mut self) -> TransactionResult<()> {
+        self.send_metadata()
     }
 }

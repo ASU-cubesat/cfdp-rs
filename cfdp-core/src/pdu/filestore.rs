@@ -135,6 +135,66 @@ impl FileStoreStatus {
         }
     }
 
+    pub fn is_fail(&self) -> bool {
+        match self {
+            Self::CreateFile(CreateFileStatus::NotAllowed | CreateFileStatus::NotPerformed) => true,
+            Self::CreateFile(_) => false,
+            Self::DeleteFile(
+                DeleteFileStatus::DeleteNotAllowed
+                | DeleteFileStatus::FileDoesNotExist
+                | DeleteFileStatus::NotPerformed,
+            ) => true,
+            Self::RenameFile(
+                RenameStatus::NewFilenameAlreadyExists
+                | RenameStatus::NotPerformed
+                | RenameStatus::OldFilenameDoesNotExist
+                | RenameStatus::RenameNotAllowed,
+            ) => true,
+            Self::AppendFile(
+                AppendStatus::Filename1DoesNotExist
+                | AppendStatus::Filename2DoesNotExist
+                | AppendStatus::NotAllowed
+                | AppendStatus::NotPerformed,
+            ) => true,
+            Self::ReplaceFile(
+                ReplaceStatus::Filename1DoesNotExist
+                | ReplaceStatus::Filename2DoesNotExist
+                | ReplaceStatus::NotAllowed
+                | ReplaceStatus::NotPerformed,
+            ) => true,
+            Self::CreateDirectory(
+                CreateDirectoryStatus::DirectoryCannotBeCreated
+                | CreateDirectoryStatus::NotPerformed,
+            ) => true,
+            Self::RemoveDirectory(
+                RemoveDirectoryStatus::DeleteNotAllowed
+                | RemoveDirectoryStatus::DirectoryDoesNotExist
+                | RemoveDirectoryStatus::NotPerformed,
+            ) => true,
+            Self::DenyFile(DenyStatus::NotAllowed | DenyStatus::NotPerformed) => true,
+            Self::DenyDirectory(DenyStatus::NotAllowed | DenyStatus::NotPerformed) => true,
+            _ => false,
+        }
+    }
+
+    pub fn get_not_performed(action: &FileStoreAction) -> Self {
+        match action {
+            FileStoreAction::CreateFile => Self::CreateFile(CreateFileStatus::NotPerformed),
+            FileStoreAction::DeleteFile => Self::DeleteFile(DeleteFileStatus::NotPerformed),
+            FileStoreAction::RenameFile => Self::RenameFile(RenameStatus::NotPerformed),
+            FileStoreAction::AppendFile => Self::AppendFile(AppendStatus::NotPerformed),
+            FileStoreAction::ReplaceFile => Self::ReplaceFile(ReplaceStatus::NotPerformed),
+            FileStoreAction::CreateDirectory => {
+                Self::CreateDirectory(CreateDirectoryStatus::NotPerformed)
+            }
+            FileStoreAction::RemoveDirectory => {
+                Self::RemoveDirectory(RemoveDirectoryStatus::NotPerformed)
+            }
+            FileStoreAction::DenyFile => Self::DenyFile(DenyStatus::NotPerformed),
+            FileStoreAction::DenyDirectory => Self::DenyDirectory(DenyStatus::NotPerformed),
+        }
+    }
+
     pub fn get_status(action: &FileStoreAction, status: u8) -> PDUResult<Self> {
         match action {
             FileStoreAction::CreateFile => {
@@ -249,6 +309,16 @@ pub struct FileStoreResponse {
     pub second_filename: Vec<u8>,
     /// LV type field, omitted when length 0
     pub filestore_message: Vec<u8>,
+}
+impl FileStoreResponse {
+    pub fn not_performed(request: &FileStoreRequest) -> Self {
+        Self {
+            action_and_status: FileStoreStatus::get_not_performed(&request.action_code),
+            first_filename: request.first_filename.clone(),
+            second_filename: request.second_filename.clone(),
+            filestore_message: vec![],
+        }
+    }
 }
 impl PDUEncode for FileStoreResponse {
     type PDUType = Self;

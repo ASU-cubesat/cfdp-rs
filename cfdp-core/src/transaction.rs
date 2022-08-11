@@ -607,18 +607,31 @@ impl<T: FileStore> Transaction<T> {
         } else {
             FileStatusCode::Unreported
         };
+        // A filestore rejection is a failure mode for the entire transaction.
+        if self.file_status == FileStatusCode::FileStoreRejection {
+            return self.handle_fault(Condition::FileStoreRejection);
+        }
 
-        self.filestore_response = self
-            .metadata
-            .as_ref()
-            .map(|meta| {
-                meta.filestore_requests
-                    .iter()
-                    .map(|req| self.filestore.lock().map(|fs| fs.process_request(req)))
-                    .filter_map(Result::ok)
-                    .collect()
-            })
-            .unwrap_or_else(Vec::new);
+        // Only perform the Filestore requests if the Copy was successful
+        self.filestore_response = {
+            let mut fail_rest = false;
+            let mut out = vec![];
+            if let Some(meta) = self.metadata.as_ref() {
+                for request in &meta.filestore_requests {
+                    let response = match fail_rest {
+                        false => {
+                            let rep = self.filestore.lock()?.process_request(request);
+                            fail_rest = rep.action_and_status.is_fail();
+                            rep
+                        }
+                        true => FileStoreResponse::not_performed(request),
+                    };
+
+                    out.push(response);
+                }
+            }
+            out
+        };
         Ok(())
     }
 

@@ -9,7 +9,7 @@ use super::{
 };
 
 #[repr(u8)]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FaultHandlerAction {
     Cancel,
     Suspend,

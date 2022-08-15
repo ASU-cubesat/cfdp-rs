@@ -135,46 +135,23 @@ impl FileStoreStatus {
         }
     }
 
+    pub fn success(&self) -> bool {
+        matches!(
+            self,
+            Self::CreateFile(CreateFileStatus::Successful)
+                | Self::DeleteFile(DeleteFileStatus::Successful)
+                | Self::RenameFile(RenameStatus::Successful)
+                | Self::AppendFile(AppendStatus::Successful)
+                | Self::ReplaceFile(ReplaceStatus::Successful)
+                | Self::CreateDirectory(CreateDirectoryStatus::Successful)
+                | Self::RemoveDirectory(RemoveDirectoryStatus::Successful)
+                | Self::DenyFile(DenyStatus::Successful)
+                | Self::DenyDirectory(DenyStatus::Successful)
+        )
+    }
+
     pub fn is_fail(&self) -> bool {
-        match self {
-            Self::CreateFile(CreateFileStatus::NotAllowed | CreateFileStatus::NotPerformed) => true,
-            Self::CreateFile(_) => false,
-            Self::DeleteFile(
-                DeleteFileStatus::DeleteNotAllowed
-                | DeleteFileStatus::FileDoesNotExist
-                | DeleteFileStatus::NotPerformed,
-            ) => true,
-            Self::RenameFile(
-                RenameStatus::NewFilenameAlreadyExists
-                | RenameStatus::NotPerformed
-                | RenameStatus::OldFilenameDoesNotExist
-                | RenameStatus::RenameNotAllowed,
-            ) => true,
-            Self::AppendFile(
-                AppendStatus::Filename1DoesNotExist
-                | AppendStatus::Filename2DoesNotExist
-                | AppendStatus::NotAllowed
-                | AppendStatus::NotPerformed,
-            ) => true,
-            Self::ReplaceFile(
-                ReplaceStatus::Filename1DoesNotExist
-                | ReplaceStatus::Filename2DoesNotExist
-                | ReplaceStatus::NotAllowed
-                | ReplaceStatus::NotPerformed,
-            ) => true,
-            Self::CreateDirectory(
-                CreateDirectoryStatus::DirectoryCannotBeCreated
-                | CreateDirectoryStatus::NotPerformed,
-            ) => true,
-            Self::RemoveDirectory(
-                RemoveDirectoryStatus::DeleteNotAllowed
-                | RemoveDirectoryStatus::DirectoryDoesNotExist
-                | RemoveDirectoryStatus::NotPerformed,
-            ) => true,
-            Self::DenyFile(DenyStatus::NotAllowed | DenyStatus::NotPerformed) => true,
-            Self::DenyDirectory(DenyStatus::NotAllowed | DenyStatus::NotPerformed) => true,
-            _ => false,
-        }
+        !self.success()
     }
 
     pub fn get_not_performed(action: &FileStoreAction) -> Self {
@@ -369,6 +346,137 @@ mod test {
     use crate::assert_err;
 
     use rstest::rstest;
+
+    #[rstest]
+    fn filestore_is_fail(
+        #[values(
+            FileStoreStatus::CreateFile(CreateFileStatus::NotAllowed),
+            FileStoreStatus::CreateFile(CreateFileStatus::NotPerformed),
+            FileStoreStatus::DeleteFile(DeleteFileStatus::FileDoesNotExist),
+            FileStoreStatus::DeleteFile(DeleteFileStatus::DeleteNotAllowed),
+            FileStoreStatus::DeleteFile(DeleteFileStatus::NotPerformed),
+            FileStoreStatus::RenameFile(RenameStatus::OldFilenameDoesNotExist),
+            FileStoreStatus::RenameFile(RenameStatus::NewFilenameAlreadyExists),
+            FileStoreStatus::RenameFile(RenameStatus::RenameNotAllowed),
+            FileStoreStatus::RenameFile(RenameStatus::NotPerformed),
+            FileStoreStatus::AppendFile(AppendStatus::Filename1DoesNotExist),
+            FileStoreStatus::AppendFile(AppendStatus::Filename2DoesNotExist),
+            FileStoreStatus::AppendFile(AppendStatus::NotAllowed),
+            FileStoreStatus::AppendFile(AppendStatus::NotPerformed),
+            FileStoreStatus::ReplaceFile(ReplaceStatus::Filename1DoesNotExist),
+            FileStoreStatus::ReplaceFile(ReplaceStatus::Filename2DoesNotExist),
+            FileStoreStatus::ReplaceFile(ReplaceStatus::NotAllowed),
+            FileStoreStatus::ReplaceFile(ReplaceStatus::NotPerformed),
+            FileStoreStatus::CreateDirectory(CreateDirectoryStatus::DirectoryCannotBeCreated),
+            FileStoreStatus::CreateDirectory(CreateDirectoryStatus::NotPerformed),
+            FileStoreStatus::RemoveDirectory(RemoveDirectoryStatus::DirectoryDoesNotExist),
+            FileStoreStatus::RemoveDirectory(RemoveDirectoryStatus::DeleteNotAllowed),
+            FileStoreStatus::RemoveDirectory(RemoveDirectoryStatus::NotPerformed),
+            FileStoreStatus::DenyFile(DenyStatus::NotAllowed),
+            FileStoreStatus::DenyFile(DenyStatus::NotPerformed),
+            FileStoreStatus::DenyDirectory(DenyStatus::NotAllowed),
+            FileStoreStatus::DenyDirectory(DenyStatus::NotPerformed)
+        )]
+        input: FileStoreStatus,
+    ) {
+        assert!(input.is_fail())
+    }
+
+    #[rstest]
+    #[case(
+        FileStoreRequest{
+            action_code: FileStoreAction::CreateFile,
+            first_filename: "a".as_bytes().to_vec(),
+            second_filename: vec![],
+
+        },
+        FileStoreStatus::CreateFile(CreateFileStatus::NotPerformed)
+    )]
+    #[case(
+        FileStoreRequest{
+            action_code: FileStoreAction::DeleteFile,
+            first_filename: "a".as_bytes().to_vec(),
+            second_filename: vec![],
+
+        },
+        FileStoreStatus::DeleteFile(DeleteFileStatus::NotPerformed)
+    )]
+    #[case(
+        FileStoreRequest{
+            action_code: FileStoreAction::AppendFile,
+            first_filename: "a".as_bytes().to_vec(),
+            second_filename: vec![],
+
+        },
+        FileStoreStatus::AppendFile(AppendStatus::NotPerformed)
+    )]
+    #[case(
+        FileStoreRequest{
+            action_code: FileStoreAction::RenameFile,
+            first_filename: "a".as_bytes().to_vec(),
+            second_filename: vec![],
+
+        },
+        FileStoreStatus::RenameFile(RenameStatus::NotPerformed)
+    )]
+    #[case(
+        FileStoreRequest{
+            action_code: FileStoreAction::ReplaceFile,
+            first_filename: "a".as_bytes().to_vec(),
+            second_filename: vec![],
+
+        },
+        FileStoreStatus::ReplaceFile(ReplaceStatus::NotPerformed)
+    )]
+    #[case(
+        FileStoreRequest{
+            action_code: FileStoreAction::CreateDirectory,
+            first_filename: "a".as_bytes().to_vec(),
+            second_filename: vec![],
+
+        },
+        FileStoreStatus::CreateDirectory(CreateDirectoryStatus::NotPerformed)
+    )]
+    #[case(
+        FileStoreRequest{
+            action_code: FileStoreAction::RemoveDirectory,
+            first_filename: "a".as_bytes().to_vec(),
+            second_filename: vec![],
+
+        },
+        FileStoreStatus::RemoveDirectory(RemoveDirectoryStatus::NotPerformed)
+    )]
+    #[case(
+        FileStoreRequest{
+            action_code: FileStoreAction::DenyFile,
+            first_filename: "a".as_bytes().to_vec(),
+            second_filename: vec![],
+
+        },
+        FileStoreStatus::DenyFile(DenyStatus::NotPerformed)
+    )]
+    #[case(
+        FileStoreRequest{
+            action_code: FileStoreAction::DenyDirectory,
+            first_filename: "a".as_bytes().to_vec(),
+            second_filename: vec![],
+
+        },
+        FileStoreStatus::DenyDirectory(DenyStatus::NotPerformed)
+    )]
+    fn get_not_performed(
+        #[case] input: FileStoreRequest,
+        #[case] action_and_status: FileStoreStatus,
+    ) {
+        let expected = FileStoreResponse {
+            action_and_status,
+            first_filename: input.first_filename.clone(),
+            second_filename: input.second_filename.clone(),
+            filestore_message: vec![],
+        };
+        let recovered = FileStoreResponse::not_performed(&input);
+        assert_eq!(expected, recovered)
+    }
 
     #[rstest]
     #[case("", "/a/longer/second/name")]

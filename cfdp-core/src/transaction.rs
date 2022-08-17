@@ -424,7 +424,7 @@ impl<T: FileStore> Transaction<T> {
     /// When offset is [None], reads from the current cursor location.
     /// when length is [None] uses the maximum length for the receiving Engine.
     /// This size is set by the `file_size_segment` field in the [TransactionConfig].
-    fn send_file_segment(
+    pub fn send_file_segment(
         &mut self,
         offset: Option<u64>,
         length: Option<u16>,
@@ -461,7 +461,7 @@ impl<T: FileStore> Transaction<T> {
         Ok(())
     }
 
-    fn send_missing_data(&mut self) -> TransactionResult<()> {
+    pub fn send_missing_data(&mut self) -> TransactionResult<()> {
         let request = self.naks.pop_front().ok_or(TransactionError::MissingNak)?;
 
         let (offset, length) = match (request.start_offset, request.end_offset) {

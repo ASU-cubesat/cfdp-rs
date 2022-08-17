@@ -1,6 +1,6 @@
 pub mod filestore;
 pub mod pdu;
-mod timer;
+pub mod timer;
 pub mod transaction;
 pub mod transport;
 

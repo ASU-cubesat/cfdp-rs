@@ -115,6 +115,7 @@ pub enum Action {
     Receive,
 }
 
+#[cfg_attr(test, derive(Debug, PartialEq))]
 struct Metadata {
     /// Bytes of the source filename, can be null if length is 0.
     pub source_filename: PathBuf,
@@ -128,6 +129,8 @@ struct Metadata {
     message_to_user: Vec<MessageToUser>,
     /// Flag to track whether Transaciton Closure will be requested.
     pub closure_requested: bool,
+    /// Flag to track what kind of [Checksum](crate::filestore::ChecksumType) will be used in this transaction.
+    pub checksum_type: ChecksumType,
 }
 
 #[cfg_attr(test, derive(Clone))]
@@ -154,8 +157,6 @@ pub struct TransactionConfig {
     pub crc_flag: CRCFlag,
     /// Flag indicating whether file metadata is included with FileData
     pub segment_metadata_flag: SegmentedData,
-    /// Flag to track what kind of [Checksum](crate::filestore::ChecksumType) will be used in this transaction.
-    pub checksum_type: ChecksumType,
     /// Maximum count of timeouts on a [Timer] before a fault is generated.
     pub max_count: u32,
     /// Maximum amount timeof without activity before a [Timer] increments its count.
@@ -294,7 +295,14 @@ impl<T: FileStore> Transaction<T> {
         match self.checksum {
             Some(val) => Ok(val),
             None => {
-                let checksum_type = self.config.checksum_type.clone();
+                let checksum_type = self
+                    .metadata
+                    .as_ref()
+                    .map(|meta| meta.checksum_type.clone())
+                    .ok_or_else(|| {
+                        let id = self.id();
+                        TransactionError::MissingMetadata(id)
+                    })?;
                 let checksum = self.get_handle()?.checksum(checksum_type)?;
                 self.checksum = Some(checksum);
                 Ok(checksum)
@@ -552,60 +560,69 @@ impl<T: FileStore> Transaction<T> {
 
     fn send_eof(&mut self, fault_location: Option<EntityID>) -> TransactionResult<()> {
         self.ack_timer.restart();
-        match self.ack_timer.limit_reached() {
-            true => self.handle_fault(Condition::PositiveLimitReached),
-            false => {
-                let eof = EndOfFile {
-                    condition: self.condition.clone(),
-                    checksum: self.get_checksum()?,
-                    file_size: self
-                        .metadata
-                        .as_ref()
-                        .ok_or_else(|| {
-                            let id = self.id();
-                            TransactionError::MissingMetadata(id)
-                        })?
-                        .file_size
-                        .clone(),
-                    fault_location,
-                };
-                let payload = PDUPayload::Directive(Operations::EoF(eof));
-
-                let payload_len = payload.clone().encode().len() as u16;
-
-                let header = self.get_header(
-                    Direction::ToReceiver,
-                    PDUType::FileDirective,
-                    payload_len,
-                    SegmentationControl::NotPreserved,
-                );
-
-                let destination = header.destination_entity_id.clone();
-                let pdu = PDU { header, payload };
-
-                self.transport_tx.send((destination, pdu))?;
-                Ok(())
-            }
+        //  if is lazily evaluated so the fault is only handled if the limit is reached
+        if self.ack_timer.limit_reached()
+            && !self.proceed_despite_fault(Condition::PositiveLimitReached)?
+        {
+            return Ok(());
         }
+        let eof = EndOfFile {
+            condition: self.condition.clone(),
+            checksum: self.get_checksum()?,
+            file_size: self
+                .metadata
+                .as_ref()
+                .ok_or_else(|| {
+                    let id = self.id();
+                    TransactionError::MissingMetadata(id)
+                })?
+                .file_size
+                .clone(),
+            fault_location,
+        };
+        let payload = PDUPayload::Directive(Operations::EoF(eof));
+
+        let payload_len = payload.clone().encode().len() as u16;
+
+        let header = self.get_header(
+            Direction::ToReceiver,
+            PDUType::FileDirective,
+            payload_len,
+            SegmentationControl::NotPreserved,
+        );
+
+        let destination = header.destination_entity_id.clone();
+        let pdu = PDU { header, payload };
+
+        self.transport_tx.send((destination, pdu))?;
+        Ok(())
     }
 
     fn abandon(&mut self) {
         self.status = TransactionStatus::Terminated;
     }
     fn cancel(&mut self) -> TransactionResult<()> {
+        self.condition = Condition::CancelReceived;
         match (&self.config.action_type, &self.config.transmission_mode) {
             (Action::Send, TransmissionMode::Acknowledged) => {
-                self.condition = Condition::CancelReceived;
                 self.send_eof(Some(self.config.source_entity_id.clone()))
             }
             (Action::Send, TransmissionMode::Unacknowledged) => {
-                self.condition = Condition::CancelReceived;
                 self.send_eof(Some(self.config.source_entity_id.clone()))?;
                 self.abandon();
                 Ok(())
             }
             (Action::Receive, TransmissionMode::Acknowledged) => self.send_finished(None),
             (Action::Receive, TransmissionMode::Unacknowledged) => {
+                if self
+                    .metadata
+                    .as_ref()
+                    .map(|meta| meta.closure_requested)
+                    .unwrap_or(false)
+                {
+                    // need to check on fault_location
+                    self.send_finished(None)?;
+                }
                 self.abandon();
                 Ok(())
             }
@@ -618,7 +635,10 @@ impl<T: FileStore> Transaction<T> {
         self.nak_timer.pause();
         self.inactivity_timer.pause();
     }
-    fn handle_fault(&mut self, condition: Condition) -> TransactionResult<()> {
+
+    /// Take action according to the defined handler mapping.
+    /// Returns a boolean indicating if the calling function should continue (true) or not (false.)
+    fn proceed_despite_fault(&mut self, condition: Condition) -> TransactionResult<bool> {
         self.condition = condition;
         match self
             .config
@@ -628,17 +648,20 @@ impl<T: FileStore> Transaction<T> {
         {
             FaultHandlerAction::Ignore => {
                 // Log ignoring error
-                Ok(())
+                Ok(true)
             }
-            FaultHandlerAction::Cancel => self.cancel(),
+            FaultHandlerAction::Cancel => {
+                self.cancel()?;
+                Ok(false)
+            }
 
             FaultHandlerAction::Suspend => {
                 self.suspend();
-                Ok(())
+                Ok(false)
             }
             FaultHandlerAction::Abandon => {
                 self.abandon();
-                Ok(())
+                Ok(false)
             }
         }
     }
@@ -692,10 +715,11 @@ impl<T: FileStore> Transaction<T> {
     }
 
     fn check_file_size(&mut self, file_size: FileSizeSensitive) -> TransactionResult<()> {
-        match self.received_file_size >= file_size {
-            false => Ok(()),
-            true => self.handle_fault(Condition::FilesizeError),
+        if self.received_file_size > file_size {
+            // we will always exit here anyway
+            self.proceed_despite_fault(Condition::FilesizeError)?;
         }
+        Ok(())
     }
 
     fn get_progress(&self) -> FileSizeSensitive {
@@ -724,70 +748,80 @@ impl<T: FileStore> Transaction<T> {
 
     fn send_finished(&mut self, fault_location: Option<EntityID>) -> TransactionResult<()> {
         self.ack_timer.restart();
-        match self.ack_timer.limit_reached() {
-            true => self.handle_fault(Condition::PositiveLimitReached),
-            false => {
-                let finished = Finished {
-                    condition: self.condition.clone(),
-                    delivery_code: self.delivery_code.clone(),
-                    file_status: self.file_status.clone(),
-                    filestore_response: self.filestore_response.clone(),
-                    fault_location,
-                };
-
-                let payload = PDUPayload::Directive(Operations::Finished(finished));
-
-                let payload_len = payload.clone().encode().len() as u16;
-
-                let header = self.get_header(
-                    Direction::ToSender,
-                    PDUType::FileDirective,
-                    payload_len,
-                    SegmentationControl::NotPreserved,
-                );
-
-                let destination = header.source_entity_id.clone();
-                let pdu = PDU { header, payload };
-
-                self.transport_tx.send((destination, pdu))?;
-                Ok(())
-            }
+        //  if is lazily evaluated so the fault is only handled if the limit is reached
+        if self.ack_timer.limit_reached()
+            && !self.proceed_despite_fault(Condition::PositiveLimitReached)?
+        {
+            return Ok(());
         }
+        let finished = Finished {
+            condition: self.condition.clone(),
+            delivery_code: self.delivery_code.clone(),
+            file_status: self.file_status.clone(),
+            filestore_response: self.filestore_response.clone(),
+            fault_location,
+        };
+
+        let payload = PDUPayload::Directive(Operations::Finished(finished));
+
+        let payload_len = payload.clone().encode().len() as u16;
+
+        let header = self.get_header(
+            Direction::ToSender,
+            PDUType::FileDirective,
+            payload_len,
+            SegmentationControl::NotPreserved,
+        );
+
+        let destination = header.source_entity_id.clone();
+        let pdu = PDU { header, payload };
+
+        self.transport_tx.send((destination, pdu))?;
+        Ok(())
     }
 
     fn send_naks(&mut self) -> TransactionResult<()> {
         self.nak_timer.restart();
-        match self.nak_timer.limit_reached() {
-            true => self.handle_fault(Condition::NakLimitReached),
-            false => {
-                let nak = NegativeAcknowldegmentPDU {
-                    start_of_scope: match &self.config.file_size_flag {
-                        FileSizeFlag::Small => FileSizeSensitive::Small(0),
-                        FileSizeFlag::Large => FileSizeSensitive::Large(0),
-                    },
-                    end_of_scope: self.received_file_size.clone(),
-                    segment_requests: self.naks.clone().into(),
-                };
-                let payload = PDUPayload::Directive(Operations::Nak(nak));
-                let payload_len = payload.clone().encode().len();
-
-                let header = self.get_header(
-                    Direction::ToSender,
-                    PDUType::FileDirective,
-                    payload_len as u16,
-                    SegmentationControl::NotPreserved,
-                );
-                let destination = header.source_entity_id.clone();
-                let pdu = PDU { header, payload };
-                self.transport_tx.send((destination, pdu))?;
-
-                Ok(())
-            }
+        //  if is lazily evaluated so the fault is only handled if the limit is reached
+        if self.nak_timer.limit_reached()
+            && !self.proceed_despite_fault(Condition::NakLimitReached)?
+        {
+            return Ok(());
         }
+
+        let nak = NegativeAcknowldegmentPDU {
+            start_of_scope: match &self.config.file_size_flag {
+                FileSizeFlag::Small => FileSizeSensitive::Small(0),
+                FileSizeFlag::Large => FileSizeSensitive::Large(0),
+            },
+            end_of_scope: self.received_file_size.clone(),
+            segment_requests: self.naks.clone().into(),
+        };
+        let payload = PDUPayload::Directive(Operations::Nak(nak));
+        let payload_len = payload.clone().encode().len();
+
+        let header = self.get_header(
+            Direction::ToSender,
+            PDUType::FileDirective,
+            payload_len as u16,
+            SegmentationControl::NotPreserved,
+        );
+        let destination = header.source_entity_id.clone();
+        let pdu = PDU { header, payload };
+        self.transport_tx.send((destination, pdu))?;
+
+        Ok(())
     }
 
     fn verify_checksum(&mut self, checksum: u32) -> TransactionResult<bool> {
-        let checksum_type = self.config.checksum_type.clone();
+        let checksum_type = self
+            .metadata
+            .as_ref()
+            .map(|meta| meta.checksum_type.clone())
+            .ok_or_else(|| {
+                let id = self.id();
+                TransactionError::MissingMetadata(id)
+            })?;
         let handle = self.get_handle()?;
         Ok(handle.checksum(checksum_type)? == checksum)
     }
@@ -796,18 +830,22 @@ impl<T: FileStore> Transaction<T> {
         self.delivery_code = DeliveryCode::Complete;
 
         self.file_status = if self.is_file_transfer() {
-            match self.verify_checksum(checksum)? {
-                true => self
-                    .finalize_file()
-                    .unwrap_or(FileStatusCode::FileStoreRejection),
-                false => return self.handle_fault(Condition::FileChecksumFailure),
+            // proceed_despite_fault returns false if we should exit immediately
+            if !self.verify_checksum(checksum)?
+                && !self.proceed_despite_fault(Condition::FileChecksumFailure)?
+            {
+                return Ok(());
             }
+            self.finalize_file()
+                .unwrap_or(FileStatusCode::FileStoreRejection)
         } else {
             FileStatusCode::Unreported
         };
         // A filestore rejection is a failure mode for the entire transaction.
-        if self.file_status == FileStatusCode::FileStoreRejection {
-            return self.handle_fault(Condition::FileStoreRejection);
+        if self.file_status == FileStatusCode::FileStoreRejection
+            && !self.proceed_despite_fault(Condition::FileStoreRejection)?
+        {
+            return Ok(());
         }
 
         // Only perform the Filestore requests if the Copy was successful
@@ -1014,7 +1052,6 @@ impl<T: FileStore> Transaction<T> {
                             )))
                         }
                         Operations::Finished(finished) => {
-                            self.delivery_code = finished.delivery_code;
                             match self
                                 .metadata
                                 .as_ref()
@@ -1022,6 +1059,7 @@ impl<T: FileStore> Transaction<T> {
                                 .unwrap_or(false)
                             {
                                 true => {
+                                    self.delivery_code = finished.delivery_code;
                                     if finished.condition == Condition::NoError {
                                         // self.send_ack_finished()
                                         // shutdown
@@ -1149,6 +1187,7 @@ impl<T: FileStore> Transaction<T> {
                                         .map_err(FileStoreError::UTF8)?
                                         .into(),
                                         file_size: metadata.file_size,
+                                        checksum_type: metadata.checksum_type,
                                         closure_requested: metadata.closure_requested,
                                         filestore_requests: metadata
                                             .options
@@ -1249,9 +1288,8 @@ impl<T: FileStore> Transaction<T> {
                         }
                     }
                     Operations::EoF(eof) => {
-                        if eof.condition == Condition::NoError {
-                            self.condition = eof.condition;
-
+                        self.condition = eof.condition;
+                        if self.condition == Condition::NoError {
                             self.check_file_size(eof.file_size)?;
                             self.finalize_receive(eof.checksum)?;
                             // if closure was requested send a finished PDU
@@ -1267,12 +1305,11 @@ impl<T: FileStore> Transaction<T> {
                                     Some(self.config.destination_entity_id.clone())
                                 })?;
                             }
+
                             Ok(())
                         } else {
                             // Any other condition is essentially a
                             // CANCEL operation
-                            self.condition = eof.condition;
-                            // self.send_ack_eof()
                             self.cancel()
                             // issue finished log
                             // shutdown?
@@ -1280,6 +1317,16 @@ impl<T: FileStore> Transaction<T> {
                     }
                     Operations::Metadata(metadata) => {
                         if self.metadata.is_none() {
+                            let message_to_user =
+                                metadata.options.iter().filter_map(|op| match op {
+                                    MetadataTLV::MessageToUser(req) => Some(req.clone()),
+                                    _ => None,
+                                });
+                            // push each request up to the Daemon
+                            message_to_user
+                                .clone()
+                                .try_for_each(|msg| self.message_tx.send(msg))?;
+
                             self.metadata = Some(Metadata {
                                 source_filename: std::str::from_utf8(
                                     metadata.source_filename.as_slice(),
@@ -1292,6 +1339,7 @@ impl<T: FileStore> Transaction<T> {
                                 .map_err(FileStoreError::UTF8)?
                                 .into(),
                                 file_size: metadata.file_size,
+                                checksum_type: metadata.checksum_type,
                                 closure_requested: metadata.closure_requested,
                                 filestore_requests: metadata
                                     .options
@@ -1301,14 +1349,7 @@ impl<T: FileStore> Transaction<T> {
                                         _ => None,
                                     })
                                     .collect(),
-                                message_to_user: metadata
-                                    .options
-                                    .iter()
-                                    .filter_map(|op| match op {
-                                        MetadataTLV::MessageToUser(req) => Some(req.clone()),
-                                        _ => None,
-                                    })
-                                    .collect(),
+                                message_to_user: message_to_user.collect(),
                             });
                         }
                         Ok(())
@@ -1352,7 +1393,14 @@ impl<T: FileStore> Transaction<T> {
                 .as_ref()
                 .map(|meta| meta.closure_requested)
                 .ok_or_else(|| TransactionError::MissingMetadata(id.clone()))?,
-            checksum_type: self.config.checksum_type.clone(),
+            checksum_type: self
+                .metadata
+                .as_ref()
+                .map(|meta| meta.checksum_type.clone())
+                .ok_or_else(|| {
+                    let id = self.id();
+                    TransactionError::MissingMetadata(id)
+                })?,
             file_size: self
                 .metadata
                 .as_ref()
@@ -1418,9 +1466,12 @@ impl<T: FileStore> Transaction<T> {
 mod test {
     use std::thread;
 
-    use crate::filestore::NativeFileStore;
-
     use super::*;
+    use crate::{
+        assert_err,
+        filestore::NativeFileStore,
+        pdu::{FileStoreAction, FileStoreStatus, PromptPDU, RenameStatus},
+    };
 
     use crossbeam_channel::unbounded;
     use rstest::{fixture, rstest};
@@ -1446,7 +1497,6 @@ mod test {
             file_size_segment: 3_u16,
             crc_flag: CRCFlag::NotPresent,
             segment_metadata_flag: SegmentedData::NotPresent,
-            checksum_type: ChecksumType::Modular,
             max_count: 5_u32,
             inactivity_timeout: 300_i64,
         }
@@ -1474,6 +1524,7 @@ mod test {
             destination_filename: pathbuf.clone(),
             message_to_user: vec![],
             filestore_requests: vec![],
+            checksum_type: ChecksumType::Modular,
         });
 
         assert!(transaction.is_file_transfer())
@@ -1544,6 +1595,62 @@ mod test {
     }
 
     #[rstest]
+    fn finalize_file(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
+        let (transport_tx, _) = unbounded();
+        let (message_tx, _) = unbounded();
+        let mut config = default_config.clone();
+        config.action_type = Action::Receive;
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+
+        let input = "This is test data\n!";
+        let output_file = {
+            let mut temp_buff = PathBuf::new();
+            temp_buff.push("finalize_test.txt");
+            temp_buff
+        };
+
+        let mut transaction = Transaction::new(config, filestore.clone(), transport_tx, message_tx);
+        transaction.metadata = Some(Metadata {
+            closure_requested: false,
+            file_size: FileSizeSensitive::Small(input.len() as u32),
+            source_filename: output_file.clone(),
+            destination_filename: output_file.clone(),
+            message_to_user: vec![],
+            filestore_requests: vec![],
+            checksum_type: ChecksumType::Modular,
+        });
+
+        let data = FileDataPDU::Unsegmented(UnsegmentedFileData {
+            offset: FileSizeSensitive::Small(0),
+            file_data: input.as_bytes().to_vec(),
+        });
+        let (offset, length) = transaction
+            .store_file_data(data)
+            .expect("Error saving file data");
+
+        assert_eq!(FileSizeSensitive::Small(0), offset);
+        assert_eq!(input.len(), length);
+
+        let result = transaction
+            .finalize_file()
+            .expect("Error writing to finalize file.");
+        assert_eq!(FileStatusCode::Retained, result);
+
+        let mut out_string = String::new();
+        let contents = {
+            filestore
+                .lock()
+                .unwrap()
+                .open(output_file, OpenOptions::new().read(true))
+                .expect("Cannot open finalized file.")
+                .read_to_string(&mut out_string)
+                .expect("Cannot read finalized file.")
+        };
+        assert_eq!(input.len(), contents);
+        assert_eq!(input, out_string)
+    }
+
+    #[rstest]
     fn send_filedata(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
         let (transport_tx, transport_rx) = unbounded();
         let (message_tx, _) = unbounded();
@@ -1561,6 +1668,7 @@ mod test {
             destination_filename: pathbuf.clone(),
             message_to_user: vec![],
             filestore_requests: vec![],
+            checksum_type: ChecksumType::Modular,
         });
 
         let input = vec![0, 5, 255, 99];
@@ -1645,6 +1753,7 @@ mod test {
             destination_filename: pathbuf.clone(),
             message_to_user: vec![],
             filestore_requests: vec![],
+            checksum_type: ChecksumType::Modular,
         });
 
         let input = vec![0, 5, 255, 99];
@@ -1727,5 +1836,1155 @@ mod test {
             .unwrap()
             .delete_file(pathbuf.clone())
             .expect("cannot remove file");
+    }
+
+    #[rstest]
+    fn update_naks(
+        default_config: &TransactionConfig,
+        tempdir_fixture: &TempDir,
+        #[values(FileSizeFlag::Small, FileSizeFlag::Large)] file_size_flag: FileSizeFlag,
+    ) {
+        let (transport_tx, transport_rx) = unbounded();
+        let (message_tx, _) = unbounded();
+        let mut config = default_config.clone();
+        config.action_type = Action::Receive;
+        config.file_size_flag = file_size_flag;
+        let file_size = match &file_size_flag {
+            FileSizeFlag::Small => FileSizeSensitive::Small(20),
+            FileSizeFlag::Large => FileSizeSensitive::Large(20),
+        };
+
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+
+        let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
+
+        let input = vec![0, 5, 255, 99];
+        let data = FileDataPDU::Unsegmented(UnsegmentedFileData {
+            offset: match file_size_flag {
+                FileSizeFlag::Small => FileSizeSensitive::Small(6),
+                FileSizeFlag::Large => FileSizeSensitive::Large(6),
+            },
+            file_data: input,
+        });
+        let (offset, length) = transaction
+            .store_file_data(data)
+            .expect("Error saving file data");
+
+        match file_size_flag {
+            FileSizeFlag::Small => {
+                assert_eq!(FileSizeSensitive::Small(6), offset);
+            }
+            FileSizeFlag::Large => {
+                assert_eq!(FileSizeSensitive::Large(6), offset);
+            }
+        }
+        assert_eq!(4, length);
+        transaction.update_naks(Some(file_size.clone()));
+        transaction.received_file_size = file_size.clone();
+
+        let expected: VecDeque<SegmentRequestForm> = match file_size_flag {
+            FileSizeFlag::Small => vec![
+                SegmentRequestForm::from((0_u32, 0_u32)),
+                SegmentRequestForm::from((0_u32, 6_u32)),
+                SegmentRequestForm::from((10_u32, 20_u32)),
+            ]
+            .into(),
+            FileSizeFlag::Large => vec![
+                SegmentRequestForm::from((0_u64, 0_u64)),
+                SegmentRequestForm::from((0_u64, 6_u64)),
+                SegmentRequestForm::from((10_u64, 20_u64)),
+            ]
+            .into(),
+        };
+
+        assert_eq!(expected, transaction.naks);
+
+        let payload = PDUPayload::Directive(Operations::Nak(NegativeAcknowldegmentPDU {
+            start_of_scope: match file_size_flag {
+                FileSizeFlag::Small => FileSizeSensitive::Small(0),
+                FileSizeFlag::Large => FileSizeSensitive::Large(0),
+            },
+            end_of_scope: file_size,
+            segment_requests: expected.into(),
+        }));
+
+        let payload_len = payload.clone().encode().len();
+        let header = transaction.get_header(
+            Direction::ToSender,
+            PDUType::FileDirective,
+            payload_len as u16,
+            SegmentationControl::NotPreserved,
+        );
+
+        let pdu = PDU { header, payload };
+
+        // now that naks are created correctly
+        // test the right PDU is sent
+        thread::spawn(move || {
+            transaction.send_naks().unwrap();
+        });
+
+        let (destination_id, received_pdu) = transport_rx.recv().unwrap();
+        let expected_id = default_config.source_entity_id.clone();
+
+        assert_eq!(expected_id, destination_id);
+        assert_eq!(pdu, received_pdu);
+    }
+
+    #[rstest]
+    fn send_eof(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
+        let (transport_tx, transport_rx) = unbounded();
+        let (message_tx, _) = unbounded();
+        let config = default_config.clone();
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let mut transaction = Transaction::new(config, filestore.clone(), transport_tx, message_tx);
+
+        let mut pathbuf = PathBuf::new();
+        pathbuf.push("test_eof.dat");
+
+        let input = "Here is some test data to write!$*#*.\n";
+
+        transaction.metadata = Some(Metadata {
+            closure_requested: false,
+            file_size: FileSizeSensitive::Small(input.as_bytes().len() as u32),
+            source_filename: pathbuf.clone(),
+            destination_filename: pathbuf.clone(),
+            message_to_user: vec![],
+            filestore_requests: vec![],
+            checksum_type: ChecksumType::Modular,
+        });
+
+        let (checksum, _overflow) =
+            input
+                .as_bytes()
+                .chunks(4)
+                .fold((0_u32, false), |accum: (u32, bool), chunk| {
+                    let mut vec = vec![0_u8; 4];
+                    vec[..chunk.len()].copy_from_slice(chunk);
+                    accum
+                        .0
+                        .overflowing_add(u32::from_be_bytes(vec.try_into().unwrap()))
+                });
+
+        let payload = PDUPayload::Directive(Operations::EoF(EndOfFile {
+            condition: Condition::NoError,
+            checksum,
+            file_size: FileSizeSensitive::Small(input.as_bytes().len() as u32),
+            fault_location: None,
+        }));
+        let payload_len = payload.clone().encode().len();
+
+        let header = transaction.get_header(
+            Direction::ToReceiver,
+            PDUType::FileDirective,
+            payload_len as u16,
+            SegmentationControl::NotPreserved,
+        );
+        let pdu = PDU { header, payload };
+
+        thread::spawn(move || {
+            let fname = transaction
+                .metadata
+                .as_ref()
+                .unwrap()
+                .source_filename
+                .clone();
+
+            {
+                let mut handle = transaction
+                    .filestore
+                    .lock()
+                    .unwrap()
+                    .open(fname, OpenOptions::new().create_new(true).write(true))
+                    .unwrap();
+                handle
+                    .write_all(input.as_bytes())
+                    .expect("Cannot write test file in thread.");
+                handle.sync_all().expect("Bad file sync.");
+            }
+            transaction.send_eof(None).unwrap()
+        });
+
+        let (destination_id, received_pdu) = transport_rx.recv().unwrap();
+        let expected_id = default_config.destination_entity_id.clone();
+
+        assert_eq!(expected_id, destination_id);
+        assert_eq!(pdu, received_pdu);
+
+        filestore
+            .lock()
+            .unwrap()
+            .delete_file(pathbuf.clone())
+            .expect("cannot remove file");
+    }
+
+    #[rstest]
+    fn cancel_send(
+        default_config: &TransactionConfig,
+        tempdir_fixture: &TempDir,
+        #[values(TransmissionMode::Unacknowledged, TransmissionMode::Acknowledged)]
+        transmission_mode: TransmissionMode,
+    ) {
+        let (transport_tx, transport_rx) = unbounded();
+        let (message_tx, _) = unbounded();
+        let mut config = default_config.clone();
+        config.transmission_mode = transmission_mode;
+
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let mut transaction =
+            Transaction::new(config.clone(), filestore.clone(), transport_tx, message_tx);
+
+        let mut pathbuf = PathBuf::new();
+        pathbuf.push(format!("test_eof_{:}.dat", config.transmission_mode as u8));
+
+        let input = "Here is some test data to write!$*#*.\n";
+
+        transaction.metadata = Some(Metadata {
+            closure_requested: false,
+            file_size: FileSizeSensitive::Small(input.as_bytes().len() as u32),
+            source_filename: pathbuf.clone(),
+            destination_filename: pathbuf.clone(),
+            message_to_user: vec![],
+            filestore_requests: vec![],
+            checksum_type: ChecksumType::Modular,
+        });
+
+        let (checksum, _overflow) =
+            input
+                .as_bytes()
+                .chunks(4)
+                .fold((0_u32, false), |accum: (u32, bool), chunk| {
+                    let mut vec = vec![0_u8; 4];
+                    vec[..chunk.len()].copy_from_slice(chunk);
+                    accum
+                        .0
+                        .overflowing_add(u32::from_be_bytes(vec.try_into().unwrap()))
+                });
+
+        let payload = PDUPayload::Directive(Operations::EoF(EndOfFile {
+            condition: Condition::CancelReceived,
+            checksum,
+            file_size: FileSizeSensitive::Small(input.as_bytes().len() as u32),
+            fault_location: Some(config.source_entity_id),
+        }));
+        let payload_len = payload.clone().encode().len();
+
+        let header = transaction.get_header(
+            Direction::ToReceiver,
+            PDUType::FileDirective,
+            payload_len as u16,
+            SegmentationControl::NotPreserved,
+        );
+        let pdu = PDU { header, payload };
+
+        thread::spawn(move || {
+            let fname = transaction
+                .metadata
+                .as_ref()
+                .unwrap()
+                .source_filename
+                .clone();
+
+            {
+                let mut handle = transaction
+                    .filestore
+                    .lock()
+                    .unwrap()
+                    .open(
+                        fname,
+                        OpenOptions::new().create(true).truncate(true).write(true),
+                    )
+                    .unwrap();
+                handle
+                    .write_all(input.as_bytes())
+                    .expect("Cannot write test file in thread.");
+                handle.sync_all().expect("Bad file sync.");
+            }
+            transaction.cancel().unwrap();
+
+            if transaction.config.transmission_mode == TransmissionMode::Unacknowledged {
+                assert_eq!(TransactionStatus::Terminated, transaction.status);
+            }
+        });
+
+        let (destination_id, received_pdu) = transport_rx.recv().unwrap();
+        let expected_id = default_config.destination_entity_id.clone();
+
+        assert_eq!(expected_id, destination_id);
+        assert_eq!(pdu, received_pdu);
+
+        filestore
+            .lock()
+            .unwrap()
+            .delete_file(pathbuf.clone())
+            .expect("cannot remove file");
+    }
+
+    #[rstest]
+    fn cancel_receive(
+        default_config: &TransactionConfig,
+        tempdir_fixture: &TempDir,
+        #[values(TransmissionMode::Unacknowledged, TransmissionMode::Acknowledged)]
+        transmission_mode: TransmissionMode,
+    ) {
+        let (transport_tx, transport_rx) = unbounded();
+        let (message_tx, _) = unbounded();
+        let mut config = default_config.clone();
+        config.transmission_mode = transmission_mode;
+        config.action_type = Action::Receive;
+
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let mut transaction = Transaction::new(config.clone(), filestore, transport_tx, message_tx);
+
+        let mut pathbuf = PathBuf::new();
+        pathbuf.push(format!(
+            "test_eof_{:}.dat",
+            config.transmission_mode.clone() as u8
+        ));
+
+        let input = "Here is some test data to write!$*#*.\n";
+
+        transaction.metadata = Some(Metadata {
+            closure_requested: false,
+            file_size: FileSizeSensitive::Small(input.as_bytes().len() as u32),
+            source_filename: pathbuf.clone(),
+            destination_filename: pathbuf.clone(),
+            message_to_user: vec![],
+            filestore_requests: vec![],
+            checksum_type: ChecksumType::Modular,
+        });
+
+        let payload = PDUPayload::Directive(Operations::Finished(Finished {
+            condition: Condition::CancelReceived,
+            delivery_code: transaction.delivery_code.clone(),
+            file_status: transaction.file_status.clone(),
+            filestore_response: vec![],
+            fault_location: None,
+        }));
+        let payload_len = payload.clone().encode().len();
+
+        let header = transaction.get_header(
+            Direction::ToSender,
+            PDUType::FileDirective,
+            payload_len as u16,
+            SegmentationControl::NotPreserved,
+        );
+        let pdu = PDU { header, payload };
+
+        thread::spawn(move || {
+            transaction.cancel().unwrap();
+
+            if transaction.config.transmission_mode == TransmissionMode::Unacknowledged {
+                assert_eq!(TransactionStatus::Terminated, transaction.status);
+            }
+        });
+
+        if config.transmission_mode == TransmissionMode::Acknowledged {
+            let (destination_id, received_pdu) = transport_rx.recv().unwrap();
+            let expected_id = default_config.source_entity_id.clone();
+
+            assert_eq!(expected_id, destination_id);
+            assert_eq!(pdu, received_pdu);
+        }
+    }
+
+    #[rstest]
+    fn suspend(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
+        let (transport_tx, _) = unbounded();
+        let (message_tx, _) = unbounded();
+        let config = default_config.clone();
+
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
+
+        transaction.ack_timer.restart();
+        transaction.inactivity_timer.restart();
+        transaction.nak_timer.restart();
+
+        {
+            let timers = [
+                &transaction.ack_timer,
+                &transaction.inactivity_timer,
+                &transaction.nak_timer,
+            ];
+            timers.iter().for_each(|timer| {
+                assert!(timer.is_ticking());
+            });
+        }
+
+        transaction.suspend();
+
+        let timers = [
+            &transaction.ack_timer,
+            &transaction.inactivity_timer,
+            &transaction.nak_timer,
+        ];
+        timers.iter().for_each(|timer| assert!(!timer.is_ticking()));
+    }
+
+    #[rstest]
+    fn send_ack_fin(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
+        let (transport_tx, transport_rx) = unbounded();
+        let (message_tx, _) = unbounded();
+        let config = default_config.clone();
+
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let mut transaction = Transaction::new(config.clone(), filestore, transport_tx, message_tx);
+
+        let mut pathbuf = PathBuf::new();
+        pathbuf.push(format!("test_eof_{:}.dat", config.transmission_mode as u8));
+
+        let input = "Here is some test data to write!$*#*.\n";
+
+        transaction.metadata = Some(Metadata {
+            closure_requested: false,
+            file_size: FileSizeSensitive::Small(input.as_bytes().len() as u32),
+            source_filename: pathbuf.clone(),
+            destination_filename: pathbuf.clone(),
+            message_to_user: vec![],
+            filestore_requests: vec![],
+            checksum_type: ChecksumType::Modular,
+        });
+
+        let payload = PDUPayload::Directive(Operations::Ack(PositiveAcknowledgePDU {
+            directive: PDUDirective::Finished,
+            directive_subtype_code: ACKSubDirective::Finished,
+            condition: Condition::NoError,
+            transaction_status: transaction.status.clone(),
+        }));
+
+        let payload_len = payload.clone().encode().len();
+
+        let header = transaction.get_header(
+            Direction::ToReceiver,
+            PDUType::FileDirective,
+            payload_len as u16,
+            SegmentationControl::NotPreserved,
+        );
+        let pdu = PDU { header, payload };
+
+        thread::spawn(move || {
+            transaction.send_ack_finished().unwrap();
+        });
+
+        let (destination_id, received_pdu) = transport_rx.recv().unwrap();
+        let expected_id = default_config.destination_entity_id.clone();
+
+        assert_eq!(expected_id, destination_id);
+        assert_eq!(pdu, received_pdu);
+    }
+
+    #[rstest]
+    fn send_ack_eof(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
+        let (transport_tx, transport_rx) = unbounded();
+        let (message_tx, _) = unbounded();
+        let config = default_config.clone();
+
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let mut transaction = Transaction::new(config.clone(), filestore, transport_tx, message_tx);
+
+        let mut pathbuf = PathBuf::new();
+        pathbuf.push(format!("test_eof_{:}.dat", config.transmission_mode as u8));
+
+        let input = "Here is some test data to write!$*#*.\n";
+
+        transaction.metadata = Some(Metadata {
+            closure_requested: false,
+            file_size: FileSizeSensitive::Small(input.as_bytes().len() as u32),
+            source_filename: pathbuf.clone(),
+            destination_filename: pathbuf.clone(),
+            message_to_user: vec![],
+            filestore_requests: vec![],
+            checksum_type: ChecksumType::Modular,
+        });
+
+        let payload = PDUPayload::Directive(Operations::Ack(PositiveAcknowledgePDU {
+            directive: PDUDirective::EoF,
+            directive_subtype_code: ACKSubDirective::Other,
+            condition: Condition::NoError,
+            transaction_status: transaction.status.clone(),
+        }));
+
+        let payload_len = payload.clone().encode().len();
+
+        let header = transaction.get_header(
+            Direction::ToSender,
+            PDUType::FileDirective,
+            payload_len as u16,
+            SegmentationControl::NotPreserved,
+        );
+        let pdu = PDU { header, payload };
+
+        thread::spawn(move || {
+            transaction.send_ack_eof().unwrap();
+        });
+
+        let (destination_id, received_pdu) = transport_rx.recv().unwrap();
+        let expected_id = default_config.source_entity_id.clone();
+
+        assert_eq!(expected_id, destination_id);
+        assert_eq!(pdu, received_pdu);
+    }
+
+    #[rstest]
+    fn finalize_receive(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
+        let (transport_tx, _) = unbounded();
+        let (message_tx, _) = unbounded();
+        let mut config = default_config.clone();
+        config.action_type = Action::Receive;
+
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let mut transaction = Transaction::new(config, filestore.clone(), transport_tx, message_tx);
+
+        let mut pathbuf = PathBuf::new();
+        pathbuf.push("test_finalize_receive.dat");
+
+        let input = "Here is some test data to write!$*#*.\n";
+
+        transaction.metadata = Some(Metadata {
+            closure_requested: false,
+            file_size: FileSizeSensitive::Small(input.as_bytes().len() as u32),
+            source_filename: pathbuf.clone(),
+            destination_filename: pathbuf.clone(),
+            message_to_user: vec![],
+            checksum_type: ChecksumType::Modular,
+            filestore_requests: vec![FileStoreRequest {
+                action_code: FileStoreAction::DeleteFile,
+                first_filename: pathbuf.clone().to_str().unwrap().as_bytes().to_vec(),
+                second_filename: vec![],
+            }],
+        });
+
+        let (checksum, _overflow) =
+            input
+                .as_bytes()
+                .chunks(4)
+                .fold((0_u32, false), |accum: (u32, bool), chunk| {
+                    let mut vec = [0_u8; 4];
+                    vec[..chunk.len()].copy_from_slice(chunk);
+                    accum.0.overflowing_add(u32::from_be_bytes(vec))
+                });
+
+        let pdu = FileDataPDU::Unsegmented(UnsegmentedFileData {
+            offset: FileSizeSensitive::Small(0),
+            file_data: input.as_bytes().to_vec(),
+        });
+
+        transaction.store_file_data(pdu).unwrap();
+        transaction.finalize_receive(checksum).unwrap();
+
+        assert!(!filestore
+            .lock()
+            .unwrap()
+            .get_native_path(pathbuf.clone())
+            .exists());
+    }
+
+    #[rstest]
+    fn pdu_error_unack_recv(
+        default_config: &TransactionConfig,
+        tempdir_fixture: &TempDir,
+        #[values(
+            Operations::Ack(PositiveAcknowledgePDU {
+                directive: PDUDirective::Finished,
+                directive_subtype_code: ACKSubDirective::Finished,
+                condition: Condition::NoError,
+                transaction_status: TransactionStatus::Active,
+            }),
+            Operations::Ack(PositiveAcknowledgePDU {
+                directive: PDUDirective::EoF,
+                directive_subtype_code: ACKSubDirective::Other,
+                condition: Condition::NoError,
+                transaction_status: TransactionStatus::Active,
+            }),
+            Operations::Finished(Finished{
+                condition: Condition::CheckLimitReached,
+                delivery_code: DeliveryCode::Complete,
+                file_status: FileStatusCode::Retained,
+                filestore_response: vec![FileStoreResponse {
+                    action_and_status: FileStoreStatus::RenameFile(
+                        RenameStatus::NewFilenameAlreadyExists,
+                    ),
+                    first_filename: "/path/to/a/file".as_bytes().to_vec(),
+                    second_filename: "/path/to/a/new/file".as_bytes().to_vec(),
+                    filestore_message: vec![1_u8, 3, 58],
+                }],
+                fault_location: None,
+
+            }),
+            Operations::KeepAlive(KeepAlivePDU{
+                progress: FileSizeSensitive::Small(12_u32)
+            }),
+            Operations::Prompt(PromptPDU{
+                nak_or_keep_alive: NakOrKeepAlive::KeepAlive,
+            }),
+            Operations::Nak(NegativeAcknowldegmentPDU{
+                start_of_scope: FileSizeSensitive::Small(0_u32),
+                end_of_scope: FileSizeSensitive::Small(1022_u32),
+                segment_requests: vec![SegmentRequestForm::from((0_u32, 0_u32)), SegmentRequestForm::from((0_u32, 1022_u32))],
+            })
+        )]
+        operation: Operations,
+    ) {
+        let (transport_tx, _) = unbounded();
+        let (message_tx, _) = unbounded();
+        let mut config = default_config.clone();
+        config.action_type = Action::Receive;
+        config.transmission_mode = TransmissionMode::Unacknowledged;
+
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
+
+        let pathbuf = {
+            let mut pathbuf = PathBuf::new();
+            pathbuf.push("Test_file.txt");
+            pathbuf
+        };
+
+        transaction.metadata = Some(Metadata {
+            closure_requested: false,
+            file_size: FileSizeSensitive::Small(600),
+            source_filename: pathbuf.clone(),
+            destination_filename: pathbuf,
+            message_to_user: vec![],
+            filestore_requests: vec![],
+            checksum_type: ChecksumType::Modular,
+        });
+
+        let payload = PDUPayload::Directive(operation);
+        let payload_len = payload.clone().encode().len() as u16;
+        let header = transaction.get_header(
+            Direction::ToReceiver,
+            PDUType::FileDirective,
+            payload_len,
+            SegmentationControl::NotPreserved,
+        );
+        let pdu = PDU { header, payload };
+
+        let result = transaction.process_pdu(pdu);
+
+        assert_err!(
+            result,
+            Err(TransactionError::UnexpectedPDU((
+                _,
+                Action::Receive,
+                TransmissionMode::Unacknowledged,
+                _
+            )))
+        )
+    }
+
+    #[rstest]
+    fn pdu_error_ack_recv(
+        default_config: &TransactionConfig,
+        tempdir_fixture: &TempDir,
+        #[values(
+            Operations::Ack(PositiveAcknowledgePDU {
+                directive: PDUDirective::EoF,
+                directive_subtype_code: ACKSubDirective::Other,
+                condition: Condition::NoError,
+                transaction_status: TransactionStatus::Active,
+            }),
+            Operations::Finished(Finished{
+                condition: Condition::CheckLimitReached,
+                delivery_code: DeliveryCode::Complete,
+                file_status: FileStatusCode::Retained,
+                filestore_response: vec![FileStoreResponse {
+                    action_and_status: FileStoreStatus::RenameFile(
+                        RenameStatus::NewFilenameAlreadyExists,
+                    ),
+                    first_filename: "/path/to/a/file".as_bytes().to_vec(),
+                    second_filename: "/path/to/a/new/file".as_bytes().to_vec(),
+                    filestore_message: vec![1_u8, 3, 58],
+                }],
+                fault_location: None,
+
+            }),
+            Operations::KeepAlive(KeepAlivePDU{
+                progress: FileSizeSensitive::Small(12_u32)
+            }),
+            Operations::Nak(NegativeAcknowldegmentPDU{
+                start_of_scope: FileSizeSensitive::Small(0_u32),
+                end_of_scope: FileSizeSensitive::Small(1022_u32),
+                segment_requests: vec![SegmentRequestForm::from((0_u32, 0_u32)), SegmentRequestForm::from((0_u32, 1022_u32))],
+            })
+        )]
+        operation: Operations,
+    ) {
+        let (transport_tx, _) = unbounded();
+        let (message_tx, _) = unbounded();
+        let mut config = default_config.clone();
+        config.action_type = Action::Receive;
+        config.transmission_mode = TransmissionMode::Acknowledged;
+
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
+
+        let pathbuf = {
+            let mut pathbuf = PathBuf::new();
+            pathbuf.push("Test_file.txt");
+            pathbuf
+        };
+
+        transaction.metadata = Some(Metadata {
+            closure_requested: false,
+            file_size: FileSizeSensitive::Small(600),
+            source_filename: pathbuf.clone(),
+            destination_filename: pathbuf,
+            message_to_user: vec![],
+            filestore_requests: vec![],
+            checksum_type: ChecksumType::Modular,
+        });
+
+        let payload = PDUPayload::Directive(operation);
+        let payload_len = payload.clone().encode().len() as u16;
+        let header = transaction.get_header(
+            Direction::ToReceiver,
+            PDUType::FileDirective,
+            payload_len,
+            SegmentationControl::NotPreserved,
+        );
+        let pdu = PDU { header, payload };
+
+        let result = transaction.process_pdu(pdu);
+
+        assert_err!(
+            result,
+            Err(TransactionError::UnexpectedPDU((
+                _,
+                Action::Receive,
+                TransmissionMode::Acknowledged,
+                _
+            )))
+        )
+    }
+
+    #[rstest]
+    fn pdu_error_unack_send(
+        default_config: &TransactionConfig,
+        tempdir_fixture: &TempDir,
+        #[values(
+            Operations::EoF(EndOfFile{
+                condition: Condition::CancelReceived,
+                checksum: 12_u32,
+                file_size: FileSizeSensitive::Small(1022_u32),
+                fault_location: None,
+            }),
+            Operations::Metadata(MetadataPDU{
+                closure_requested: false,
+                checksum_type: ChecksumType::Modular,
+                file_size: FileSizeSensitive::Small(1022_u32),
+                source_filename: "test_filename".as_bytes().to_vec(),
+                destination_filename: "test_filename".as_bytes().to_vec(),
+                options: vec![],
+            }),
+            Operations::Prompt(PromptPDU{
+                nak_or_keep_alive: NakOrKeepAlive::KeepAlive,
+            }),
+            Operations::Ack(PositiveAcknowledgePDU {
+                directive: PDUDirective::EoF,
+                directive_subtype_code: ACKSubDirective::Other,
+                condition: Condition::NoError,
+                transaction_status: TransactionStatus::Active,
+            }),
+            Operations::KeepAlive(KeepAlivePDU{
+                progress: FileSizeSensitive::Small(12_u32)
+            }),
+            Operations::Finished(Finished{
+                condition: Condition::CheckLimitReached,
+                delivery_code: DeliveryCode::Complete,
+                file_status: FileStatusCode::Retained,
+                filestore_response: vec![FileStoreResponse {
+                    action_and_status: FileStoreStatus::RenameFile(
+                        RenameStatus::NewFilenameAlreadyExists,
+                    ),
+                    first_filename: "/path/to/a/file".as_bytes().to_vec(),
+                    second_filename: "/path/to/a/new/file".as_bytes().to_vec(),
+                    filestore_message: vec![1_u8, 3, 58],
+                }],
+                fault_location: None,
+
+            }),
+            Operations::Nak(NegativeAcknowldegmentPDU{
+                start_of_scope: FileSizeSensitive::Small(0_u32),
+                end_of_scope: FileSizeSensitive::Small(1022_u32),
+                segment_requests: vec![SegmentRequestForm::from((0_u32, 0_u32)), SegmentRequestForm::from((0_u32, 1022_u32))],
+            }),
+        )]
+        operation: Operations,
+    ) {
+        let (transport_tx, _) = unbounded();
+        let (message_tx, _) = unbounded();
+        let mut config = default_config.clone();
+        config.action_type = Action::Send;
+        config.transmission_mode = TransmissionMode::Unacknowledged;
+
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
+
+        let pathbuf = {
+            let mut pathbuf = PathBuf::new();
+            pathbuf.push("Test_file.txt");
+            pathbuf
+        };
+
+        transaction.metadata = Some(Metadata {
+            closure_requested: false,
+            file_size: FileSizeSensitive::Small(600),
+            source_filename: pathbuf.clone(),
+            destination_filename: pathbuf,
+            message_to_user: vec![],
+            filestore_requests: vec![],
+            checksum_type: ChecksumType::Modular,
+        });
+
+        let payload = PDUPayload::Directive(operation);
+        let payload_len = payload.clone().encode().len() as u16;
+        let header = transaction.get_header(
+            Direction::ToSender,
+            PDUType::FileDirective,
+            payload_len,
+            SegmentationControl::NotPreserved,
+        );
+        let pdu = PDU { header, payload };
+
+        let result = transaction.process_pdu(pdu);
+
+        assert_err!(
+            result,
+            Err(TransactionError::UnexpectedPDU((
+                _,
+                Action::Send,
+                TransmissionMode::Unacknowledged,
+                _
+            )))
+        )
+    }
+
+    #[rstest]
+    fn pdu_error_ack_send(
+        default_config: &TransactionConfig,
+        tempdir_fixture: &TempDir,
+        #[values(
+            Operations::EoF(EndOfFile{
+                condition: Condition::CancelReceived,
+                checksum: 12_u32,
+                file_size: FileSizeSensitive::Small(1022_u32),
+                fault_location: None,
+            }),
+            Operations::Metadata(MetadataPDU{
+                closure_requested: false,
+                checksum_type: ChecksumType::Modular,
+                file_size: FileSizeSensitive::Small(1022_u32),
+                source_filename: "test_filename".as_bytes().to_vec(),
+                destination_filename: "test_filename".as_bytes().to_vec(),
+                options: vec![],
+            }),
+            Operations::Prompt(PromptPDU{
+                nak_or_keep_alive: NakOrKeepAlive::KeepAlive,
+            }),
+        )]
+        operation: Operations,
+    ) {
+        let (transport_tx, _) = unbounded();
+        let (message_tx, _) = unbounded();
+        let mut config = default_config.clone();
+        config.action_type = Action::Send;
+        config.transmission_mode = TransmissionMode::Acknowledged;
+
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
+
+        let pathbuf = {
+            let mut pathbuf = PathBuf::new();
+            pathbuf.push("Test_file.txt");
+            pathbuf
+        };
+
+        transaction.metadata = Some(Metadata {
+            closure_requested: false,
+            file_size: FileSizeSensitive::Small(600),
+            source_filename: pathbuf.clone(),
+            destination_filename: pathbuf,
+            message_to_user: vec![],
+            filestore_requests: vec![],
+            checksum_type: ChecksumType::Modular,
+        });
+
+        let payload = PDUPayload::Directive(operation);
+        let payload_len = payload.clone().encode().len() as u16;
+        let header = transaction.get_header(
+            Direction::ToSender,
+            PDUType::FileDirective,
+            payload_len,
+            SegmentationControl::NotPreserved,
+        );
+        let pdu = PDU { header, payload };
+
+        let result = transaction.process_pdu(pdu);
+
+        assert_err!(
+            result,
+            Err(TransactionError::UnexpectedPDU((
+                _,
+                Action::Send,
+                TransmissionMode::Acknowledged,
+                _
+            )))
+        )
+    }
+
+    #[rstest]
+    fn pdu_error_send_data(
+        default_config: &TransactionConfig,
+        tempdir_fixture: &TempDir,
+        #[values(TransmissionMode::Unacknowledged, TransmissionMode::Acknowledged)]
+        transmission_mode: TransmissionMode,
+    ) {
+        let (transport_tx, _) = unbounded();
+        let (message_tx, _) = unbounded();
+        let mut config = default_config.clone();
+        config.action_type = Action::Send;
+        config.transmission_mode = transmission_mode;
+
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
+
+        let pathbuf = {
+            let mut pathbuf = PathBuf::new();
+            pathbuf.push("Test_file.txt");
+            pathbuf
+        };
+
+        transaction.metadata = Some(Metadata {
+            closure_requested: false,
+            file_size: FileSizeSensitive::Small(600),
+            source_filename: pathbuf.clone(),
+            destination_filename: pathbuf,
+            message_to_user: vec![],
+            filestore_requests: vec![],
+            checksum_type: ChecksumType::Modular,
+        });
+
+        let payload = PDUPayload::FileData(FileDataPDU::Unsegmented(UnsegmentedFileData {
+            offset: FileSizeSensitive::Small(12_u32),
+            file_data: (0..12_u8).collect::<Vec<u8>>(),
+        }));
+        let payload_len = payload.clone().encode().len() as u16;
+        let header = transaction.get_header(
+            Direction::ToSender,
+            PDUType::FileData,
+            payload_len,
+            SegmentationControl::NotPreserved,
+        );
+        let pdu = PDU { header, payload };
+
+        let result = transaction.process_pdu(pdu);
+
+        assert_err!(
+            result,
+            Err(TransactionError::UnexpectedPDU((_, Action::Send, _, _)))
+        )
+    }
+
+    #[rstest]
+    fn recv_store_data(
+        default_config: &TransactionConfig,
+        tempdir_fixture: &TempDir,
+        #[values(TransmissionMode::Unacknowledged, TransmissionMode::Acknowledged)]
+        transmission_mode: TransmissionMode,
+    ) {
+        let (transport_tx, _) = unbounded();
+        let (message_tx, _) = unbounded();
+        let mut config = default_config.clone();
+        config.action_type = Action::Receive;
+        config.transmission_mode = transmission_mode;
+
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
+
+        let pathbuf = {
+            let mut pathbuf = PathBuf::new();
+            pathbuf.push("Test_file.txt");
+            pathbuf
+        };
+
+        transaction.metadata = Some(Metadata {
+            closure_requested: false,
+            file_size: FileSizeSensitive::Small(600),
+            source_filename: pathbuf.clone(),
+            destination_filename: pathbuf,
+            message_to_user: vec![],
+            filestore_requests: vec![],
+            checksum_type: ChecksumType::Modular,
+        });
+
+        let payload = PDUPayload::FileData(FileDataPDU::Unsegmented(UnsegmentedFileData {
+            offset: FileSizeSensitive::Small(12_u32),
+            file_data: (0..12_u8).collect::<Vec<u8>>(),
+        }));
+        let payload_len = payload.clone().encode().len() as u16;
+        let header = transaction.get_header(
+            Direction::ToSender,
+            PDUType::FileData,
+            payload_len,
+            SegmentationControl::NotPreserved,
+        );
+        let pdu = PDU { header, payload };
+
+        transaction.process_pdu(pdu).unwrap();
+        let contents: Vec<u8> = {
+            let mut buf = Vec::new();
+            let handle = transaction.get_handle().unwrap();
+            handle.rewind().unwrap();
+            handle.read_to_end(&mut buf).unwrap();
+            buf
+        };
+        let expected = {
+            let mut buf = vec![0_u8; 12];
+            buf.extend(0..12_u8);
+            buf
+        };
+        assert_eq!(expected, contents);
+    }
+
+    #[rstest]
+    fn recv_store_metadata(
+        default_config: &TransactionConfig,
+        tempdir_fixture: &TempDir,
+        #[values(TransmissionMode::Unacknowledged, TransmissionMode::Acknowledged)]
+        transmission_mode: TransmissionMode,
+    ) {
+        let (transport_tx, _) = unbounded();
+        let (message_tx, message_rx) = unbounded();
+        let mut config = default_config.clone();
+        config.action_type = Action::Receive;
+        config.transmission_mode = transmission_mode;
+
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
+
+        let pathbuf = {
+            let mut pathbuf = PathBuf::new();
+            pathbuf.push("Test_file.txt");
+            pathbuf
+        };
+
+        let expected_msg = MessageToUser {
+            message_text: vec![1_u8, 3, 55],
+        };
+
+        let expected = Some(Metadata {
+            closure_requested: false,
+            file_size: FileSizeSensitive::Small(600),
+            source_filename: pathbuf.clone(),
+            destination_filename: pathbuf,
+            message_to_user: vec![expected_msg.clone()],
+            filestore_requests: vec![],
+            checksum_type: ChecksumType::Modular,
+        });
+
+        let payload = PDUPayload::Directive(Operations::Metadata(MetadataPDU {
+            closure_requested: false,
+            checksum_type: ChecksumType::Modular,
+            file_size: FileSizeSensitive::Small(600_u32),
+            source_filename: "Test_file.txt".as_bytes().to_vec(),
+            destination_filename: "Test_file.txt".as_bytes().to_vec(),
+            options: vec![MetadataTLV::MessageToUser(expected_msg.clone())],
+        }));
+        let payload_len = payload.clone().encode().len() as u16;
+        let header = transaction.get_header(
+            Direction::ToReceiver,
+            PDUType::FileDirective,
+            payload_len,
+            SegmentationControl::NotPreserved,
+        );
+        let pdu = PDU { header, payload };
+
+        thread::spawn(move || {
+            transaction.process_pdu(pdu).unwrap();
+            assert_eq!(expected, transaction.metadata);
+        });
+
+        let user_msg = message_rx.recv().unwrap();
+
+        assert_eq!(expected_msg, user_msg)
+    }
+
+    #[rstest]
+    fn recv_eof_unack(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
+        let (transport_tx, transport_rx) = unbounded();
+        let (message_tx, _) = unbounded();
+        let mut config = default_config.clone();
+        config.action_type = Action::Receive;
+        config.transmission_mode = TransmissionMode::Unacknowledged;
+
+        let expected_id = config.source_entity_id.clone();
+
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
+
+        let pathbuf = {
+            let mut pathbuf = PathBuf::new();
+            pathbuf.push("Test_file.txt");
+            pathbuf
+        };
+
+        transaction.metadata = Some(Metadata {
+            closure_requested: true,
+            file_size: FileSizeSensitive::Small(600),
+            source_filename: pathbuf.clone(),
+            destination_filename: pathbuf,
+            message_to_user: vec![],
+            filestore_requests: vec![],
+            checksum_type: ChecksumType::Null,
+        });
+
+        let input_pdu = {
+            let payload = PDUPayload::Directive(Operations::EoF(EndOfFile {
+                condition: Condition::NoError,
+                checksum: 0,
+                file_size: FileSizeSensitive::Small(600),
+                fault_location: None,
+            }));
+            let payload_len = payload.clone().encode().len() as u16;
+            let header = transaction.get_header(
+                Direction::ToReceiver,
+                PDUType::FileDirective,
+                payload_len,
+                SegmentationControl::NotPreserved,
+            );
+            PDU { header, payload }
+        };
+
+        let expected_pdu = {
+            let payload = PDUPayload::Directive(Operations::Finished(Finished {
+                condition: Condition::NoError,
+                delivery_code: DeliveryCode::Complete,
+                file_status: FileStatusCode::Retained,
+                filestore_response: vec![],
+                fault_location: None,
+            }));
+
+            let payload_len = payload.clone().encode().len() as u16;
+
+            let header = transaction.get_header(
+                Direction::ToSender,
+                PDUType::FileDirective,
+                payload_len,
+                SegmentationControl::NotPreserved,
+            );
+
+            PDU { header, payload }
+        };
+
+        thread::spawn(move || {
+            transaction.process_pdu(input_pdu).unwrap();
+        });
+
+        let (destination_id, finished_pdu) = transport_rx.recv().unwrap();
+
+        assert_eq!(expected_id, destination_id);
+        assert_eq!(expected_pdu, finished_pdu)
     }
 }

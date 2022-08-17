@@ -61,6 +61,11 @@ impl Timer {
     pub fn timeout_occured(&self) -> bool {
         *self.occurred.lock().unwrap()
     }
+
+    #[cfg(test)]
+    pub fn is_ticking(&self) -> bool {
+        self.guard.is_some()
+    }
 }
 
 #[cfg(test)]

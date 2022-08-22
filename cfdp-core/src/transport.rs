@@ -1,3 +1,5 @@
+use crossbeam_channel::{Receiver, Sender};
+
 use crate::pdu::{EntityID, PDU};
 
 pub trait PDUTransport {
@@ -24,13 +26,16 @@ pub trait PDUTransport {
     /// Send input PDU to the remote
     fn request(&self, destination_id: EntityID, pdu: PDU) -> Result<(), Self::Err>;
 
-    /// Provides logic for listening for incoming PDUs
+    /// Provides logic for listening for incoming PDUs and sending any outbound PDUs
     /// This function is designed to run in a thread in the background
     /// for any implementations of this Trait.
-    /// The [Daemon] is responsible for receiving messages and ditribute them to each
+    /// A transport implementation will send any received messages through the
+    /// [Sender] channel to the [Daemon](crate::daemon::Daemon).
+    /// The [Daemon](crate::daemon::Daemon) is responsible for receiving messages and ditribute them to each
     /// [Transaction](crate::transaction::Transaction) as necessary.
-    fn incoming_pdu_handler(&self) -> Result<(), Self::Err>;
-
-    //  Propagates any PDU up from the listener thread to the main Enginge
-    // fn propagate_pdu(&self, pdu: PDU) -> Result<(), Self::Err>;
+    fn pdu_handler(
+        &self,
+        sender: Sender<Vec<u8>>,
+        recv: Receiver<(EntityID, PDU)>,
+    ) -> Result<(), Self::Err>;
 }

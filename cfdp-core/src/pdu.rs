@@ -1,6 +1,6 @@
 use std::io::Read;
 
-mod error;
+pub(crate) mod error;
 mod fault_handler;
 mod filestore;
 mod header;

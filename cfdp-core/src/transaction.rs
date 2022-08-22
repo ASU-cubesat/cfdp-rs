@@ -106,6 +106,15 @@ impl Error for TransactionError {
 }
 
 #[repr(u8)]
+#[derive(Debug, PartialEq, Eq)]
+enum WaitingOn {
+    None,
+    AckEof,
+    AckFin,
+    Nak,
+}
+
+#[repr(u8)]
 #[derive(Debug, Clone, Copy)]
 /// The Action type of a [Transaction] entity.
 pub enum Action {
@@ -204,6 +213,8 @@ pub struct Transaction<T: FileStore> {
     ack_timer: Timer,
     // checksum cache to reduce I/0
     checksum: Option<u32>,
+    // tracker to know what to do when a timeout occurs
+    waiting_on: WaitingOn,
 }
 impl<T: FileStore> Transaction<T> {
     /// Start a new Transaction with the given [configuration](TransactionConfig)
@@ -246,6 +257,7 @@ impl<T: FileStore> Transaction<T> {
             inactivity_timer,
             ack_timer,
             checksum: None,
+            waiting_on: WaitingOn::None,
         };
         transaction.inactivity_timer.restart();
         transaction
@@ -469,32 +481,37 @@ impl<T: FileStore> Transaction<T> {
     }
 
     pub fn send_missing_data(&mut self) -> TransactionResult<()> {
-        let request = self.naks.pop_front().ok_or(TransactionError::MissingNak)?;
-
-        let (offset, length) = match (request.start_offset, request.end_offset) {
-            (FileSizeSensitive::Small(s), FileSizeSensitive::Small(e)) => {
-                (s.into(), (e - s).try_into()?)
-            }
-            (FileSizeSensitive::Large(s), FileSizeSensitive::Large(e)) => (s, (e - s).try_into()?),
-            _ => unreachable!(),
-        };
-        match offset == 0 && length == 0 {
-            true => self.send_metadata(),
-            false => {
-                let current_pos = {
-                    let handle = self.get_handle()?;
-                    handle.stream_position().map_err(FileStoreError::IO)?
+        match self.naks.pop_front() {
+            Some(request) => {
+                let (offset, length) = match (request.start_offset, request.end_offset) {
+                    (FileSizeSensitive::Small(s), FileSizeSensitive::Small(e)) => {
+                        (s.into(), (e - s).try_into()?)
+                    }
+                    (FileSizeSensitive::Large(s), FileSizeSensitive::Large(e)) => {
+                        (s, (e - s).try_into()?)
+                    }
+                    _ => unreachable!(),
                 };
+                match offset == 0 && length == 0 {
+                    true => self.send_metadata(),
+                    false => {
+                        let current_pos = {
+                            let handle = self.get_handle()?;
+                            handle.stream_position().map_err(FileStoreError::IO)?
+                        };
 
-                self.send_file_segment(Some(offset), Some(length))?;
+                        self.send_file_segment(Some(offset), Some(length))?;
 
-                // restore to original location in the file
-                let handle = self.get_handle()?;
-                handle
-                    .seek(SeekFrom::Start(current_pos))
-                    .map_err(FileStoreError::IO)?;
-                Ok(())
+                        // restore to original location in the file
+                        let handle = self.get_handle()?;
+                        handle
+                            .seek(SeekFrom::Start(current_pos))
+                            .map_err(FileStoreError::IO)?;
+                        Ok(())
+                    }
+                }
             }
+            None => Ok(()),
         }
     }
 
@@ -567,6 +584,7 @@ impl<T: FileStore> Transaction<T> {
 
     fn send_eof(&mut self, fault_location: Option<EntityID>) -> TransactionResult<()> {
         self.ack_timer.restart();
+        self.waiting_on = WaitingOn::AckEof;
         //  if is lazily evaluated so the fault is only handled if the limit is reached
         if self.ack_timer.limit_reached()
             && !self.proceed_despite_fault(Condition::PositiveLimitReached)?
@@ -605,10 +623,10 @@ impl<T: FileStore> Transaction<T> {
         Ok(())
     }
 
-    fn abandon(&mut self) {
+    pub fn abandon(&mut self) {
         self.status = TransactionStatus::Terminated;
     }
-    fn cancel(&mut self) -> TransactionResult<()> {
+    pub fn cancel(&mut self) -> TransactionResult<()> {
         self.condition = Condition::CancelReceived;
         match (&self.config.action_type, &self.config.transmission_mode) {
             (Action::Send, TransmissionMode::Acknowledged) => {
@@ -637,10 +655,21 @@ impl<T: FileStore> Transaction<T> {
         // make some kind of log/indication
     }
 
-    fn suspend(&mut self) {
+    pub fn suspend(&mut self) {
         self.ack_timer.pause();
         self.nak_timer.pause();
         self.inactivity_timer.pause();
+    }
+
+    pub fn resume(&mut self) {
+        self.inactivity_timer.restart();
+        match self.waiting_on {
+            WaitingOn::AckEof | WaitingOn::AckFin => self.ack_timer.restart(),
+            WaitingOn::Nak => self.nak_timer.restart(),
+            _ => {}
+        }
+        // what to do about the other timers?
+        // We need to track if one is needed?
     }
 
     /// Take action according to the defined handler mapping.
@@ -757,6 +786,7 @@ impl<T: FileStore> Transaction<T> {
 
     fn send_finished(&mut self, fault_location: Option<EntityID>) -> TransactionResult<()> {
         self.ack_timer.restart();
+        self.waiting_on = WaitingOn::AckFin;
         //  if is lazily evaluated so the fault is only handled if the limit is reached
         if self.ack_timer.limit_reached()
             && !self.proceed_despite_fault(Condition::PositiveLimitReached)?
@@ -791,6 +821,7 @@ impl<T: FileStore> Transaction<T> {
 
     fn send_naks(&mut self) -> TransactionResult<()> {
         self.nak_timer.restart();
+        self.waiting_on = WaitingOn::Nak;
         //  if is lazily evaluated so the fault is only handled if the limit is reached
         if self.nak_timer.limit_reached()
             && !self.proceed_despite_fault(Condition::NakLimitReached)?
@@ -877,6 +908,25 @@ impl<T: FileStore> Transaction<T> {
             }
             out
         };
+        Ok(())
+    }
+
+    pub fn monitor_timeout(&mut self) -> TransactionResult<()> {
+        if self.inactivity_timer.timeout_occured()
+            && !self.proceed_despite_fault(Condition::InactivityDetected)?
+        {
+            return Ok(());
+        }
+        if self.nak_timer.timeout_occured() && self.waiting_on == WaitingOn::Nak {
+            return self.send_naks();
+        }
+        if self.ack_timer.timeout_occured() {
+            match self.waiting_on {
+                WaitingOn::AckEof => return self.send_eof(None),
+                WaitingOn::AckFin => return self.send_finished(None),
+                _ => {}
+            }
+        }
         Ok(())
     }
 
@@ -994,6 +1044,7 @@ impl<T: FileStore> Transaction<T> {
                     Operations::Ack(ack) => {
                         if ack.directive == PDUDirective::EoF {
                             self.ack_timer.pause();
+                            self.waiting_on = WaitingOn::None;
                             // all good
                             Ok(())
                         } else {
@@ -1114,6 +1165,7 @@ impl<T: FileStore> Transaction<T> {
                                         true => {
                                             self.finalize_receive(eof.checksum)?;
                                             self.nak_timer.pause();
+                                            self.waiting_on = WaitingOn::None;
                                             self.send_finished(
                                                 if self.condition == Condition::NoError {
                                                     None
@@ -1146,6 +1198,7 @@ impl<T: FileStore> Transaction<T> {
                                     && ack.condition == Condition::NoError
                                 {
                                     self.ack_timer.pause();
+                                    self.waiting_on = WaitingOn::None;
                                     Ok(())
                                 } else {
                                     // No other ACKs are expected for a receiver

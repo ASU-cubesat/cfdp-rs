@@ -27,7 +27,7 @@ macro_rules! impl_id {
     };
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct EntityID {
     id: Vec<u8>,
 }

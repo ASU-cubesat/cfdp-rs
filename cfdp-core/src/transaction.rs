@@ -480,6 +480,12 @@ impl<T: FileStore> Transaction<T> {
         Ok(())
     }
 
+    pub fn all_data_sent(&mut self) -> TransactionResult<bool> {
+        let handle = self.get_handle()?;
+        Ok(handle.stream_position().map_err(FileStoreError::IO)?
+            == handle.metadata().map_err(FileStoreError::IO)?.len())
+    }
+
     pub fn send_missing_data(&mut self) -> TransactionResult<()> {
         match self.naks.pop_front() {
             Some(request) => {

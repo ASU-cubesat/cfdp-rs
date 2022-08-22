@@ -96,52 +96,103 @@ impl<T: FileStore + Send> Daemon<T> {
         self.transaction_channels
             .insert(transaction.id(), transaction_tx);
 
-        let handle = thread::spawn(move || {
+        let handle =
             match action_type {
-                Action::Send => transaction.put()?,
-                Action::Receive => {}
-            };
-
-            while transaction.get_status() != &TransactionStatus::Terminated {
-                // this function handles any timeouts and resends
-                transaction.monitor_timeout()?;
-
-                match transaction_rx.try_recv() {
-                    Ok(command) => {
-                        match command {
-                            Command::PDU(pdu) => {
-                                match transaction.process_pdu(pdu) {
-                                    Ok(()) => {}
-                                    Err(crate::transaction::TransactionError::UnexpectedPDU(
-                                        _info,
-                                    )) => {
-                                        // log some info on the unexpected PDU?
+                Action::Send => {
+                    thread::spawn(move || {
+                        transaction.put()?;
+                        while transaction.get_status() != &TransactionStatus::Terminated {
+                            // this function handles any timeouts and resends
+                            transaction.monitor_timeout()?;
+                            // if we have recieved a NAK send the missing data
+                            transaction.send_missing_data()?;
+                            // send the next data segment for the first time
+                            if !transaction.all_data_sent()? {
+                                transaction.send_file_segment(None, None)?;
+                            }
+                            // Handle any messages that are waiting to be processed
+                            match transaction_rx.try_recv() {
+                                Ok(command) => {
+                                    match command {
+                                        Command::PDU(pdu) => {
+                                            match transaction.process_pdu(pdu) {
+                                        Ok(()) => {}
+                                        Err(crate::transaction::TransactionError::UnexpectedPDU(
+                                            _info,
+                                        )) => {
+                                            // log some info on the unexpected PDU?
+                                        }
+                                        Err(err) => return Err(err),
                                     }
-                                    Err(err) => return Err(err),
+                                        }
+                                        Command::Resume => transaction.resume(),
+                                        Command::Cancel => transaction.cancel()?,
+                                        Command::Suspend => transaction.suspend(),
+                                        Command::Abandon => transaction.abandon(),
+                                    }
+                                }
+                                Err(TryRecvError::Empty) => {
+                                    // nothing for us at this time just sleep
+                                }
+                                Err(TryRecvError::Disconnected) => {
+                                    // Really do not expect to be in this situation
+                                    // probably the thread should exit
+                                    panic!(
+                                        "Connection to Daemon Severed for Transaction {:?}",
+                                        transaction.id()
+                                    )
                                 }
                             }
-                            Command::Resume => transaction.resume(),
-                            Command::Cancel => transaction.cancel()?,
-                            Command::Suspend => transaction.suspend(),
-                            Command::Abandon => transaction.abandon(),
+                            thread::sleep(Duration::from_millis(1));
                         }
-                    }
-                    Err(TryRecvError::Empty) => {
-                        // nothing for us at this time just sleep
-                    }
-                    Err(TryRecvError::Disconnected) => {
-                        // Really do not expect to be in this situation
-                        // probably the thread should exit
-                        panic!(
-                            "Connection to Daemon Severed for Transaction {:?}",
-                            transaction.id()
-                        )
-                    }
+                        Ok(())
+                    })
                 }
-                thread::sleep(Duration::from_millis(1));
-            }
-            Ok(())
-        });
+                Action::Receive => {
+                    thread::spawn(move || {
+                        while transaction.get_status() != &TransactionStatus::Terminated {
+                            // this function handles any timeouts and resends
+                            transaction.monitor_timeout()?;
+
+                            match transaction_rx.try_recv() {
+                                Ok(command) => {
+                                    match command {
+                                        Command::PDU(pdu) => {
+                                            match transaction.process_pdu(pdu) {
+                                            Ok(()) => {}
+                                            Err(crate::transaction::TransactionError::UnexpectedPDU(
+                                                _info,
+                                            )) => {
+                                                // log some info on the unexpected PDU?
+                                            }
+                                            Err(err) => return Err(err),
+                                        }
+                                        }
+                                        Command::Resume => transaction.resume(),
+                                        Command::Cancel => transaction.cancel()?,
+                                        Command::Suspend => transaction.suspend(),
+                                        Command::Abandon => transaction.abandon(),
+                                    }
+                                }
+                                Err(TryRecvError::Empty) => {
+                                    // nothing for us at this time just sleep
+                                }
+                                Err(TryRecvError::Disconnected) => {
+                                    // Really do not expect to be in this situation
+                                    // probably the thread should exit
+                                    panic!(
+                                        "Connection to Daemon Severed for Transaction {:?}",
+                                        transaction.id()
+                                    )
+                                }
+                            }
+                            thread::sleep(Duration::from_millis(1));
+                        }
+                        Ok(())
+                    })
+                }
+            };
+
         self.transaction_handles.push(handle);
     }
 

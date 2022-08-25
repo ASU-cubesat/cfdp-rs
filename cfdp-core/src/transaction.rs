@@ -19,8 +19,8 @@ use crate::{
         FileStoreRequest, FileStoreResponse, Finished, KeepAlivePDU, MessageToUser, MetadataPDU,
         MetadataTLV, NakOrKeepAlive, NegativeAcknowldegmentPDU, Operations, PDUDirective,
         PDUHeader, PDUPayload, PDUType, PositiveAcknowledgePDU, SegmentRequestForm,
-        SegmentationControl, SegmentedData, TransactionStatus, TransmissionMode,
-        UnsegmentedFileData, PDU, U3,
+        SegmentationControl, SegmentedData, TransactionID, TransactionStatus, TransmissionMode,
+        UnsegmentedFileData, VariableID, PDU, U3,
     },
     timer::Timer,
 };
@@ -29,15 +29,16 @@ pub type TransactionResult<T> = Result<T, TransactionError>;
 #[derive(Debug)]
 pub enum TransactionError {
     FileStore(FileStoreError),
-    Transport(SendError<(EntityID, PDU)>),
+    Transport(SendError<(VariableID, PDU)>),
     UserMessage(SendError<MessageToUser>),
-    NoFile((EntityID, Vec<u8>)),
+    NoFile((EntityID, TransactionID)),
     Daemon(String),
     Poison,
     IntConverstion(TryFromIntError),
-    UnexpectedPDU((Vec<u8>, Action, TransmissionMode, String)),
-    MissingMetadata((EntityID, Vec<u8>)),
+    UnexpectedPDU((TransactionID, Action, TransmissionMode, String)),
+    MissingMetadata((EntityID, TransactionID)),
     MissingNak,
+    NoChecksum,
 }
 impl From<FileStoreError> for TransactionError {
     fn from(error: FileStoreError) -> Self {
@@ -49,8 +50,8 @@ impl From<TryFromIntError> for TransactionError {
         Self::IntConverstion(error)
     }
 }
-impl From<SendError<(EntityID, PDU)>> for TransactionError {
-    fn from(error: SendError<(EntityID, PDU)>) -> Self {
+impl From<SendError<(VariableID, PDU)>> for TransactionError {
+    fn from(error: SendError<(VariableID, PDU)>) -> Self {
         Self::Transport(error)
     }
 }
@@ -85,6 +86,7 @@ impl Display for TransactionError {
             ),
             Self::MissingMetadata(id) => write!(f, "Metadata missing for transaction: {id:?}."),
             Self::MissingNak => write!(f, "No NAKs present. Cannot send missing data."),
+            Self::NoChecksum => write!(f, "No Checksum received. Cannot verify file integrity."),
         }
     }
 }
@@ -101,6 +103,7 @@ impl Error for TransactionError {
             Self::UnexpectedPDU(_) => None,
             Self::MissingMetadata(_) => None,
             Self::MissingNak => None,
+            Self::NoChecksum => None,
         }
     }
 }
@@ -112,6 +115,7 @@ enum WaitingOn {
     AckEof,
     AckFin,
     Nak,
+    MissingData,
 }
 
 #[repr(u8)]
@@ -125,7 +129,7 @@ pub enum Action {
 }
 
 #[cfg_attr(test, derive(Debug, PartialEq))]
-struct Metadata {
+pub(crate) struct Metadata {
     /// Bytes of the source filename, can be null if length is 0.
     pub source_filename: PathBuf,
     /// Bytes of the destination filename, can be null if length is 0.
@@ -153,7 +157,7 @@ pub struct TransactionConfig {
     /// CFDP [TransmissionMode]
     pub transmission_mode: TransmissionMode,
     /// The sequence number in Big Endian Bytes.
-    pub sequence_number: Vec<u8>,
+    pub sequence_number: TransactionID,
     /// Flag to indicate whether or not the file size fits inside a [u32]
     pub file_size_flag: FileSizeFlag,
     /// A Mapping of actions to take when each condition is reached.
@@ -180,7 +184,7 @@ pub struct Transaction<T: FileStore> {
     /// The [FileStore] implementation used to interact with files on disk.
     filestore: Arc<Mutex<T>>,
     /// Channel used to send outgoing PDUs through the Transport layer.
-    transport_tx: Sender<(EntityID, PDU)>,
+    transport_tx: Sender<(VariableID, PDU)>,
     /// Channel for message to users to propagate back up
     message_tx: Sender<MessageToUser>,
     /// The current file being worked by this Transaction.
@@ -212,6 +216,7 @@ pub struct Transaction<T: FileStore> {
     // Timer used to track ACK receipt
     ack_timer: Timer,
     // checksum cache to reduce I/0
+    // doubles as stored checksum in received mode
     checksum: Option<u32>,
     // tracker to know what to do when a timeout occurs
     waiting_on: WaitingOn,
@@ -225,7 +230,7 @@ impl<T: FileStore> Transaction<T> {
         // Connection to the local FileStore implementation.
         filestore: Arc<Mutex<T>>,
         // Sender channel connected to the Transport thread to send PDUs.
-        transport_tx: Sender<(EntityID, PDU)>,
+        transport_tx: Sender<(VariableID, PDU)>,
         // Sender channel used to propagate Message To User back up to the Daemon Thread.
         message_tx: Sender<MessageToUser>,
     ) -> Self {
@@ -267,6 +272,10 @@ impl<T: FileStore> Transaction<T> {
         &self.status
     }
 
+    pub fn get_mode(&self) -> TransmissionMode {
+        self.config.transmission_mode.clone()
+    }
+
     fn get_header(
         &mut self,
         direction: Direction,
@@ -303,7 +312,7 @@ impl<T: FileStore> Transaction<T> {
         }
     }
 
-    pub fn id(&self) -> (EntityID, Vec<u8>) {
+    pub fn id(&self) -> (VariableID, TransactionID) {
         (
             self.config.source_entity_id.clone(),
             self.config.sequence_number.clone(),
@@ -588,7 +597,7 @@ impl<T: FileStore> Transaction<T> {
         Ok(FileStatusCode::Retained)
     }
 
-    fn send_eof(&mut self, fault_location: Option<EntityID>) -> TransactionResult<()> {
+    pub fn send_eof(&mut self, fault_location: Option<VariableID>) -> TransactionResult<()> {
         self.ack_timer.restart();
         self.waiting_on = WaitingOn::AckEof;
         //  if is lazily evaluated so the fault is only handled if the limit is reached
@@ -790,7 +799,7 @@ impl<T: FileStore> Transaction<T> {
         }
     }
 
-    fn send_finished(&mut self, fault_location: Option<EntityID>) -> TransactionResult<()> {
+    fn send_finished(&mut self, fault_location: Option<VariableID>) -> TransactionResult<()> {
         self.ack_timer.restart();
         self.waiting_on = WaitingOn::AckFin;
         //  if is lazily evaluated so the fault is only handled if the limit is reached
@@ -825,7 +834,7 @@ impl<T: FileStore> Transaction<T> {
         Ok(())
     }
 
-    fn send_naks(&mut self) -> TransactionResult<()> {
+    pub fn send_naks(&mut self) -> TransactionResult<()> {
         self.nak_timer.restart();
         self.waiting_on = WaitingOn::Nak;
         //  if is lazily evaluated so the fault is only handled if the limit is reached
@@ -872,7 +881,8 @@ impl<T: FileStore> Transaction<T> {
         Ok(handle.checksum(checksum_type)? == checksum)
     }
 
-    fn finalize_receive(&mut self, checksum: u32) -> TransactionResult<()> {
+    fn finalize_receive(&mut self) -> TransactionResult<()> {
+        let checksum = self.checksum.ok_or(TransactionError::NoChecksum)?;
         self.delivery_code = DeliveryCode::Complete;
 
         self.file_status = if self.is_file_transfer() {
@@ -973,11 +983,14 @@ impl<T: FileStore> Transaction<T> {
                         self.delivery_code = finished.delivery_code;
                         self.send_ack_finished()?;
                         if finished.condition != Condition::NoError {
-                            // igore the proceed return value
+                            // ingore the proceed return value
                             // there's nothing else to do
                             self.proceed_despite_fault(finished.condition)?;
                             // shutdown
                         }
+                        // abandon sounds scary but it just tells the
+                        // thread we are done here
+                        self.abandon();
                         Ok(())
                     }
                     Operations::Nak(nak) => {
@@ -1126,6 +1139,9 @@ impl<T: FileStore> Transaction<T> {
                                         // but nothing else to do
                                         // shutdown
                                     }
+                                    // abandon sounds scary but it just tells the
+                                    // thread we are done here
+                                    self.abandon();
                                     Ok(())
                                 }
                                 false => Err(TransactionError::UnexpectedPDU((
@@ -1148,6 +1164,11 @@ impl<T: FileStore> Transaction<T> {
             (Action::Receive, TransmissionMode::Acknowledged) => {
                 match payload {
                     PDUPayload::FileData(filedata) => {
+                        // if we're getting data but have sent a nak
+                        // restart the timer.
+                        if self.waiting_on == WaitingOn::Nak {
+                            self.nak_timer.restart();
+                        }
                         // Issue notice of recieved? Log it.
                         let (offset, length) = self.store_file_data(filedata)?;
                         // update the total received size if appropriate.
@@ -1156,6 +1177,21 @@ impl<T: FileStore> Transaction<T> {
                             self.received_file_size = size;
                         }
                         self.update_naks(self.metadata.as_ref().map(|meta| meta.file_size.clone()));
+
+                        // need a block here for if we have sent naks
+                        // in deferred mode. a second EoF is not sent
+                        // so we should check if we have the whole thing?
+                        if self.waiting_on == WaitingOn::Nak && self.naks.is_empty() {
+                            self.finalize_receive()?;
+                            self.nak_timer.pause();
+                            self.waiting_on = WaitingOn::None;
+                            self.send_finished(if self.condition == Condition::NoError {
+                                None
+                            } else {
+                                Some(self.config.destination_entity_id.clone())
+                            })?;
+                        }
+
                         Ok(())
                     }
                     PDUPayload::Directive(operation) => {
@@ -1163,13 +1199,16 @@ impl<T: FileStore> Transaction<T> {
                             Operations::EoF(eof) => {
                                 self.condition = eof.condition;
                                 self.send_ack_eof()?;
+                                self.checksum = Some(eof.checksum);
+                                self.waiting_on = WaitingOn::MissingData;
+
                                 if self.condition == Condition::NoError {
                                     self.update_naks(Some(eof.file_size.clone()));
 
                                     self.check_file_size(eof.file_size)?;
                                     match self.naks.is_empty() {
                                         true => {
-                                            self.finalize_receive(eof.checksum)?;
+                                            self.finalize_receive()?;
                                             self.nak_timer.pause();
                                             self.waiting_on = WaitingOn::None;
                                             self.send_finished(
@@ -1205,6 +1244,9 @@ impl<T: FileStore> Transaction<T> {
                                 {
                                     self.ack_timer.pause();
                                     self.waiting_on = WaitingOn::None;
+                                    // abandon sounds scary but it just tells the
+                                    // thread we are done here
+                                    self.abandon();
                                     Ok(())
                                 } else {
                                     // No other ACKs are expected for a receiver
@@ -1345,9 +1387,10 @@ impl<T: FileStore> Transaction<T> {
                     }
                     Operations::EoF(eof) => {
                         self.condition = eof.condition;
+                        self.checksum = Some(eof.checksum);
                         if self.condition == Condition::NoError {
                             self.check_file_size(eof.file_size)?;
-                            self.finalize_receive(eof.checksum)?;
+                            self.finalize_receive()?;
                             // if closure was requested send a finished PDU
                             if self
                                 .metadata
@@ -1513,7 +1556,8 @@ impl<T: FileStore> Transaction<T> {
         Ok(())
     }
 
-    pub fn put(&mut self) -> TransactionResult<()> {
+    pub(crate) fn put(&mut self, metadata: Metadata) -> TransactionResult<()> {
+        self.metadata = Some(metadata);
         self.send_metadata()
     }
 }
@@ -1544,10 +1588,10 @@ mod test {
     fn default_config() -> TransactionConfig {
         TransactionConfig {
             action_type: Action::Send,
-            source_entity_id: EntityID::from(12_u16),
-            destination_entity_id: EntityID::from(15_u16),
+            source_entity_id: VariableID::from(12_u16),
+            destination_entity_id: VariableID::from(15_u16),
             transmission_mode: TransmissionMode::Acknowledged,
-            sequence_number: 3_u16.to_be_bytes().to_vec(),
+            sequence_number: VariableID::from(3_u16),
             file_size_flag: FileSizeFlag::Small,
             fault_handler_override: HashMap::new(),
             file_size_segment: 3_u16,
@@ -2425,9 +2469,10 @@ mod test {
             offset: FileSizeSensitive::Small(0),
             file_data: input.as_bytes().to_vec(),
         });
+        transaction.checksum = Some(checksum);
 
         transaction.store_file_data(pdu).unwrap();
-        transaction.finalize_receive(checksum).unwrap();
+        transaction.finalize_receive().unwrap();
 
         assert!(!filestore
             .lock()

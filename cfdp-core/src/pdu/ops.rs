@@ -16,47 +16,84 @@ use super::{
 use crate::filestore::ChecksumType;
 
 macro_rules! impl_id {
-    ( $prim:ty ) => {
+    ( $prim:ty, $id:expr ) => {
         impl From<$prim> for EntityID {
             fn from(val: $prim) -> Self {
-                Self {
-                    id: val.to_be_bytes().to_vec(),
-                }
+                $id(val)
             }
         }
     };
 }
-
+pub type EntityID = VariableID;
+pub type TransactionID = VariableID;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct EntityID {
-    id: Vec<u8>,
+pub enum VariableID {
+    U8(u8),
+    U16(u16),
+    U32(u32),
+    U64(u64),
 }
-impl_id!(u8);
-impl_id!(u16);
-impl_id!(u32);
-impl_id!(u64);
-impl From<Vec<u8>> for EntityID {
-    fn from(vec: Vec<u8>) -> Self {
-        Self { id: vec }
+impl_id!(u8, VariableID::U8);
+impl_id!(u16, VariableID::U16);
+impl_id!(u32, VariableID::U32);
+impl_id!(u64, VariableID::U64);
+impl TryFrom<Vec<u8>> for VariableID {
+    type Error = PDUError;
+
+    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+        let length = value.len();
+        match length {
+            1 => Ok(Self::from(u8::from_be_bytes(
+                value
+                    .try_into()
+                    .expect("Unable to coerce vec into same sized array."),
+            ))),
+            2 => Ok(Self::from(u16::from_be_bytes(
+                value
+                    .try_into()
+                    .expect("Unable to coerce vec into same sized array."),
+            ))),
+            4 => Ok(Self::from(u32::from_be_bytes(
+                value
+                    .try_into()
+                    .expect("Unable to coerce vec into same sized array."),
+            ))),
+            8 => Ok(Self::from(u64::from_be_bytes(
+                value
+                    .try_into()
+                    .expect("Unable to coerce vec into same sized array."),
+            ))),
+            other => Err(PDUError::UnkownIDLength(other as u8)),
+        }
     }
 }
-impl EntityID {
+impl VariableID {
     pub fn get_len(&self) -> u8 {
         // largest values supported are u64s so this should always
         // be castable down to a u8.
-        self.id.len() as u8
+        match self {
+            Self::U8(_) => 1_u8,
+            Self::U16(_) => 2_u8,
+            Self::U32(_) => 4_u8,
+            Self::U64(_) => 8_u8,
+        }
     }
     pub fn to_be_bytes(self) -> Vec<u8> {
-        self.id
+        match self {
+            VariableID::U8(val) => val.to_be_bytes().to_vec(),
+            VariableID::U16(val) => val.to_be_bytes().to_vec(),
+            VariableID::U32(val) => val.to_be_bytes().to_vec(),
+            VariableID::U64(val) => val.to_be_bytes().to_vec(),
+        }
     }
 }
-impl PDUEncode for EntityID {
+impl PDUEncode for VariableID {
     type PDUType = Self;
 
     fn encode(self) -> Vec<u8> {
-        let mut buffer = vec![self.id.len() as u8 - 1_u8];
+        let mut buffer = vec![self.get_len() - 1_u8];
 
-        buffer.extend(self.id);
+        buffer.extend(self.to_be_bytes());
         buffer
     }
 
@@ -64,10 +101,29 @@ impl PDUEncode for EntityID {
         let mut u8_buff = [0u8; 1];
         buffer.read_exact(&mut u8_buff)?;
 
-        let length = u8_buff[0] + 1;
+        let length: u8 = u8_buff[0] + 1;
         let mut id = vec![0u8; length as usize];
         buffer.read_exact(id.as_mut_slice())?;
-        Ok(Self { id })
+
+        match length {
+            1 => Ok(Self::from(u8::from_be_bytes(
+                id.try_into()
+                    .expect("Unable to coerce vec into same sized array."),
+            ))),
+            2 => Ok(Self::from(u16::from_be_bytes(
+                id.try_into()
+                    .expect("Unable to coerce vec into same sized array."),
+            ))),
+            4 => Ok(Self::from(u32::from_be_bytes(
+                id.try_into()
+                    .expect("Unable to coerce vec into same sized array."),
+            ))),
+            8 => Ok(Self::from(u64::from_be_bytes(
+                id.try_into()
+                    .expect("Unable to coerce vec into same sized array."),
+            ))),
+            other => Err(PDUError::UnkownIDLength(other)),
+        }
     }
 }
 
@@ -128,7 +184,7 @@ pub enum MetadataTLV {
     MessageToUser(MessageToUser),
     FaultHandlerOverride(FaultHandlerOverride),
     FlowLabel(FlowLabel),
-    EntityID(EntityID),
+    EntityID(VariableID),
 }
 impl MetadataTLV {
     pub fn get_field_code(&self) -> MetadataTLVFieldCode {
@@ -176,7 +232,7 @@ impl PDUEncode for MetadataTLV {
                 FaultHandlerOverride::decode(buffer)?,
             )),
             MetadataTLVFieldCode::FlowLabel => Ok(Self::FlowLabel(FlowLabel::decode(buffer)?)),
-            MetadataTLVFieldCode::EntityID => Ok(Self::EntityID(EntityID::decode(buffer)?)),
+            MetadataTLVFieldCode::EntityID => Ok(Self::EntityID(VariableID::decode(buffer)?)),
         }
     }
 }
@@ -382,7 +438,7 @@ pub struct EndOfFile {
     pub condition: Condition,
     pub checksum: u32,
     pub file_size: FileSizeSensitive,
-    pub fault_location: Option<EntityID>,
+    pub fault_location: Option<VariableID>,
 }
 impl FSSEncode for EndOfFile {
     type PDUType = Self;
@@ -427,7 +483,7 @@ impl FSSEncode for EndOfFile {
                 match MetadataTLVFieldCode::from_u8(type_code)
                     .ok_or(PDUError::MessageType(type_code))?
                 {
-                    MetadataTLVFieldCode::EntityID => Ok(Some(EntityID::decode(buffer)?)),
+                    MetadataTLVFieldCode::EntityID => Ok(Some(VariableID::decode(buffer)?)),
                     code => Err(PDUError::UnexpectedMessage(
                         MetadataTLVFieldCode::EntityID.to_string(),
                         code.to_string(),
@@ -451,7 +507,7 @@ pub struct Finished {
     pub delivery_code: DeliveryCode,
     pub file_status: FileStatusCode,
     pub filestore_response: Vec<FileStoreResponse>,
-    pub fault_location: Option<EntityID>,
+    pub fault_location: Option<VariableID>,
 }
 impl PDUEncode for Finished {
     type PDUType = Self;
@@ -533,7 +589,7 @@ impl PDUEncode for Finished {
                 }
                 // Then a Fault Entity ID
                 (_, MetadataTLVFieldCode::EntityID) => {
-                    fault_location = Some(EntityID::decode(remaining_buffer)?)
+                    fault_location = Some(VariableID::decode(remaining_buffer)?)
                 }
                 // Any other combination of TLV codes is unexpected
                 (_, code) => {
@@ -972,12 +1028,12 @@ mod test {
         )]
         file_size: FileSizeSensitive,
         #[values(
-            EntityID{id: 3u8.to_be_bytes().to_vec()},
-            EntityID{id: 18484u16.to_be_bytes().to_vec()},
-            EntityID{id: (u32::MAX - 34).to_be_bytes().to_vec()},
-            EntityID{id: (u64::MAX - 3473819).to_be_bytes().to_vec()},
+            VariableID::from(3u8),
+            VariableID::from(18484u16),
+            VariableID::from(u32::MAX - 34),
+            VariableID::from(u64::MAX - 3473819),
         )]
-        entity: EntityID,
+        entity: VariableID,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let file_size_flag = match &file_size {
             FileSizeSensitive::Large(_) => FileSizeFlag::Large,
@@ -1067,12 +1123,12 @@ mod test {
         )]
         condition: Condition,
         #[values(
-            EntityID{id: 3u8.to_be_bytes().to_vec()},
-            EntityID{id: 18484u16.to_be_bytes().to_vec()},
-            EntityID{id: (738274784u32).to_be_bytes().to_vec()},
-            EntityID{id: (97845632986u64).to_be_bytes().to_vec()},
+            VariableID::from(3u8),
+            VariableID::from(18484u16),
+            VariableID::from(738274784u32),
+            VariableID::from(97845632986u64)
         )]
-        entity: EntityID,
+        entity: VariableID,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let expected = Operations::Finished(Finished {
             condition,
@@ -1177,7 +1233,7 @@ mod test {
             FlowLabel{value: vec![0_u8, 3, 5, 17, 91, 135]}
         ),
     ])]
-    #[case(vec![MetadataTLV::EntityID(EntityID{id: 18574_u16.to_be_bytes().to_vec()})])]
+    #[case(vec![MetadataTLV::EntityID(VariableID::from(18574_u16))])]
     fn metadata_pdu(
         #[values(true, false)] closure_requested: bool,
         #[values(ChecksumType::Null, ChecksumType::Modular)] checksum_type: ChecksumType,

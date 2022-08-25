@@ -1,6 +1,6 @@
 use crossbeam_channel::{Receiver, Sender};
 
-use crate::pdu::{EntityID, PDU};
+use crate::pdu::{VariableID, PDU};
 
 pub trait PDUTransport {
     type Config;
@@ -24,7 +24,7 @@ pub trait PDUTransport {
     fn unbind(&self) -> Result<(), Self::Err>;
 
     /// Send input PDU to the remote
-    fn request(&self, destination_id: EntityID, pdu: PDU) -> Result<(), Self::Err>;
+    fn request(&self, destination_id: VariableID, pdu: PDU) -> Result<(), Self::Err>;
 
     /// Provides logic for listening for incoming PDUs and sending any outbound PDUs
     /// This function is designed to run in a thread in the background
@@ -36,6 +36,6 @@ pub trait PDUTransport {
     fn pdu_handler(
         &self,
         sender: Sender<Vec<u8>>,
-        recv: Receiver<(EntityID, PDU)>,
+        recv: Receiver<(VariableID, PDU)>,
     ) -> Result<(), Self::Err>;
 }

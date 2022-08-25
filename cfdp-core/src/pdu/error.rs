@@ -29,6 +29,7 @@ pub enum PDUError {
     InvalidSegmentMetadataFlag(u8),
     CRCFailure(u16, u16),
     ReadError(std::io::Error),
+    UnkownIDLength(u8),
 }
 impl fmt::Display for PDUError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -90,6 +91,11 @@ impl fmt::Display for PDUError {
                 "CRC Failure on PDU. Expected 0x{expected:X} Receieved 0x{received:X}"
             ),
             Self::ReadError(source) => write!(f, "Error Reading PDU Buffer. {:}", source),
+            Self::UnkownIDLength(other) => write!(
+                f,
+                "Bad length for Variable Identifier (not a power a of 2) {:}.",
+                other
+            ),
         }
     }
 }
@@ -121,6 +127,7 @@ impl std::error::Error for PDUError {
             Self::InvalidSegmentMetadataFlag(_) => None,
             Self::CRCFailure(_, _) => None,
             Self::ReadError(source) => Some(source),
+            Self::UnkownIDLength(_) => None,
         }
     }
 }

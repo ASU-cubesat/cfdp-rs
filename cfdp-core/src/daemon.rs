@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -8,29 +9,47 @@ use std::{
     time::Duration,
 };
 
-use crossbeam_channel::{unbounded, Receiver, Select, Sender, TryRecvError};
+use crossbeam_channel::{unbounded, Receiver, Select, SendTimeoutError, Sender, TryRecvError};
 use signal_hook::{consts::TERM_SIGNALS, flag};
 
 use crate::{
     filestore::FileStore,
     pdu::{
         error::PDUError, Condition, EntityID, FaultHandlerAction, MessageToUser, PDUEncode,
-        PDUHeader, TransactionStatus, UserOperation, PDU,
+        PDUHeader, TransactionID, TransactionStatus, TransmissionMode, UserOperation, VariableID,
+        PDU,
     },
-    transaction::{Action, Transaction, TransactionConfig, TransactionError},
+    transaction::{Action, Metadata, Transaction, TransactionConfig, TransactionError},
 };
 
 pub enum Command {
-    Resume,
-    Suspend,
-    Cancel,
-    Abandon,
     PDU(PDU),
+    Cancel,
+    Suspend,
+    Resume,
+    Abandon,
+}
+pub enum UserPrimitive {
+    Put,
+    Cancel,
+    Suspend,
+    Resume,
+    Report,
 }
 pub struct EntityConfig {
     fault_handler_override: HashMap<Condition, FaultHandlerAction>,
     file_size_segment: u16,
+    // The number of timeouts before a fault is issued on a transaction
+    default_transaction_max_count: u32,
+    // default number of seconds for transaction timers to wait
+    default_inactivity_timeout: i64,
 }
+
+type SpawnerTuple = (
+    (EntityID, TransactionID),
+    Sender<Command>,
+    JoinHandle<Result<(), TransactionError>>,
+);
 
 /// The CFDP Daemon is responsible for connecting [PDUTransport](crate::transport::PDUTransport) implementation
 /// with each individual [Transaction](crate::transaction::Transaction). When a PDUTransport implementation
@@ -40,46 +59,34 @@ pub struct Daemon<T: FileStore + Send + 'static> {
     // The collection of all current transactions
     transaction_handles: Vec<JoinHandle<Result<(), TransactionError>>>,
     // the vector of transportation tx channel connections
-    // transport_tx_vec: Vec<Sender<(EntityID, PDU)>>,
+    transport_tx_vec: Vec<Sender<(VariableID, PDU)>>,
     // the vector of transportation rx channel connections
-    // transport_rx_vec: Vec<Receiver<(EntityID, PDU)>>,
-    // mapping of unique transaction ids to channels used to talk to each transaction
-    transaction_channels: HashMap<(EntityID, Vec<u8>), Sender<Command>>,
+    transport_rx_vec: Vec<Receiver<(VariableID, PDU)>>,
+    // // mapping of unique transaction ids to channels used to talk to each transaction
+    // transaction_channels: HashMap<(EntityID, Vec<u8>), Sender<Command>>,
     // the underlying filestore used by this Daemon
     filestore: Arc<Mutex<T>>,
     // message reciept channel used to execute User Operations
     message_rx: Receiver<MessageToUser>,
     // message sender channel used to execute User Operations by Transactions
     message_tx: Sender<MessageToUser>,
-    // The number of timeouts before a fault is issued on a transaction
-    default_transaction_max_count: u32,
-    // default number of seconds for transaction timers to wait
-    default_inactivity_timeout: i64,
     // a mapping of individual fault handler actions per remote entity
-    entity_configs: HashMap<EntityID, EntityConfig>,
+    entity_configs: HashMap<VariableID, EntityConfig>,
     // the default fault handling configuration
     default_config: EntityConfig,
 }
-impl<T: FileStore + Send> Daemon<T> {
-    fn spawn_transaction(
-        &mut self,
+impl<T: FileStore + Send + 'static> Daemon<T> {
+    fn spawn_receive_transaction(
         header: &PDUHeader,
-        action_type: Action,
-        transport_tx: Sender<(EntityID, PDU)>,
-    ) {
-        let entity_config = self
-            .entity_configs
-            .get(&header.source_entity_id)
-            .unwrap_or(&self.default_config);
-
-        let filestore = self.filestore.clone();
-        // let transport_tx = self.transport_tx_vec[entity_config.transport_id].clone();
-        let message_tx = self.message_tx.clone();
-
+        transport_tx: Sender<(VariableID, PDU)>,
+        entity_config: &EntityConfig,
+        filestore: Arc<Mutex<T>>,
+        message_tx: Sender<MessageToUser>,
+    ) -> SpawnerTuple {
         let (transaction_tx, transaction_rx) = unbounded();
 
         let config = TransactionConfig {
-            action_type,
+            action_type: Action::Receive,
             source_entity_id: header.source_entity_id.clone(),
             destination_entity_id: header.destination_entity_id.clone(),
             transmission_mode: header.transmission_mode.clone(),
@@ -89,118 +96,165 @@ impl<T: FileStore + Send> Daemon<T> {
             file_size_segment: entity_config.file_size_segment,
             crc_flag: header.crc_flag.clone(),
             segment_metadata_flag: header.segment_metadata_flag.clone(),
-            max_count: self.default_transaction_max_count,
-            inactivity_timeout: self.default_inactivity_timeout,
+            max_count: entity_config.default_transaction_max_count,
+            inactivity_timeout: entity_config.default_inactivity_timeout,
         };
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
-        self.transaction_channels
-            .insert(transaction.id(), transaction_tx);
+        let id = transaction.id();
 
-        let handle =
-            match action_type {
-                Action::Send => {
-                    thread::spawn(move || {
-                        transaction.put()?;
-                        while transaction.get_status() != &TransactionStatus::Terminated {
-                            // this function handles any timeouts and resends
-                            transaction.monitor_timeout()?;
-                            // if we have recieved a NAK send the missing data
-                            transaction.send_missing_data()?;
-                            // send the next data segment for the first time
-                            if !transaction.all_data_sent()? {
-                                transaction.send_file_segment(None, None)?;
-                            }
-                            // Handle any messages that are waiting to be processed
-                            match transaction_rx.try_recv() {
-                                Ok(command) => {
-                                    match command {
-                                        Command::PDU(pdu) => {
-                                            match transaction.process_pdu(pdu) {
-                                        Ok(()) => {}
-                                        Err(crate::transaction::TransactionError::UnexpectedPDU(
-                                            _info,
-                                        )) => {
-                                            // log some info on the unexpected PDU?
-                                        }
-                                        Err(err) => return Err(err),
+        let handle = thread::spawn(move || {
+            while transaction.get_status() != &TransactionStatus::Terminated {
+                // this function handles any timeouts and resends
+                transaction.monitor_timeout()?;
+                // if instant mode send naks
+
+                // if outside prompt send naks
+
+                match transaction_rx.try_recv() {
+                    Ok(command) => {
+                        match command {
+                            Command::PDU(pdu) => {
+                                match transaction.process_pdu(pdu) {
+                                    Ok(()) => {}
+                                    Err(crate::transaction::TransactionError::UnexpectedPDU(
+                                        _info,
+                                    )) => {
+                                        // log some info on the unexpected PDU?
                                     }
-                                        }
-                                        Command::Resume => transaction.resume(),
-                                        Command::Cancel => transaction.cancel()?,
-                                        Command::Suspend => transaction.suspend(),
-                                        Command::Abandon => transaction.abandon(),
-                                    }
-                                }
-                                Err(TryRecvError::Empty) => {
-                                    // nothing for us at this time just sleep
-                                }
-                                Err(TryRecvError::Disconnected) => {
-                                    // Really do not expect to be in this situation
-                                    // probably the thread should exit
-                                    panic!(
-                                        "Connection to Daemon Severed for Transaction {:?}",
-                                        transaction.id()
-                                    )
+                                    Err(err) => return Err(err),
                                 }
                             }
-                            thread::sleep(Duration::from_millis(1));
+                            Command::Resume => transaction.resume(),
+                            Command::Cancel => transaction.cancel()?,
+                            Command::Suspend => transaction.suspend(),
+                            Command::Abandon => transaction.abandon(),
                         }
-                        Ok(())
-                    })
+                    }
+                    Err(TryRecvError::Empty) => {
+                        // nothing for us at this time just sleep
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        // Really do not expect to be in this situation
+                        // probably the thread should exit
+                        panic!(
+                            "Connection to Daemon Severed for Transaction {:?}",
+                            transaction.id()
+                        )
+                    }
                 }
-                Action::Receive => {
-                    thread::spawn(move || {
-                        while transaction.get_status() != &TransactionStatus::Terminated {
-                            // this function handles any timeouts and resends
-                            transaction.monitor_timeout()?;
+                thread::sleep(Duration::from_millis(1));
+            }
+            Ok(())
+        });
 
-                            match transaction_rx.try_recv() {
-                                Ok(command) => {
-                                    match command {
-                                        Command::PDU(pdu) => {
-                                            match transaction.process_pdu(pdu) {
-                                            Ok(()) => {}
-                                            Err(crate::transaction::TransactionError::UnexpectedPDU(
-                                                _info,
-                                            )) => {
-                                                // log some info on the unexpected PDU?
-                                            }
-                                            Err(err) => return Err(err),
-                                        }
-                                        }
-                                        Command::Resume => transaction.resume(),
-                                        Command::Cancel => transaction.cancel()?,
-                                        Command::Suspend => transaction.suspend(),
-                                        Command::Abandon => transaction.abandon(),
+        (id, transaction_tx, handle)
+    }
+
+    fn spawn_send_transaction(
+        header: &PDUHeader,
+        metadata: Metadata,
+        transport_tx: Sender<(VariableID, PDU)>,
+        entity_config: &EntityConfig,
+        filestore: Arc<Mutex<T>>,
+        message_tx: Sender<MessageToUser>,
+    ) -> SpawnerTuple {
+        let (transaction_tx, transaction_rx) = unbounded();
+
+        let config = TransactionConfig {
+            action_type: Action::Send,
+            source_entity_id: header.source_entity_id.clone(),
+            destination_entity_id: header.destination_entity_id.clone(),
+            transmission_mode: header.transmission_mode.clone(),
+            sequence_number: header.transaction_sequence_number.clone(),
+            file_size_flag: header.large_file_flag,
+            fault_handler_override: entity_config.fault_handler_override.clone(),
+            file_size_segment: entity_config.file_size_segment,
+            crc_flag: header.crc_flag.clone(),
+            segment_metadata_flag: header.segment_metadata_flag.clone(),
+            max_count: entity_config.default_transaction_max_count,
+            inactivity_timeout: entity_config.default_inactivity_timeout,
+        };
+        let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
+        let id = transaction.id();
+
+        let handle = thread::spawn(move || {
+            transaction.put(metadata)?;
+            while transaction.get_status() != &TransactionStatus::Terminated {
+                // this function handles any timeouts and resends
+                transaction.monitor_timeout()?;
+                // if we have recieved a NAK send the missing data
+                transaction.send_missing_data()?;
+                // send the next data segment for the first time
+                match transaction.all_data_sent()? {
+                    false => transaction.send_file_segment(None, None)?,
+                    true => {
+                        // if all data has been sent (for the first time)
+                        // send eof
+                        transaction.send_eof(None)?;
+
+                        match transaction.get_mode() {
+                            // for unacknowledged transactions.
+                            // this is the end
+                            TransmissionMode::Unacknowledged => transaction.abandon(),
+                            TransmissionMode::Acknowledged => {}
+                        }
+                    }
+                };
+                // Handle any messages that are waiting to be processed
+                match transaction_rx.try_recv() {
+                    Ok(command) => {
+                        match command {
+                            Command::PDU(pdu) => {
+                                match transaction.process_pdu(pdu) {
+                                    Ok(()) => {}
+                                    Err(crate::transaction::TransactionError::UnexpectedPDU(
+                                        _info,
+                                    )) => {
+                                        // log some info on the unexpected PDU?
                                     }
-                                }
-                                Err(TryRecvError::Empty) => {
-                                    // nothing for us at this time just sleep
-                                }
-                                Err(TryRecvError::Disconnected) => {
-                                    // Really do not expect to be in this situation
-                                    // probably the thread should exit
-                                    panic!(
-                                        "Connection to Daemon Severed for Transaction {:?}",
-                                        transaction.id()
-                                    )
+                                    Err(err) => return Err(err),
                                 }
                             }
-                            thread::sleep(Duration::from_millis(1));
+                            Command::Resume => transaction.resume(),
+                            Command::Cancel => transaction.cancel()?,
+                            Command::Suspend => transaction.suspend(),
+                            Command::Abandon => transaction.abandon(),
                         }
-                        Ok(())
-                    })
+                    }
+                    Err(TryRecvError::Empty) => {
+                        // nothing for us at this time just sleep
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        // Really do not expect to be in this situation
+                        // probably the thread should exit
+                        panic!(
+                            "Connection to Daemon Severed for Transaction {:?}",
+                            transaction.id()
+                        )
+                    }
                 }
-            };
+                thread::sleep(Duration::from_millis(1));
+            }
+            Ok(())
+        });
+        (id, transaction_tx, handle)
+    }
 
-        self.transaction_handles.push(handle);
+    pub fn put(
+        &self,
+        // source_filename: PathBuf,
+        // destination_filename: PathBuf,
+        // destination_entity_id: EntityID,
+    ) {
+        todo!()
+        // self.spawn_send_transaction(header, metadata, self.transport_tx)
     }
 
     pub fn manage_transactions(
         &mut self,
-        message_rx: Receiver<MessageToUser>,
-        transport_rx_vec: &[Receiver<(EntityID, PDU)>],
-        transport_tx_vec: &[Sender<(EntityID, PDU)>],
+        // message_rx: Receiver<MessageToUser>,
+        // transport_rx_vec: &[Receiver<(EntityID, PDU)>],
+        // transport_tx_vec: &[Sender<(EntityID, PDU)>],
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Boolean to track if a kill signal is received
         let terminate = Arc::new(AtomicBool::new(false));
@@ -221,11 +275,15 @@ impl<T: FileStore + Send> Daemon<T> {
         // the returned index will be used to determine which action to take.
         let mut selector = Select::new();
 
-        selector.recv(&message_rx);
+        selector.recv(&self.message_rx);
 
-        for rx in transport_rx_vec {
+        for rx in self.transport_rx_vec.iter() {
             selector.recv(rx);
         }
+
+        // mapping of unique transaction ids to channels used to talk to each transaction
+        let mut transaction_channels: HashMap<(EntityID, TransactionID), Sender<Command>> =
+            HashMap::new();
 
         while !terminate.load(Ordering::Relaxed) {
             match selector.ready_timeout(Duration::from_millis(500)) {
@@ -283,6 +341,8 @@ impl<T: FileStore + Send> Daemon<T> {
                         Err(TryRecvError::Disconnected) => {
                             // The transport instance disconnected?
                             // what do we do?
+                            // remove from possible selections
+                            selector.remove(val);
                         }
                     }
                 }
@@ -290,26 +350,66 @@ impl<T: FileStore + Send> Daemon<T> {
                     // this is a pdu from a transport
                     // subtract 1 because the transport indices start at 1 for the selector
                     // but are 0 indexed in the vec
-                    let rx = &transport_rx_vec[val - 1];
+                    let rx = &self.transport_rx_vec[val - 1];
                     match rx.try_recv() {
                         Ok((_, pdu)) => {
                             let key = (
                                 pdu.header.source_entity_id.clone(),
                                 pdu.header.transaction_sequence_number.clone(),
                             );
-                            if !self.transaction_channels.contains_key(&key) {
-                                self.spawn_transaction(
-                                    &pdu.header,
-                                    Action::Receive,
-                                    transport_tx_vec[val - 1].clone(),
-                                )
-                            };
                             // hand pdu off to transaction
-                            self.transaction_channels
-                                .get(&key)
-                                // handle this error better
-                                .unwrap()
-                                .send(Command::PDU(pdu))?;
+                            let channel = transaction_channels
+                                .entry(key.clone())
+                                // if this key is not in the channel list
+                                // create a new transaction
+                                .or_insert_with(|| {
+                                    let entity_config = self
+                                        .entity_configs
+                                        .get(&key.0)
+                                        .unwrap_or(&self.default_config);
+
+                                    let (_id, channel, handle) = Self::spawn_receive_transaction(
+                                        &pdu.header,
+                                        self.transport_tx_vec[val - 1].clone(),
+                                        entity_config,
+                                        self.filestore.clone(),
+                                        self.message_tx.clone(),
+                                    );
+
+                                    self.transaction_handles.push(handle);
+                                    channel
+                                });
+
+                            match channel
+                                .send_timeout(Command::PDU(pdu.clone()), Duration::from_millis(500))
+                            {
+                                Ok(()) => {}
+                                Err(SendTimeoutError::Timeout(msg))
+                                | Err(SendTimeoutError::Disconnected(msg)) => {
+                                    // the transaction is completed.
+                                    // spawn a new one
+                                    // this is very unlikely and only results
+                                    // if a sender is re-using a transaction id
+                                    let entity_config = self
+                                        .entity_configs
+                                        .get(&key.0)
+                                        .unwrap_or(&self.default_config);
+
+                                    let (_id, new_channel, handle) =
+                                        Self::spawn_receive_transaction(
+                                            &pdu.header,
+                                            self.transport_tx_vec[val - 1].clone(),
+                                            entity_config,
+                                            self.filestore.clone(),
+                                            self.message_tx.clone(),
+                                        );
+
+                                    self.transaction_handles.push(handle);
+                                    new_channel.send(msg)?;
+                                    // update the dict to have the new channel
+                                    transaction_channels.insert(key, new_channel);
+                                }
+                            };
                         }
                         Err(TryRecvError::Empty) => {
                             // was not actually ready, go back to selection
@@ -317,6 +417,8 @@ impl<T: FileStore + Send> Daemon<T> {
                         Err(TryRecvError::Disconnected) => {
                             // The transport instance disconnected?
                             // what do we do?
+                            // remove from possible selections
+                            selector.remove(val);
                         }
                     }
                 }
@@ -325,6 +427,10 @@ impl<T: FileStore + Send> Daemon<T> {
                 }
                 Ok(_) => unreachable!(),
             }
+
+            // process any message from users from the outside application API
+            // interprocess looks like a good choice for this
+
             // join any handles that have completed
             let mut ind = 0;
             while ind < self.transaction_handles.len() {

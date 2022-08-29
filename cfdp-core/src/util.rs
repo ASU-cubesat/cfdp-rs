@@ -91,10 +91,11 @@ impl<P: AsRef<Path>> PathToBytes for P {
 
 #[cfg(windows)]
 impl<P: AsRef<Path>> PathToBytes for P {
-    fn to_vec(self) -> Vec<u8> {
+    fn to_vec(&self) -> Vec<u8> {
         let mut buff: Vec<u8> = vec![];
         buff.extend(
-            path.as_os_str()
+            self.as_ref()
+                .as_os_str()
                 .encode_wide()
                 .map(|b| {
                     let b = b.to_be_bytes();
@@ -114,6 +115,7 @@ impl<P: AsRef<Path>> PathToBytes for P {
             let temp = vec![0_u8; len.into()];
             buffer.read_exact(&mut temp)?;
             let wide_buffer = buffer
+                .as_slice()
                 .chunks_exact(2)
                 .map(|val| u16::from_be_bytes([val[0], val[1]]))
                 .collect();

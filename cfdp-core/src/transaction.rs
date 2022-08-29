@@ -1766,7 +1766,8 @@ mod test {
             MessageToUser{message_text: "some text billy!".as_bytes().to_vec()},
             MessageToUser{message_text: "cfdp \nmessage here!".as_bytes().to_vec()}
 
-        ])] message_to_user: Vec<MessageToUser>,
+        ])]
+        message_to_user: Vec<MessageToUser>,
         #[values(true, false)] closure_requested: bool,
         #[values(ChecksumType::Null, ChecksumType::Modular)] checksum_type: ChecksumType,
     ) {
@@ -2125,16 +2126,18 @@ mod test {
 
             transaction.naks.push_back(nak);
             transaction.send_missing_data().unwrap();
+
+            transaction
+                .filestore
+                .lock()
+                .unwrap()
+                .delete_file(path.clone())
+                .expect("cannot remove file");
         });
         let (destination_id, received_pdu) = transport_rx.recv().unwrap();
         let expected_id = default_config.destination_entity_id.clone();
         assert_eq!(expected_id, destination_id);
         assert_eq!(pdu, received_pdu);
-        filestore
-            .lock()
-            .unwrap()
-            .delete_file(path.clone())
-            .expect("cannot remove file");
     }
 
     #[rstest]

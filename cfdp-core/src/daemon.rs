@@ -8,7 +8,7 @@ use std::{
         Arc, Mutex,
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crossbeam_channel::{unbounded, Receiver, Select, SendTimeoutError, Sender, TryRecvError};
@@ -30,6 +30,7 @@ pub enum PrimitiveError {
     IO(IOError),
     UnexpextedPrimitive,
     Encode(PDUError),
+    Metadata(TransactionError),
 }
 impl From<IOError> for PrimitiveError {
     fn from(err: IOError) -> Self {
@@ -41,12 +42,18 @@ impl From<PDUError> for PrimitiveError {
         Self::Encode(err)
     }
 }
+impl From<TransactionError> for PrimitiveError {
+    fn from(err: TransactionError) -> Self {
+        Self::Metadata(err)
+    }
+}
 impl Display for PrimitiveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::IO(err) => err.fmt(f),
             Self::UnexpextedPrimitive => write!(f, "Unexpected value for User Primitive."),
             Self::Encode(err) => err.fmt(f),
+            Self::Metadata(err) => write!(f, "Error (en)de-coding Metadata. {}", err),
         }
     }
 }
@@ -56,12 +63,14 @@ impl Error for PrimitiveError {
             Self::IO(source) => Some(source),
             Self::UnexpextedPrimitive => None,
             Self::Encode(source) => Some(source),
+            Self::Metadata(source) => Some(source),
         }
     }
 }
 
 type PrimitiveResult<T> = Result<T, PrimitiveError>;
 
+#[cfg_attr(test, derive(Debug, Clone, PartialEq))]
 pub(crate) enum UserPrimitive {
     Put(Metadata),
     Cancel(EntityID, TransactionSeqNum),
@@ -74,7 +83,7 @@ impl UserPrimitive {
         match self {
             Self::Put(metadata) => {
                 let mut buff: Vec<u8> = vec![0_u8];
-                // buff.extend(metadata.encode());
+                buff.extend(metadata.encode());
                 buff
             }
             Self::Cancel(id, seq) => {
@@ -109,9 +118,8 @@ impl UserPrimitive {
         buffer.read_exact(&mut u8buff)?;
         match u8buff[0] {
             0 => {
-                // let metadata = Metadata::decode(buffer)?;
-                // Ok(Self::Put(metadata))
-                todo!()
+                let metadata = Metadata::decode(buffer)?;
+                Ok(Self::Put(metadata))
             }
             1 => {
                 let id = VariableID::decode(buffer)?;
@@ -360,12 +368,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
         // self.spawn_send_transaction(header, metadata, self.transport_tx)
     }
 
-    pub fn manage_transactions(
-        &mut self,
-        // message_rx: Receiver<MessageToUser>,
-        // transport_rx_vec: &[Receiver<(EntityID, PDU)>],
-        // transport_tx_vec: &[Sender<(EntityID, PDU)>],
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn manage_transactions(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // Boolean to track if a kill signal is received
         let terminate = Arc::new(AtomicBool::new(false));
 
@@ -399,6 +402,8 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
         // mapping of unique transaction ids to channels used to talk to each transaction
         let mut transaction_channels: HashMap<(EntityID, TransactionSeqNum), Sender<Command>> =
             HashMap::new();
+
+        let mut cleanup = Instant::now();
 
         while !terminate.load(Ordering::Relaxed) {
             match selector.ready_timeout(Duration::from_millis(500)) {
@@ -569,20 +574,24 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
             }
             // join any handles that have completed
             // maybe should only run every so often?
-            let mut ind = 0;
-            while ind < self.transaction_handles.len() {
-                if self.transaction_handles[ind].is_finished() {
-                    let handle = self.transaction_handles.remove(ind);
-                    match handle.join() {
-                        Ok(Ok(())) => {}
-                        Ok(Err(err)) => {
-                            println!("Error occured during transaction: {}", err)
-                        }
-                        Err(_) => println!("Unable to join handle!"),
-                    };
-                } else {
-                    ind += 1;
+            if cleanup.elapsed() >= Duration::from_secs(10) {
+                let mut ind = 0;
+                while ind < self.transaction_handles.len() {
+                    if self.transaction_handles[ind].is_finished() {
+                        let handle = self.transaction_handles.remove(ind);
+                        match handle.join() {
+                            Ok(Ok(())) => {}
+                            Ok(Err(err)) => {
+                                println!("Error occured during transaction: {}", err)
+                            }
+                            Err(_) => println!("Unable to join handle!"),
+                        };
+                    } else {
+                        ind += 1;
+                    }
                 }
+
+                cleanup = Instant::now();
             }
         }
         Ok(())
@@ -598,5 +607,49 @@ impl<T: FileStore + Send + 'static> Drop for Daemon<T> {
                 .expect("Unable to join thread.")
                 .expect("Error during threaded transaction handle.");
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    use crate::pdu::{FileSizeSensitive, FileStoreAction, FileStoreRequest};
+
+    use camino::Utf8Path;
+    use rstest::rstest;
+
+    #[rstest]
+    fn primitive_encode(
+        #[values(
+            UserPrimitive::Put(
+                Metadata{
+                    source_filename:Utf8Path::new("test").into(),
+                    destination_filename:Utf8Path::new("output").into(),
+                    file_size:FileSizeSensitive::Small(322),
+                    filestore_requests: vec![
+                        FileStoreRequest{
+                            action_code:FileStoreAction::CreateDirectory,
+                            first_filename:"/tmp/help".as_bytes().to_vec(),
+                            second_filename:vec![]}],
+                    message_to_user: vec![MessageToUser{message_text: "do something".as_bytes().to_vec()}],
+                    closure_requested: false,
+                    checksum_type: crate::filestore::ChecksumType::Modular
+                }
+            ),
+            UserPrimitive::Cancel(EntityID::from(1_u8), TransactionSeqNum::from(3_u8)),
+            UserPrimitive::Suspend(EntityID::from(10_u16), TransactionSeqNum::from(400_u16)),
+            UserPrimitive::Resume(
+                EntityID::from(871838474_u64),
+                TransactionSeqNum::from(871838447_u64)
+            ),
+            UserPrimitive::Report(EntityID::from(12_u16), TransactionSeqNum::from(33_u16))
+        )]
+        expected: UserPrimitive,
+    ) {
+        let buffer = expected.clone().encode();
+        let recovered = UserPrimitive::decode(&mut &buffer[..]).unwrap();
+
+        assert_eq!(expected, recovered)
     }
 }

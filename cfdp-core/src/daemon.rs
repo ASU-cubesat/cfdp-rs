@@ -352,8 +352,8 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
 
     pub fn put(
         &self,
-        // source_filename: PathBuf,
-        // destination_filename: PathBuf,
+        // source_filename: Utf8PathBuf,
+        // destination_filename: Utf8PathBuf,
         // destination_entity_id: EntityID,
     ) {
         todo!()

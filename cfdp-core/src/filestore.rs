@@ -3,11 +3,11 @@ use std::{
     fmt::{self, Display, Write as _Write},
     fs::{self, File, OpenOptions},
     io::{Error as IOError, ErrorKind, Read, Seek, SeekFrom, Write},
-    path::{Component, Path, PathBuf},
     str::{self, Utf8Error},
     time::{SystemTime, SystemTimeError},
 };
 
+use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
 use num_derive::FromPrimitive;
 use pathdiff::diff_paths;
 use tempfile::tempfile;
@@ -20,31 +20,33 @@ use crate::pdu::{
 
 // file path normalization taken from cargo
 // https://github.com/rust-lang/cargo/blob/6d6dd9d9be9c91390da620adf43581619c2fa90e/crates/cargo-util/src/paths.rs#L81
-// This has been edited to not accept root dir `/` as the first entry.
-fn normalize_path(path: &Path) -> PathBuf {
+// This has been modified as follows:
+//   -  Does accept root dir `/` as the first entry.
+//   - Operators on Utf8Paths from the camino crate
+fn normalize_path(path: &Utf8Path) -> Utf8PathBuf {
     let mut components = path.components().peekable();
-    let mut ret = if let Some(c @ Component::Prefix(..)) = components.peek().cloned() {
+    let mut ret = if let Some(c @ Utf8Component::Prefix(..)) = components.peek().cloned() {
         components.next();
-        PathBuf::from(c.as_os_str())
+        Utf8PathBuf::from(c.as_str())
     } else {
-        PathBuf::new()
+        Utf8PathBuf::new()
     };
     // if the path begins with any number of rootdir components skip them
-    while let Some(_c @ Component::RootDir) = components.peek().cloned() {
+    while let Some(_c @ Utf8Component::RootDir) = components.peek().cloned() {
         components.next();
     }
 
     for component in components {
         match component {
-            Component::Prefix(..) => unreachable!(),
-            Component::RootDir => {
-                ret.push(component.as_os_str());
+            Utf8Component::Prefix(..) => unreachable!(),
+            Utf8Component::RootDir => {
+                unreachable!()
             }
-            Component::CurDir => {}
-            Component::ParentDir => {
+            Utf8Component::CurDir => {}
+            Utf8Component::ParentDir => {
                 ret.pop();
             }
-            Component::Normal(c) => {
+            Utf8Component::Normal(c) => {
                 ret.push(c);
             }
         }
@@ -114,21 +116,25 @@ impl From<Utf8Error> for FileStoreError {
 pub trait FileStore {
     /// Returns the path to the target with the root path prepended.
     /// Used when manipulating the filesystem relative to the root path.
-    fn get_native_path<P: AsRef<Path>>(&self, path: P) -> PathBuf;
+    fn get_native_path<P: AsRef<Utf8Path>>(&self, path: P) -> Utf8PathBuf;
 
     /// Creates a file relative to the root path.
-    fn create_file<P: AsRef<Path>>(&self, path: P) -> FileStoreResult<()>;
+    fn create_file<P: AsRef<Utf8Path>>(&self, path: P) -> FileStoreResult<()>;
 
     /// Delete a file retlative to the root path.
-    fn delete_file<P: AsRef<Path>>(&self, path: P) -> FileStoreResult<()>;
+    fn delete_file<P: AsRef<Utf8Path>>(&self, path: P) -> FileStoreResult<()>;
 
     /// Renames a file relative to the root path.
     /// Renames 'from' to 'to'.
-    fn rename_file<P: AsRef<Path>, U: AsRef<Path>>(&self, from: P, to: U) -> FileStoreResult<()>;
+    fn rename_file<P: AsRef<Utf8Path>, U: AsRef<Utf8Path>>(
+        &self,
+        from: P,
+        to: U,
+    ) -> FileStoreResult<()>;
 
     /// Appends the contents of File 2 into File 1.
     /// Both paths are assumed to be relative to the root path.
-    fn append_file<P: AsRef<Path>, U: AsRef<Path>>(
+    fn append_file<P: AsRef<Utf8Path>, U: AsRef<Utf8Path>>(
         &self,
         path1: P,
         path2: U,
@@ -136,29 +142,30 @@ pub trait FileStore {
 
     /// Replace the contents of File 1 with the contents of File 2.
     /// Both paths are assumed relative to the root path.
-    fn replace_file<P: AsRef<Path>, U: AsRef<Path>>(
+    fn replace_file<P: AsRef<Utf8Path>, U: AsRef<Utf8Path>>(
         &self,
         path1: P,
         path2: U,
     ) -> FileStoreResult<()>;
 
     /// Creates the directory Relative to the root path.
-    fn create_directory<P: AsRef<Path>>(&self, path: P) -> FileStoreResult<()>;
+    fn create_directory<P: AsRef<Utf8Path>>(&self, path: P) -> FileStoreResult<()>;
 
     /// Remove a directory Relative to the root path.
-    fn remove_directory<P: AsRef<Path>>(&self, path: P) -> FileStoreResult<()>;
+    fn remove_directory<P: AsRef<Utf8Path>>(&self, path: P) -> FileStoreResult<()>;
 
     /// List the Contents of a directory relative to the root path.
-    fn list_directory<P: AsRef<Path>>(&self, path: P) -> FileStoreResult<String>;
+    fn list_directory<P: AsRef<Utf8Path>>(&self, path: P) -> FileStoreResult<String>;
 
     /// Opens a file relative to the root path with the given options.
-    fn open<P: AsRef<Path>>(&self, path: P, options: &mut OpenOptions) -> FileStoreResult<File>;
+    fn open<P: AsRef<Utf8Path>>(&self, path: P, options: &mut OpenOptions)
+        -> FileStoreResult<File>;
 
     /// Opens a system temporary file
     fn open_tempfile(&self) -> FileStoreResult<File>;
 
     /// Retuns the size of the file on disk relative to the root path.
-    fn get_size<P: AsRef<Path>>(&self, path: P) -> FileStoreResult<u64>;
+    fn get_size<P: AsRef<Utf8Path>>(&self, path: P) -> FileStoreResult<u64>;
 
     /// Executes an action based on an input filestore request
     /// This is meant to be executed by a [Transaction](crate::transaction::Transaction)
@@ -319,23 +326,23 @@ pub trait FileStore {
 /// Store the root path infomration for a FileStore implementation
 /// using built in rust [std::fs] interface.
 pub struct NativeFileStore {
-    root_path: PathBuf,
+    root_path: Utf8PathBuf,
 }
 impl NativeFileStore {
-    pub fn new<P: AsRef<Path>>(root_path: P) -> Self {
+    pub fn new<P: AsRef<Utf8Path>>(root_path: P) -> Self {
         Self {
-            root_path: root_path.as_ref().to_path_buf(),
+            root_path: root_path.as_ref().to_owned(),
         }
     }
 }
 impl FileStore for NativeFileStore {
-    fn get_native_path<P: AsRef<Path>>(&self, path: P) -> PathBuf {
+    fn get_native_path<P: AsRef<Utf8Path>>(&self, path: P) -> Utf8PathBuf {
         let path = normalize_path(path.as_ref());
         self.root_path.join(path)
     }
 
     /// This is a wrapper around [File::create]
-    fn create_file<P: AsRef<Path>>(&self, path: P) -> FileStoreResult<()> {
+    fn create_file<P: AsRef<Utf8Path>>(&self, path: P) -> FileStoreResult<()> {
         {
             File::create(self.get_native_path(path))?;
         }
@@ -343,14 +350,18 @@ impl FileStore for NativeFileStore {
     }
 
     /// This is a wrapper around [fs::remove_file]
-    fn delete_file<P: AsRef<Path>>(&self, path: P) -> FileStoreResult<()> {
+    fn delete_file<P: AsRef<Utf8Path>>(&self, path: P) -> FileStoreResult<()> {
         let full_path = self.get_native_path(path);
         fs::remove_file(full_path)?;
         Ok(())
     }
 
     /// This is a wrapper around [fs::rename]
-    fn rename_file<P: AsRef<Path>, U: AsRef<Path>>(&self, from: P, to: U) -> FileStoreResult<()> {
+    fn rename_file<P: AsRef<Utf8Path>, U: AsRef<Utf8Path>>(
+        &self,
+        from: P,
+        to: U,
+    ) -> FileStoreResult<()> {
         let full_from_path = self.get_native_path(from);
         let full_to_path = self.get_native_path(to);
         // CFDP expects to not be allowed if the "TO" file already exists
@@ -362,7 +373,7 @@ impl FileStore for NativeFileStore {
     }
 
     /// This funtion uses [fs::read] to append the contents of path2 to path1.
-    fn append_file<P: AsRef<Path>, U: AsRef<Path>>(
+    fn append_file<P: AsRef<Utf8Path>, U: AsRef<Utf8Path>>(
         &self,
         path1: P,
         path2: U,
@@ -378,7 +389,7 @@ impl FileStore for NativeFileStore {
         Ok(())
     }
 
-    fn replace_file<P: AsRef<Path>, U: AsRef<Path>>(
+    fn replace_file<P: AsRef<Utf8Path>, U: AsRef<Utf8Path>>(
         &self,
         path1: P,
         path2: U,
@@ -392,24 +403,24 @@ impl FileStore for NativeFileStore {
     }
 
     /// This is a wrapper around [fs::create_dir]
-    fn create_directory<P: AsRef<Path>>(&self, path: P) -> FileStoreResult<()> {
+    fn create_directory<P: AsRef<Utf8Path>>(&self, path: P) -> FileStoreResult<()> {
         let full_path = self.get_native_path(path);
         fs::create_dir(full_path)?;
         Ok(())
     }
 
     /// This function wraps [fs::remove_dir_all]
-    fn remove_directory<P: AsRef<Path>>(&self, path: P) -> FileStoreResult<()> {
+    fn remove_directory<P: AsRef<Utf8Path>>(&self, path: P) -> FileStoreResult<()> {
         let full_path = self.get_native_path(path);
         fs::remove_dir_all(full_path)?;
         Ok(())
     }
 
-    fn list_directory<P: AsRef<Path>>(&self, path: P) -> FileStoreResult<String> {
+    fn list_directory<P: AsRef<Utf8Path>>(&self, path: P) -> FileStoreResult<String> {
         let directory = self.get_native_path(path);
         let mut directory_listing = format!(
             "Listing for directory: {}\ntype,path,size,timestamp\n",
-            directory.display(),
+            directory,
         );
         let (mut dirs, mut files): (Vec<_>, Vec<_>) = fs::read_dir(&directory)?
             .filter_map(|entry| entry.ok())
@@ -426,7 +437,7 @@ impl FileStore for NativeFileStore {
                 diff_paths(dir.path(), &directory)
                     .ok_or_else(|| FileStoreError::PathDiff(
                         dir.path().display().to_string(),
-                        directory.display().to_string(),
+                        directory.to_string(),
                     ))?
                     .display(),
                 meta.len(),
@@ -444,7 +455,7 @@ impl FileStore for NativeFileStore {
                 diff_paths(file.path(), &directory)
                     .ok_or_else(|| FileStoreError::PathDiff(
                         file.path().display().to_string(),
-                        directory.display().to_string(),
+                        directory.to_string(),
                     ))?
                     .display(),
                 meta.len(),
@@ -457,7 +468,11 @@ impl FileStore for NativeFileStore {
         Ok(directory_listing)
     }
 
-    fn open<P: AsRef<Path>>(&self, path: P, options: &mut OpenOptions) -> FileStoreResult<File> {
+    fn open<P: AsRef<Utf8Path>>(
+        &self,
+        path: P,
+        options: &mut OpenOptions,
+    ) -> FileStoreResult<File> {
         let full_path = self.get_native_path(path);
         Ok(options.open(full_path)?)
     }
@@ -468,7 +483,7 @@ impl FileStore for NativeFileStore {
     }
 
     /// This function uses [fs::metadata] to read the size of the input file relative to the root path.
-    fn get_size<P: AsRef<Path>>(&self, path: P) -> FileStoreResult<u64> {
+    fn get_size<P: AsRef<Utf8Path>>(&self, path: P) -> FileStoreResult<u64> {
         let full_path = self.get_native_path(path);
         Ok(fs::metadata(full_path)?.len())
     }
@@ -542,12 +557,14 @@ mod test {
     #[fixture]
     #[once]
     fn test_filestore(tempdir_fixture: &TempDir) -> NativeFileStore {
-        NativeFileStore::new(tempdir_fixture.path())
+        NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )
     }
 
     #[rstest]
     fn create_file(test_filestore: &NativeFileStore) {
-        let path = Path::new("junk.txt");
+        let path = Utf8Path::new("junk.txt");
 
         test_filestore.create_file(path).unwrap();
 
@@ -557,7 +574,7 @@ mod test {
 
     #[rstest]
     fn delete_file(test_filestore: &NativeFileStore) {
-        let path = Path::new("junk.txt");
+        let path = Utf8Path::new("junk.txt");
 
         test_filestore.create_file(path).unwrap();
 
@@ -571,8 +588,8 @@ mod test {
 
     #[rstest]
     fn rename_file(test_filestore: &NativeFileStore) {
-        let path = Path::new("junk.txt");
-        let new_path = Path::new("new.dat");
+        let path = Utf8Path::new("junk.txt");
+        let new_path = Utf8Path::new("new.dat");
 
         test_filestore.create_file(path).unwrap();
 
@@ -651,7 +668,7 @@ mod test {
 
     #[rstest]
     fn create_remove_dir(test_filestore: &NativeFileStore) -> FileStoreResult<()> {
-        let dir_path = Path::new("/help");
+        let dir_path = Utf8Path::new("/help");
         let full_path = test_filestore.get_native_path(dir_path);
         test_filestore.create_directory(dir_path)?;
 
@@ -700,7 +717,7 @@ mod test {
     #[rstest]
     fn listdir(test_filestore: &NativeFileStore) -> FileStoreResult<()> {
         test_filestore.create_directory("listing")?;
-        let basepath = Path::new("listing");
+        let basepath = Utf8Path::new("listing");
 
         let input_text = "Hello, world!";
         let input_text2 = "A longer string of text for this file.\n";
@@ -752,7 +769,7 @@ d,two,{s3},{t3}
 f,new.dat,{s4},{t4}
 f,test.txt,{s5},{t5}
 ",
-            dir = test_filestore.get_native_path(basepath).display(),
+            dir = test_filestore.get_native_path(basepath),
             t1 = timings.get("one").unwrap(),
             t2 = timings.get("three").unwrap(),
             t3 = timings.get("two").unwrap(),
@@ -817,7 +834,9 @@ f,test.txt,{s5},{t5}
         action_code: FileStoreAction,
     ) -> FileStoreResult<()> {
         let dir = TempDir::new().unwrap();
-        let filestore = NativeFileStore::new(&dir);
+        let filestore = NativeFileStore::new(
+            Utf8Path::from_path(dir.path()).expect("Unable to make utf8 tempdir"),
+        );
 
         let path = "/the_first_filename";
         let path2 = "/the_second_filename";
@@ -864,7 +883,9 @@ f,test.txt,{s5},{t5}
     #[fixture]
     #[once]
     fn failure_filestore(failure_dir: &TempDir) -> NativeFileStore {
-        let filestore = NativeFileStore::new(failure_dir.path());
+        let filestore = NativeFileStore::new(
+            Utf8Path::from_path(failure_dir.path()).expect("Unable to make utf8 tempdir"),
+        );
         filestore.create_file("file1").unwrap();
         filestore.create_file("file2").unwrap();
 

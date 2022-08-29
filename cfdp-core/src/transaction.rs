@@ -5,10 +5,10 @@ use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     num::TryFromIntError,
-    path::PathBuf,
     sync::{Arc, Mutex, PoisonError},
 };
 
+use camino::Utf8PathBuf;
 use crossbeam_channel::{SendError, Sender};
 
 use crate::{
@@ -23,7 +23,6 @@ use crate::{
         UnsegmentedFileData, VariableID, PDU, U3,
     },
     timer::Timer,
-    util::PathToBytes,
 };
 
 pub type TransactionResult<T> = Result<T, TransactionError>;
@@ -132,9 +131,9 @@ pub enum Action {
 #[cfg_attr(test, derive(Debug, PartialEq))]
 pub(crate) struct Metadata {
     /// Bytes of the source filename, can be null if length is 0.
-    pub source_filename: PathBuf,
+    pub source_filename: Utf8PathBuf,
     /// Bytes of the destination filename, can be null if length is 0.
-    pub destination_filename: PathBuf,
+    pub destination_filename: Utf8PathBuf,
     /// The size of the file being transfered in this transaction.
     pub file_size: FileSizeSensitive,
     /// List of any filestore requests to take after transaction is complete
@@ -1557,20 +1556,12 @@ impl<T: FileStore> Transaction<T> {
             source_filename: self
                 .metadata
                 .as_ref()
-                .and_then(|meta| {
-                    meta.source_filename
-                        .to_str()
-                        .map(|str| str.as_bytes().to_vec())
-                })
+                .map(|meta| meta.source_filename.as_str().as_bytes().to_vec())
                 .ok_or_else(|| TransactionError::MissingMetadata(id.clone()))?,
             destination_filename: self
                 .metadata
                 .as_ref()
-                .and_then(|meta| {
-                    meta.destination_filename
-                        .to_str()
-                        .map(|str| str.as_bytes().to_vec())
-                })
+                .map(|meta| meta.destination_filename.as_str().as_bytes().to_vec())
                 .ok_or_else(|| TransactionError::MissingMetadata(id.clone()))?,
             options: self
                 .metadata
@@ -1622,6 +1613,7 @@ mod test {
         pdu::{FileStoreAction, FileStoreStatus, PromptPDU, RenameStatus},
     };
 
+    use camino::Utf8Path;
     use crossbeam_channel::unbounded;
     use rstest::{fixture, rstest};
     use tempfile::TempDir;
@@ -1656,21 +1648,23 @@ mod test {
         let (transport_tx, _) = unbounded();
         let (message_tx, _) = unbounded();
         let config = default_config.clone();
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
 
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
         assert_eq!(
             TransactionStatus::Undefined,
             transaction.get_status().clone()
         );
-        let mut pathbuf = PathBuf::new();
-        pathbuf.push("a");
+        let mut path = Utf8PathBuf::new();
+        path.push("a");
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
             file_size: FileSizeSensitive::Small(600),
-            source_filename: pathbuf.clone(),
-            destination_filename: pathbuf.clone(),
+            source_filename: path.clone(),
+            destination_filename: path.clone(),
             message_to_user: vec![],
             filestore_requests: vec![],
             checksum_type: ChecksumType::Modular,
@@ -1684,7 +1678,9 @@ mod test {
         let (transport_tx, _) = unbounded();
         let (message_tx, _) = unbounded();
         let config = default_config.clone();
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
 
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
         let payload_len = 12;
@@ -1719,7 +1715,9 @@ mod test {
         let (message_tx, _) = unbounded();
         let mut config = default_config.clone();
         config.action_type = Action::Receive;
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
 
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
 
@@ -1749,11 +1747,13 @@ mod test {
         let (message_tx, _) = unbounded();
         let mut config = default_config.clone();
         config.action_type = Action::Receive;
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
 
         let input = "This is test data\n!";
         let output_file = {
-            let mut temp_buff = PathBuf::new();
+            let mut temp_buff = Utf8PathBuf::new();
             temp_buff.push("finalize_test.txt");
             temp_buff
         };
@@ -1804,17 +1804,22 @@ mod test {
         let (transport_tx, transport_rx) = unbounded();
         let (message_tx, _) = unbounded();
         let config = default_config.clone();
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
         let mut transaction = Transaction::new(config, filestore.clone(), transport_tx, message_tx);
 
-        let mut pathbuf = PathBuf::new();
-        pathbuf.push("testfile");
+        let path = {
+            let mut buf = Utf8PathBuf::new();
+            buf.push("testfile");
+            buf
+        };
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
             file_size: FileSizeSensitive::Small(10),
-            source_filename: pathbuf.clone(),
-            destination_filename: pathbuf.clone(),
+            source_filename: path.clone(),
+            destination_filename: path.clone(),
             message_to_user: vec![],
             filestore_requests: vec![],
             checksum_type: ChecksumType::Modular,
@@ -1874,7 +1879,7 @@ mod test {
         filestore
             .lock()
             .unwrap()
-            .delete_file(pathbuf.clone())
+            .delete_file(path)
             .expect("cannot remove file");
     }
 
@@ -1889,17 +1894,19 @@ mod test {
         let (transport_tx, transport_rx) = unbounded();
         let (message_tx, _) = unbounded();
         let config = default_config.clone();
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
         let mut transaction = Transaction::new(config, filestore.clone(), transport_tx, message_tx);
 
-        let mut pathbuf = PathBuf::new();
-        pathbuf.push("testfile_missing");
+        let mut path = Utf8PathBuf::new();
+        path.push("testfile_missing");
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
             file_size: FileSizeSensitive::Small(10),
-            source_filename: pathbuf.clone(),
-            destination_filename: pathbuf.clone(),
+            source_filename: path.clone(),
+            destination_filename: path.clone(),
             message_to_user: vec![],
             filestore_requests: vec![],
             checksum_type: ChecksumType::Modular,
@@ -1930,8 +1937,8 @@ mod test {
                     closure_requested: false,
                     file_size: FileSizeSensitive::Small(10),
                     checksum_type: ChecksumType::Modular,
-                    source_filename: pathbuf.clone().to_str().unwrap().as_bytes().to_vec(),
-                    destination_filename: pathbuf.clone().to_str().unwrap().as_bytes().to_vec(),
+                    source_filename: path.clone().as_str().as_bytes().to_vec(),
+                    destination_filename: path.clone().as_str().as_bytes().to_vec(),
                     options: vec![],
                 }));
                 let payload_len = payload.clone().encode().len();
@@ -1983,7 +1990,7 @@ mod test {
         filestore
             .lock()
             .unwrap()
-            .delete_file(pathbuf.clone())
+            .delete_file(path.clone())
             .expect("cannot remove file");
     }
 
@@ -2003,8 +2010,9 @@ mod test {
             FileSizeFlag::Large => FileSizeSensitive::Large(20),
         };
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
-
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
 
         let input = vec![0, 5, 255, 99];
@@ -2085,19 +2093,24 @@ mod test {
         let (transport_tx, transport_rx) = unbounded();
         let (message_tx, _) = unbounded();
         let config = default_config.clone();
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
         let mut transaction = Transaction::new(config, filestore.clone(), transport_tx, message_tx);
 
-        let mut pathbuf = PathBuf::new();
-        pathbuf.push("test_eof.dat");
+        let path = {
+            let mut buf = Utf8PathBuf::new();
+            buf.push("test_eof.dat");
+            buf
+        };
 
         let input = "Here is some test data to write!$*#*.\n";
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
             file_size: FileSizeSensitive::Small(input.as_bytes().len() as u32),
-            source_filename: pathbuf.clone(),
-            destination_filename: pathbuf.clone(),
+            source_filename: path.clone(),
+            destination_filename: path.clone(),
             message_to_user: vec![],
             filestore_requests: vec![],
             checksum_type: ChecksumType::Modular,
@@ -2163,7 +2176,7 @@ mod test {
         filestore
             .lock()
             .unwrap()
-            .delete_file(pathbuf.clone())
+            .delete_file(path)
             .expect("cannot remove file");
     }
 
@@ -2179,20 +2192,25 @@ mod test {
         let mut config = default_config.clone();
         config.transmission_mode = transmission_mode;
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
         let mut transaction =
             Transaction::new(config.clone(), filestore.clone(), transport_tx, message_tx);
 
-        let mut pathbuf = PathBuf::new();
-        pathbuf.push(format!("test_eof_{:}.dat", config.transmission_mode as u8));
+        let path = {
+            let mut buf = Utf8PathBuf::new();
+            buf.push(format!("test_eof_{:}.dat", config.transmission_mode as u8));
+            buf
+        };
 
         let input = "Here is some test data to write!$*#*.\n";
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
             file_size: FileSizeSensitive::Small(input.as_bytes().len() as u32),
-            source_filename: pathbuf.clone(),
-            destination_filename: pathbuf.clone(),
+            source_filename: path.clone(),
+            destination_filename: path.clone(),
             message_to_user: vec![],
             filestore_requests: vec![],
             checksum_type: ChecksumType::Modular,
@@ -2265,7 +2283,7 @@ mod test {
         filestore
             .lock()
             .unwrap()
-            .delete_file(pathbuf.clone())
+            .delete_file(path)
             .expect("cannot remove file");
     }
 
@@ -2282,22 +2300,27 @@ mod test {
         config.transmission_mode = transmission_mode;
         config.action_type = Action::Receive;
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
         let mut transaction = Transaction::new(config.clone(), filestore, transport_tx, message_tx);
 
-        let mut pathbuf = PathBuf::new();
-        pathbuf.push(format!(
-            "test_eof_{:}.dat",
-            config.transmission_mode.clone() as u8
-        ));
+        let path = {
+            let mut buf = Utf8PathBuf::new();
+            buf.push(format!(
+                "test_eof_{:}.dat",
+                config.transmission_mode.clone() as u8
+            ));
+            buf
+        };
 
         let input = "Here is some test data to write!$*#*.\n";
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
             file_size: FileSizeSensitive::Small(input.as_bytes().len() as u32),
-            source_filename: pathbuf.clone(),
-            destination_filename: pathbuf.clone(),
+            source_filename: path.clone(),
+            destination_filename: path,
             message_to_user: vec![],
             filestore_requests: vec![],
             checksum_type: ChecksumType::Modular,
@@ -2343,7 +2366,9 @@ mod test {
         let (message_tx, _) = unbounded();
         let config = default_config.clone();
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
 
         transaction.ack_timer.restart();
@@ -2377,19 +2402,24 @@ mod test {
         let (message_tx, _) = unbounded();
         let config = default_config.clone();
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
         let mut transaction = Transaction::new(config.clone(), filestore, transport_tx, message_tx);
 
-        let mut pathbuf = PathBuf::new();
-        pathbuf.push(format!("test_eof_{:}.dat", config.transmission_mode as u8));
+        let path = {
+            let mut buf = Utf8PathBuf::new();
+            buf.push(format!("test_eof_{:}.dat", config.transmission_mode as u8));
+            buf
+        };
 
         let input = "Here is some test data to write!$*#*.\n";
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
             file_size: FileSizeSensitive::Small(input.as_bytes().len() as u32),
-            source_filename: pathbuf.clone(),
-            destination_filename: pathbuf.clone(),
+            source_filename: path.clone(),
+            destination_filename: path,
             message_to_user: vec![],
             filestore_requests: vec![],
             checksum_type: ChecksumType::Modular,
@@ -2429,19 +2459,24 @@ mod test {
         let (message_tx, _) = unbounded();
         let config = default_config.clone();
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
         let mut transaction = Transaction::new(config.clone(), filestore, transport_tx, message_tx);
 
-        let mut pathbuf = PathBuf::new();
-        pathbuf.push(format!("test_eof_{:}.dat", config.transmission_mode as u8));
+        let path = {
+            let mut buf = Utf8PathBuf::new();
+            buf.push(format!("test_eof_{:}.dat", config.transmission_mode as u8));
+            buf
+        };
 
         let input = "Here is some test data to write!$*#*.\n";
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
             file_size: FileSizeSensitive::Small(input.as_bytes().len() as u32),
-            source_filename: pathbuf.clone(),
-            destination_filename: pathbuf.clone(),
+            source_filename: path.clone(),
+            destination_filename: path,
             message_to_user: vec![],
             filestore_requests: vec![],
             checksum_type: ChecksumType::Modular,
@@ -2482,24 +2517,29 @@ mod test {
         let mut config = default_config.clone();
         config.action_type = Action::Receive;
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
         let mut transaction = Transaction::new(config, filestore.clone(), transport_tx, message_tx);
 
-        let mut pathbuf = PathBuf::new();
-        pathbuf.push("test_finalize_receive.dat");
+        let path = {
+            let mut buf = Utf8PathBuf::new();
+            buf.push("test_finalize_receive.dat");
+            buf
+        };
 
         let input = "Here is some test data to write!$*#*.\n";
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
             file_size: FileSizeSensitive::Small(input.as_bytes().len() as u32),
-            source_filename: pathbuf.clone(),
-            destination_filename: pathbuf.clone(),
+            source_filename: path.clone(),
+            destination_filename: path.clone(),
             message_to_user: vec![],
             checksum_type: ChecksumType::Modular,
             filestore_requests: vec![FileStoreRequest {
                 action_code: FileStoreAction::DeleteFile,
-                first_filename: pathbuf.clone().to_str().unwrap().as_bytes().to_vec(),
+                first_filename: path.as_str().as_bytes().to_vec(),
                 second_filename: vec![],
             }],
         });
@@ -2523,11 +2563,7 @@ mod test {
         transaction.store_file_data(pdu).unwrap();
         transaction.finalize_receive().unwrap();
 
-        assert!(!filestore
-            .lock()
-            .unwrap()
-            .get_native_path(pathbuf.clone())
-            .exists());
+        assert!(!filestore.lock().unwrap().get_native_path(path).exists());
     }
 
     #[rstest]
@@ -2582,20 +2618,22 @@ mod test {
         config.action_type = Action::Receive;
         config.transmission_mode = TransmissionMode::Unacknowledged;
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
 
-        let pathbuf = {
-            let mut pathbuf = PathBuf::new();
-            pathbuf.push("Test_file.txt");
-            pathbuf
+        let path = {
+            let mut path = Utf8PathBuf::new();
+            path.push("Test_file.txt");
+            path
         };
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
             file_size: FileSizeSensitive::Small(600),
-            source_filename: pathbuf.clone(),
-            destination_filename: pathbuf,
+            source_filename: path.clone(),
+            destination_filename: path,
             message_to_user: vec![],
             filestore_requests: vec![],
             checksum_type: ChecksumType::Modular,
@@ -2667,20 +2705,22 @@ mod test {
         config.action_type = Action::Receive;
         config.transmission_mode = TransmissionMode::Acknowledged;
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
 
-        let pathbuf = {
-            let mut pathbuf = PathBuf::new();
-            pathbuf.push("Test_file.txt");
-            pathbuf
+        let path = {
+            let mut path = Utf8PathBuf::new();
+            path.push("Test_file.txt");
+            path
         };
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
             file_size: FileSizeSensitive::Small(600),
-            source_filename: pathbuf.clone(),
-            destination_filename: pathbuf,
+            source_filename: path.clone(),
+            destination_filename: path,
             message_to_user: vec![],
             filestore_requests: vec![],
             checksum_type: ChecksumType::Modular,
@@ -2769,20 +2809,22 @@ mod test {
         config.action_type = Action::Send;
         config.transmission_mode = TransmissionMode::Unacknowledged;
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
 
-        let pathbuf = {
-            let mut pathbuf = PathBuf::new();
-            pathbuf.push("Test_file.txt");
-            pathbuf
+        let path = {
+            let mut path = Utf8PathBuf::new();
+            path.push("Test_file.txt");
+            path
         };
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
             file_size: FileSizeSensitive::Small(600),
-            source_filename: pathbuf.clone(),
-            destination_filename: pathbuf,
+            source_filename: path.clone(),
+            destination_filename: path,
             message_to_user: vec![],
             filestore_requests: vec![],
             checksum_type: ChecksumType::Modular,
@@ -2848,20 +2890,22 @@ mod test {
         config.action_type = Action::Send;
         config.transmission_mode = TransmissionMode::Acknowledged;
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
 
-        let pathbuf = {
-            let mut pathbuf = PathBuf::new();
-            pathbuf.push("Test_file.txt");
-            pathbuf
+        let path = {
+            let mut path = Utf8PathBuf::new();
+            path.push("Test_file.txt");
+            path
         };
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
             file_size: FileSizeSensitive::Small(600),
-            source_filename: pathbuf.clone(),
-            destination_filename: pathbuf,
+            source_filename: path.clone(),
+            destination_filename: path,
             message_to_user: vec![],
             filestore_requests: vec![],
             checksum_type: ChecksumType::Modular,
@@ -2903,20 +2947,22 @@ mod test {
         config.action_type = Action::Send;
         config.transmission_mode = transmission_mode;
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
 
-        let pathbuf = {
-            let mut pathbuf = PathBuf::new();
-            pathbuf.push("Test_file.txt");
-            pathbuf
+        let path = {
+            let mut path = Utf8PathBuf::new();
+            path.push("Test_file.txt");
+            path
         };
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
             file_size: FileSizeSensitive::Small(600),
-            source_filename: pathbuf.clone(),
-            destination_filename: pathbuf,
+            source_filename: path.clone(),
+            destination_filename: path,
             message_to_user: vec![],
             filestore_requests: vec![],
             checksum_type: ChecksumType::Modular,
@@ -2956,20 +3002,22 @@ mod test {
         config.action_type = Action::Receive;
         config.transmission_mode = transmission_mode;
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
 
-        let pathbuf = {
-            let mut pathbuf = PathBuf::new();
-            pathbuf.push("Test_file.txt");
-            pathbuf
+        let path = {
+            let mut path = Utf8PathBuf::new();
+            path.push("Test_file.txt");
+            path
         };
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
             file_size: FileSizeSensitive::Small(600),
-            source_filename: pathbuf.clone(),
-            destination_filename: pathbuf,
+            source_filename: path.clone(),
+            destination_filename: path,
             message_to_user: vec![],
             filestore_requests: vec![],
             checksum_type: ChecksumType::Modular,
@@ -3017,13 +3065,15 @@ mod test {
         config.action_type = Action::Receive;
         config.transmission_mode = transmission_mode;
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
 
-        let pathbuf = {
-            let mut pathbuf = PathBuf::new();
-            pathbuf.push("Test_file.txt");
-            pathbuf
+        let path = {
+            let mut path = Utf8PathBuf::new();
+            path.push("Test_file.txt");
+            path
         };
 
         let expected_msg = MessageToUser {
@@ -3038,8 +3088,8 @@ mod test {
         let expected = Some(Metadata {
             closure_requested: false,
             file_size: FileSizeSensitive::Small(600),
-            source_filename: pathbuf.clone(),
-            destination_filename: pathbuf,
+            source_filename: path.clone(),
+            destination_filename: path,
             message_to_user: vec![expected_msg.clone()],
             filestore_requests: vec![fs_req.clone()],
             checksum_type: ChecksumType::Modular,
@@ -3090,20 +3140,22 @@ mod test {
 
         let expected_id = config.source_entity_id.clone();
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
 
-        let pathbuf = {
-            let mut pathbuf = PathBuf::new();
-            pathbuf.push("Test_file.txt");
-            pathbuf
+        let path = {
+            let mut path = Utf8PathBuf::new();
+            path.push("Test_file.txt");
+            path
         };
 
         transaction.metadata = Some(Metadata {
             closure_requested: true,
             file_size: FileSizeSensitive::Small(600),
-            source_filename: pathbuf.clone(),
-            destination_filename: pathbuf,
+            source_filename: path.clone(),
+            destination_filename: path,
             message_to_user: vec![],
             filestore_requests: vec![],
             checksum_type: ChecksumType::Modular,
@@ -3255,18 +3307,20 @@ mod test {
 
         let expected_id = config.source_entity_id.clone();
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
-        let pathbuf = {
-            let mut buf = PathBuf::new();
+        let path = {
+            let mut buf = Utf8PathBuf::new();
             buf.push("test_file");
             buf
         };
         transaction.metadata = Some(Metadata {
             closure_requested: false,
             file_size: FileSizeSensitive::Small(600),
-            source_filename: pathbuf.clone(),
-            destination_filename: pathbuf,
+            source_filename: path.clone(),
+            destination_filename: path,
             message_to_user: vec![],
             filestore_requests: vec![],
             checksum_type: ChecksumType::Modular,
@@ -3344,18 +3398,20 @@ mod test {
 
         let expected_id = config.destination_entity_id.clone();
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
-        let pathbuf = {
-            let mut buf = PathBuf::new();
+        let path = {
+            let mut buf = Utf8PathBuf::new();
             buf.push("test_file");
             buf
         };
         transaction.metadata = Some(Metadata {
             closure_requested: false,
             file_size: FileSizeSensitive::Small(600),
-            source_filename: pathbuf.clone(),
-            destination_filename: pathbuf,
+            source_filename: path.clone(),
+            destination_filename: path,
             message_to_user: vec![],
             filestore_requests: vec![],
             checksum_type: ChecksumType::Modular,
@@ -3422,10 +3478,12 @@ mod test {
         config.transmission_mode = TransmissionMode::Acknowledged;
         config.file_size_flag = file_size_flag;
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
-        let pathbuf = {
-            let mut buf = PathBuf::new();
+        let path = {
+            let mut buf = Utf8PathBuf::new();
             buf.push("test_file");
             buf
         };
@@ -3435,8 +3493,8 @@ mod test {
                 FileSizeFlag::Small => FileSizeSensitive::Small(total_size as u32),
                 FileSizeFlag::Large => FileSizeSensitive::Large(total_size as u64),
             },
-            source_filename: pathbuf.clone(),
-            destination_filename: pathbuf,
+            source_filename: path.clone(),
+            destination_filename: path,
             message_to_user: vec![],
             filestore_requests: vec![],
             checksum_type: ChecksumType::Modular,
@@ -3531,18 +3589,20 @@ mod test {
 
         let expected_id = config.destination_entity_id.clone();
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
-        let pathbuf = {
-            let mut buf = PathBuf::new();
+        let path = {
+            let mut buf = Utf8PathBuf::new();
             buf.push("test_file");
             buf
         };
         transaction.metadata = Some(Metadata {
             closure_requested: false,
             file_size: FileSizeSensitive::Small(500),
-            source_filename: pathbuf.clone(),
-            destination_filename: pathbuf,
+            source_filename: path.clone(),
+            destination_filename: path,
             message_to_user: vec![],
             filestore_requests: vec![],
             checksum_type: ChecksumType::Null,
@@ -3607,18 +3667,20 @@ mod test {
         config.action_type = Action::Send;
         config.transmission_mode = TransmissionMode::Acknowledged;
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(tempdir_fixture.path())));
+        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        )));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
-        let pathbuf = {
-            let mut buf = PathBuf::new();
+        let path = {
+            let mut buf = Utf8PathBuf::new();
             buf.push("test_file");
             buf
         };
         transaction.metadata = Some(Metadata {
             closure_requested: false,
             file_size: FileSizeSensitive::Small(500),
-            source_filename: pathbuf.clone(),
-            destination_filename: pathbuf,
+            source_filename: path.clone(),
+            destination_filename: path,
             message_to_user: vec![],
             filestore_requests: vec![],
             checksum_type: ChecksumType::Null,

@@ -146,6 +146,54 @@ pub(crate) struct Metadata {
     /// Flag to track what kind of [Checksum](crate::filestore::ChecksumType) will be used in this transaction.
     pub checksum_type: ChecksumType,
 }
+// impl Metadata {
+//     pub(crate) fn encode(self) -> Vec<u8> {
+//         let mut buffer: Vec<u8> = vec![];
+//         {
+//             let vec = self.source_filename.to_vec();
+//             buffer.push(vec.len() as u8);
+//             buffer.extend(vec);
+//         }
+//         {
+//             let vec = self.destination_filename.to_vec();
+//             buffer.push(vec.len() as u8);
+//             buffer.extend(vec);
+//         }
+//         let fss = self.file_size.to_be_bytes();
+//         buffer.push(fss.len() as u8);
+//         buffer.extend(fss);
+
+//         buffer.push(self.filestore_requests.len() as u8);
+
+//         self.filestore_requests
+//             .iter()
+//             .for_each(|req| buffer.extend(req.encode()));
+
+//         buffer.push(self.message_to_user.len() as u8);
+
+//         self.message_to_user
+//             .iter()
+//             .for_each(|msg| buffer.extend(msg.encode()));
+
+//         buffer.push(self.closure_requested as u8);
+
+//         buffer.push(self.checksum_type as u8);
+
+//         buffer
+//     }
+
+//     pub(crate) fn decode<T: Read>(buffer: &mut T) -> TransactionResult<Self> {
+//         Ok(Self {
+//             source_filename,
+//             destination_filename,
+//             file_size,
+//             filestore_requests,
+//             message_to_user,
+//             closure_requested,
+//             checksum_type,
+//         })
+//     }
+// }
 
 #[cfg_attr(test, derive(Clone))]
 pub struct TransactionConfig {

@@ -1,6 +1,8 @@
 use std::{
     collections::HashMap,
-    path::PathBuf,
+    error::Error,
+    fmt::Display,
+    io::{Error as IOError, Read},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -10,6 +12,7 @@ use std::{
 };
 
 use crossbeam_channel::{unbounded, Receiver, Select, SendTimeoutError, Sender, TryRecvError};
+use interprocess::local_socket::LocalSocketListener;
 use signal_hook::{consts::TERM_SIGNALS, flag};
 
 use crate::{
@@ -22,6 +25,119 @@ use crate::{
     transaction::{Action, Metadata, Transaction, TransactionConfig, TransactionError},
 };
 
+#[derive(Debug)]
+pub enum PrimitiveError {
+    IO(IOError),
+    UnexpextedPrimitive,
+    Encode(PDUError),
+}
+impl From<IOError> for PrimitiveError {
+    fn from(err: IOError) -> Self {
+        Self::IO(err)
+    }
+}
+impl From<PDUError> for PrimitiveError {
+    fn from(err: PDUError) -> Self {
+        Self::Encode(err)
+    }
+}
+impl Display for PrimitiveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::IO(err) => err.fmt(f),
+            Self::UnexpextedPrimitive => write!(f, "Unexpected value for User Primitive."),
+            Self::Encode(err) => err.fmt(f),
+        }
+    }
+}
+impl Error for PrimitiveError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::IO(source) => Some(source),
+            Self::UnexpextedPrimitive => None,
+            Self::Encode(source) => Some(source),
+        }
+    }
+}
+
+type PrimitiveResult<T> = Result<T, PrimitiveError>;
+
+pub(crate) enum UserPrimitive {
+    Put(Metadata),
+    Cancel(EntityID, TransactionSeqNum),
+    Suspend(EntityID, TransactionSeqNum),
+    Resume(EntityID, TransactionSeqNum),
+    Report(EntityID, TransactionSeqNum),
+}
+impl UserPrimitive {
+    pub fn encode(self) -> Vec<u8> {
+        match self {
+            Self::Put(metadata) => {
+                let mut buff: Vec<u8> = vec![0_u8];
+                // buff.extend(metadata.encode());
+                buff
+            }
+            Self::Cancel(id, seq) => {
+                let mut buff: Vec<u8> = vec![1_u8];
+                buff.extend(id.encode());
+                buff.extend(seq.encode());
+                buff
+            }
+            Self::Suspend(id, seq) => {
+                let mut buff: Vec<u8> = vec![2_u8];
+                buff.extend(id.encode());
+                buff.extend(seq.encode());
+                buff
+            }
+            Self::Resume(id, seq) => {
+                let mut buff: Vec<u8> = vec![3_u8];
+                buff.extend(id.encode());
+                buff.extend(seq.encode());
+                buff
+            }
+            Self::Report(id, seq) => {
+                let mut buff: Vec<u8> = vec![4_u8];
+                buff.extend(id.encode());
+                buff.extend(seq.encode());
+                buff
+            }
+        }
+    }
+
+    pub fn decode<T: Read>(buffer: &mut T) -> PrimitiveResult<Self> {
+        let mut u8buff = [0_u8];
+        buffer.read_exact(&mut u8buff)?;
+        match u8buff[0] {
+            0 => {
+                // let metadata = Metadata::decode(buffer)?;
+                // Ok(Self::Put(metadata))
+                todo!()
+            }
+            1 => {
+                let id = VariableID::decode(buffer)?;
+                let seq = VariableID::decode(buffer)?;
+                Ok(Self::Cancel(id, seq))
+            }
+            2 => {
+                let id = VariableID::decode(buffer)?;
+                let seq = VariableID::decode(buffer)?;
+                Ok(Self::Suspend(id, seq))
+            }
+            3 => {
+                let id = VariableID::decode(buffer)?;
+                let seq = VariableID::decode(buffer)?;
+                Ok(Self::Resume(id, seq))
+            }
+            4 => {
+                let id = VariableID::decode(buffer)?;
+                let seq = VariableID::decode(buffer)?;
+                Ok(Self::Report(id, seq))
+            }
+            _ => Err(PrimitiveError::UnexpextedPrimitive),
+        }
+    }
+}
+
 pub enum Command {
     PDU(PDU),
     Cancel,
@@ -29,13 +145,7 @@ pub enum Command {
     Resume,
     Abandon,
 }
-pub enum UserPrimitive {
-    Put,
-    Cancel,
-    Suspend,
-    Resume,
-    Report,
-}
+
 pub struct EntityConfig {
     fault_handler_override: HashMap<Condition, FaultHandlerAction>,
     file_size_segment: u16,
@@ -271,6 +381,11 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                 .expect("Unable to register termination signals.");
         }
 
+        let listener = LocalSocketListener::bind("/tmp/cdfp.socket")?;
+        // setting to non-blocking lets us grab conections that are open
+        // without blocking the entire thread.
+        listener.set_nonblocking(true)?;
+
         // Create the selection object to check if any messages are available.
         // the returned index will be used to determine which action to take.
         let mut selector = Select::new();
@@ -431,7 +546,29 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
             // process any message from users from the outside application API
             // interprocess looks like a good choice for this
 
+            for mut conn in listener.incoming().filter_map(Result::ok) {
+                let mut buffer = Vec::<u8>::new();
+                let _nread = conn.read_to_end(&mut buffer)?;
+                let primitive = UserPrimitive::decode(&mut &buffer[..])?;
+                match primitive {
+                    UserPrimitive::Put(_) => todo!(),
+                    UserPrimitive::Cancel(id, seq) => match transaction_channels.get(&(id, seq)) {
+                        Some(channel) => channel.send(Command::Cancel)?,
+                        None => {}
+                    },
+                    UserPrimitive::Suspend(id, seq) => match transaction_channels.get(&(id, seq)) {
+                        Some(channel) => channel.send(Command::Suspend)?,
+                        None => {}
+                    },
+                    UserPrimitive::Resume(id, seq) => match transaction_channels.get(&(id, seq)) {
+                        Some(channel) => channel.send(Command::Resume)?,
+                        None => {}
+                    },
+                    UserPrimitive::Report(_id, _seq) => todo!(),
+                }
+            }
             // join any handles that have completed
+            // maybe should only run every so often?
             let mut ind = 0;
             while ind < self.transaction_handles.len() {
                 if self.transaction_handles[ind].is_finished() {

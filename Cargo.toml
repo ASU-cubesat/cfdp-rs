@@ -3,3 +3,6 @@
 members = [
     "cfdp-core",
 ]
+
+[profile.release]
+lto = "thin"

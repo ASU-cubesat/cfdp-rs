@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 crossbeam-channel = "~0.5"
+interprocess = "~1.1"
 num-derive = "0.3"
 num-traits = "0.2"
 pathdiff = "~0.2"

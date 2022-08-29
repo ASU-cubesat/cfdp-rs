@@ -18,11 +18,12 @@ use crate::{
         FaultHandlerAction, FileDataPDU, FileSizeFlag, FileSizeSensitive, FileStatusCode,
         FileStoreRequest, FileStoreResponse, Finished, KeepAlivePDU, MessageToUser, MetadataPDU,
         MetadataTLV, NakOrKeepAlive, NegativeAcknowldegmentPDU, Operations, PDUDirective,
-        PDUHeader, PDUPayload, PDUType, PositiveAcknowledgePDU, SegmentRequestForm,
-        SegmentationControl, SegmentedData, TransactionID, TransactionStatus, TransmissionMode,
+        PDUEncode, PDUHeader, PDUPayload, PDUType, PositiveAcknowledgePDU, SegmentRequestForm,
+        SegmentationControl, SegmentedData, TransactionSeqNum, TransactionStatus, TransmissionMode,
         UnsegmentedFileData, VariableID, PDU, U3,
     },
     timer::Timer,
+    util::PathToBytes,
 };
 
 pub type TransactionResult<T> = Result<T, TransactionError>;
@@ -31,12 +32,12 @@ pub enum TransactionError {
     FileStore(FileStoreError),
     Transport(SendError<(VariableID, PDU)>),
     UserMessage(SendError<MessageToUser>),
-    NoFile((EntityID, TransactionID)),
+    NoFile((EntityID, TransactionSeqNum)),
     Daemon(String),
     Poison,
     IntConverstion(TryFromIntError),
-    UnexpectedPDU((TransactionID, Action, TransmissionMode, String)),
-    MissingMetadata((EntityID, TransactionID)),
+    UnexpectedPDU((TransactionSeqNum, Action, TransmissionMode, String)),
+    MissingMetadata((EntityID, TransactionSeqNum)),
     MissingNak,
     NoChecksum,
 }
@@ -157,7 +158,7 @@ pub struct TransactionConfig {
     /// CFDP [TransmissionMode]
     pub transmission_mode: TransmissionMode,
     /// The sequence number in Big Endian Bytes.
-    pub sequence_number: TransactionID,
+    pub sequence_number: TransactionSeqNum,
     /// Flag to indicate whether or not the file size fits inside a [u32]
     pub file_size_flag: FileSizeFlag,
     /// A Mapping of actions to take when each condition is reached.
@@ -312,7 +313,7 @@ impl<T: FileStore> Transaction<T> {
         }
     }
 
-    pub fn id(&self) -> (VariableID, TransactionID) {
+    pub fn id(&self) -> (VariableID, TransactionSeqNum) {
         (
             self.config.source_entity_id.clone(),
             self.config.sequence_number.clone(),

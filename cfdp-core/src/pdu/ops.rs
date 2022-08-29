@@ -25,7 +25,7 @@ macro_rules! impl_id {
     };
 }
 pub type EntityID = VariableID;
-pub type TransactionID = VariableID;
+pub type TransactionSeqNum = VariableID;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum VariableID {
     U8(u8),

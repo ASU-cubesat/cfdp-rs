@@ -16,8 +16,8 @@ use crate::{
     filestore::FileStore,
     pdu::{
         error::PDUError, Condition, EntityID, FaultHandlerAction, MessageToUser, PDUEncode,
-        PDUHeader, TransactionID, TransactionStatus, TransmissionMode, UserOperation, VariableID,
-        PDU,
+        PDUHeader, TransactionSeqNum, TransactionStatus, TransmissionMode, UserOperation,
+        VariableID, PDU,
     },
     transaction::{Action, Metadata, Transaction, TransactionConfig, TransactionError},
 };
@@ -46,7 +46,7 @@ pub struct EntityConfig {
 }
 
 type SpawnerTuple = (
-    (EntityID, TransactionID),
+    (EntityID, TransactionSeqNum),
     Sender<Command>,
     JoinHandle<Result<(), TransactionError>>,
 );
@@ -282,7 +282,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
         }
 
         // mapping of unique transaction ids to channels used to talk to each transaction
-        let mut transaction_channels: HashMap<(EntityID, TransactionID), Sender<Command>> =
+        let mut transaction_channels: HashMap<(EntityID, TransactionSeqNum), Sender<Command>> =
             HashMap::new();
 
         while !terminate.load(Ordering::Relaxed) {

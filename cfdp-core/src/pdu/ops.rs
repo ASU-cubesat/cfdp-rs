@@ -76,6 +76,12 @@ impl VariableID {
             Self::U64(val) => *val = val.overflowing_add(1).0,
         };
     }
+
+    pub fn get_and_increment(&mut self) -> Self {
+        let current = self.clone();
+        self.increment();
+        current
+    }
     pub fn get_len(&self) -> u8 {
         // largest values supported are u64s so this should always
         // be castable down to a u8.
@@ -899,6 +905,14 @@ mod test {
         let mut id = id;
         id.increment();
         assert_eq!(expected, id)
+    }
+
+    #[test]
+    fn get_and_increment() {
+        let mut id = VariableID::from(123_u8);
+        let id2 = id.get_and_increment();
+        assert_eq!(VariableID::from(123_u8), id2);
+        assert_eq!(VariableID::from(124_u8), id);
     }
 
     #[rstest]

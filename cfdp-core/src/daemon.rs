@@ -709,11 +709,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                             .unwrap_or(&self.default_config);
 
                         let transport_tx = self.transport_tx_vec[0].clone();
-                        let sequence_number = {
-                            let num = sequence_num.clone();
-                            sequence_num.increment();
-                            num
-                        };
+                        let sequence_number = sequence_num.get_and_increment();
 
                         let (id, sender, handle) = Self::spawn_send_transaction(
                             request,

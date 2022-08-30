@@ -3,6 +3,7 @@ use std::{
     error::Error,
     fmt::Display,
     io::{Error as IOError, Read},
+    string::FromUtf8Error,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -11,16 +12,18 @@ use std::{
     time::{Duration, Instant},
 };
 
+use camino::Utf8PathBuf;
 use crossbeam_channel::{unbounded, Receiver, Select, SendTimeoutError, Sender, TryRecvError};
 use interprocess::local_socket::LocalSocketListener;
+use num_traits::FromPrimitive;
 use signal_hook::{consts::TERM_SIGNALS, flag};
 
 use crate::{
-    filestore::FileStore,
+    filestore::{ChecksumType, FileStore},
     pdu::{
-        error::PDUError, Condition, EntityID, FaultHandlerAction, MessageToUser, PDUEncode,
-        PDUHeader, TransactionSeqNum, TransactionStatus, TransmissionMode, UserOperation,
-        VariableID, PDU,
+        error::PDUError, CRCFlag, Condition, EntityID, FaultHandlerAction, FileSizeFlag,
+        FileSizeSensitive, FileStoreRequest, MessageToUser, PDUEncode, PDUHeader, SegmentedData,
+        TransactionSeqNum, TransactionStatus, TransmissionMode, UserOperation, VariableID, PDU,
     },
     transaction::{Action, Metadata, Transaction, TransactionConfig, TransactionError},
 };
@@ -31,6 +34,7 @@ pub enum PrimitiveError {
     UnexpextedPrimitive,
     Encode(PDUError),
     Metadata(TransactionError),
+    Utf8(FromUtf8Error),
 }
 impl From<IOError> for PrimitiveError {
     fn from(err: IOError) -> Self {
@@ -47,6 +51,12 @@ impl From<TransactionError> for PrimitiveError {
         Self::Metadata(err)
     }
 }
+
+impl From<FromUtf8Error> for PrimitiveError {
+    fn from(err: FromUtf8Error) -> Self {
+        Self::Utf8(err)
+    }
+}
 impl Display for PrimitiveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -54,6 +64,7 @@ impl Display for PrimitiveError {
             Self::UnexpextedPrimitive => write!(f, "Unexpected value for User Primitive."),
             Self::Encode(err) => err.fmt(f),
             Self::Metadata(err) => write!(f, "Error (en)de-coding Metadata. {}", err),
+            Self::Utf8(error) => write!(f, "Invalid file path encoding. {}", error),
         }
     }
 }
@@ -64,7 +75,130 @@ impl Error for PrimitiveError {
             Self::UnexpextedPrimitive => None,
             Self::Encode(source) => Some(source),
             Self::Metadata(source) => Some(source),
+            Self::Utf8(source) => Some(source),
         }
+    }
+}
+
+#[cfg_attr(test, derive(Debug, Clone, PartialEq))]
+pub(crate) struct PutRequest {
+    /// Bytes of the source filename, can be null if length is 0.
+    pub source_filename: Utf8PathBuf,
+    /// Bytes of the destination filename, can be null if length is 0.
+    pub destination_filename: Utf8PathBuf,
+    /// Destination ID of the Request
+    pub destination_entity_id: EntityID,
+    /// Whether to send in acknowledged or unacknowledged mode
+    pub transmission_mode: TransmissionMode,
+    /// List of any filestore requests to take after transaction is complete
+    pub filestore_requests: Vec<FileStoreRequest>,
+    /// Any Messages to user received either from the metadataPDU or as input
+    pub message_to_user: Vec<MessageToUser>,
+}
+impl PutRequest {
+    pub(crate) fn encode(self) -> Vec<u8> {
+        let mut buffer: Vec<u8> = vec![];
+
+        {
+            let vec = self.source_filename.as_str().as_bytes();
+            buffer.push(vec.len() as u8);
+            buffer.extend_from_slice(vec)
+        }
+        {
+            let vec = self.destination_filename.as_str().as_bytes();
+            buffer.push(vec.len() as u8);
+            buffer.extend_from_slice(vec)
+        }
+        buffer.push(self.destination_entity_id.get_len());
+        buffer.extend(self.destination_entity_id.to_be_bytes());
+
+        buffer.push(self.transmission_mode as u8);
+
+        buffer.push(self.filestore_requests.len() as u8);
+        self.filestore_requests
+            .into_iter()
+            .for_each(|req| buffer.extend(req.encode()));
+
+        buffer.push(self.message_to_user.len() as u8);
+        self.message_to_user
+            .into_iter()
+            .for_each(|msg| buffer.extend(msg.encode()));
+
+        buffer
+    }
+
+    pub(crate) fn decode<T: Read>(buffer: &mut T) -> PrimitiveResult<Self> {
+        let mut u8buff = [0_u8; 1];
+
+        let source_filename = {
+            buffer.read_exact(&mut u8buff)?;
+            let mut vec = vec![0_u8; u8buff[0] as usize];
+            buffer.read_exact(vec.as_mut_slice())?;
+            Utf8PathBuf::from(String::from_utf8(vec)?)
+        };
+        let destination_filename = {
+            buffer.read_exact(&mut u8buff)?;
+            let mut vec = vec![0_u8; u8buff[0] as usize];
+            buffer.read_exact(vec.as_mut_slice())?;
+            Utf8PathBuf::from(String::from_utf8(vec)?)
+        };
+
+        let destination_entity_id = {
+            buffer.read_exact(&mut u8buff)?;
+            let mut vec = vec![0_u8; u8buff[0] as usize];
+            buffer.read_exact(vec.as_mut_slice())?;
+            EntityID::try_from(vec)?
+        };
+
+        let transmission_mode = {
+            buffer.read_exact(&mut u8buff)?;
+            let possible = u8buff[0];
+            TransmissionMode::from_u8(possible)
+                .ok_or(PDUError::InvalidTransmissionMode(possible))?
+        };
+
+        let filestore_requests = {
+            buffer.read_exact(&mut u8buff)?;
+            let mut vec = Vec::with_capacity(u8buff[0] as usize);
+            for _ind in 0..vec.capacity() {
+                vec.push(FileStoreRequest::decode(buffer)?)
+            }
+            vec
+        };
+
+        let message_to_user = {
+            buffer.read_exact(&mut u8buff)?;
+            let mut vec = Vec::with_capacity(u8buff[0] as usize);
+            for _ind in 0..vec.capacity() {
+                vec.push(MessageToUser::decode(buffer)?)
+            }
+            vec
+        };
+
+        Ok(Self {
+            source_filename,
+            destination_filename,
+            destination_entity_id,
+            transmission_mode,
+            filestore_requests,
+            message_to_user,
+        })
+    }
+}
+
+fn construct_metadata(
+    req: PutRequest,
+    config: &EntityConfig,
+    file_size: FileSizeSensitive,
+) -> Metadata {
+    Metadata {
+        source_filename: req.source_filename,
+        destination_filename: req.destination_filename,
+        file_size,
+        filestore_requests: req.filestore_requests,
+        message_to_user: req.message_to_user,
+        closure_requested: config.closure_requested,
+        checksum_type: config.checksum_type.clone(),
     }
 }
 
@@ -72,7 +206,7 @@ type PrimitiveResult<T> = Result<T, PrimitiveError>;
 
 #[cfg_attr(test, derive(Debug, Clone, PartialEq))]
 pub(crate) enum UserPrimitive {
-    Put(Metadata),
+    Put(PutRequest),
     Cancel(EntityID, TransactionSeqNum),
     Suspend(EntityID, TransactionSeqNum),
     Resume(EntityID, TransactionSeqNum),
@@ -81,9 +215,9 @@ pub(crate) enum UserPrimitive {
 impl UserPrimitive {
     pub fn encode(self) -> Vec<u8> {
         match self {
-            Self::Put(metadata) => {
+            Self::Put(request) => {
                 let mut buff: Vec<u8> = vec![0_u8];
-                buff.extend(metadata.encode());
+                buff.extend(request.encode());
                 buff
             }
             Self::Cancel(id, seq) => {
@@ -118,8 +252,8 @@ impl UserPrimitive {
         buffer.read_exact(&mut u8buff)?;
         match u8buff[0] {
             0 => {
-                let metadata = Metadata::decode(buffer)?;
-                Ok(Self::Put(metadata))
+                let request = PutRequest::decode(buffer)?;
+                Ok(Self::Put(request))
             }
             1 => {
                 let id = VariableID::decode(buffer)?;
@@ -161,6 +295,9 @@ pub struct EntityConfig {
     default_transaction_max_count: u32,
     // default number of seconds for transaction timers to wait
     default_inactivity_timeout: i64,
+    crc_flag: CRCFlag,
+    closure_requested: bool,
+    checksum_type: ChecksumType,
 }
 
 type SpawnerTuple = (
@@ -192,6 +329,10 @@ pub struct Daemon<T: FileStore + Send + 'static> {
     entity_configs: HashMap<VariableID, EntityConfig>,
     // the default fault handling configuration
     default_config: EntityConfig,
+    // the entity ID of this daemon
+    entity_id: EntityID,
+    // current running count of the sequence numbers of transaction initiated by this entity
+    sequence_num: TransactionSeqNum,
 }
 impl<T: FileStore + Send + 'static> Daemon<T> {
     fn spawn_receive_transaction(
@@ -269,33 +410,47 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
     }
 
     fn spawn_send_transaction(
-        header: &PDUHeader,
-        metadata: Metadata,
-        transport_tx: Sender<(VariableID, PDU)>,
+        request: PutRequest,
+        sequence_number: TransactionSeqNum,
+        source_entity_id: EntityID,
+        transport_tx: Sender<(EntityID, PDU)>,
         entity_config: &EntityConfig,
         filestore: Arc<Mutex<T>>,
         message_tx: Sender<MessageToUser>,
-    ) -> SpawnerTuple {
+    ) -> Result<SpawnerTuple, Box<dyn std::error::Error + '_>> {
         let (transaction_tx, transaction_rx) = unbounded();
+        let id = (source_entity_id.clone(), sequence_number.clone());
 
-        let config = TransactionConfig {
+        let destination_entity_id = request.destination_entity_id.clone();
+        let transmission_mode = request.transmission_mode.clone();
+        let mut config = TransactionConfig {
             action_type: Action::Send,
-            source_entity_id: header.source_entity_id.clone(),
-            destination_entity_id: header.destination_entity_id.clone(),
-            transmission_mode: header.transmission_mode.clone(),
-            sequence_number: header.transaction_sequence_number.clone(),
-            file_size_flag: header.large_file_flag,
+            source_entity_id,
+            destination_entity_id,
+            transmission_mode,
+            sequence_number,
+            file_size_flag: FileSizeFlag::Small,
             fault_handler_override: entity_config.fault_handler_override.clone(),
             file_size_segment: entity_config.file_size_segment,
-            crc_flag: header.crc_flag.clone(),
-            segment_metadata_flag: header.segment_metadata_flag.clone(),
+            crc_flag: entity_config.crc_flag.clone(),
+            segment_metadata_flag: SegmentedData::NotPresent,
             max_count: entity_config.default_transaction_max_count,
             inactivity_timeout: entity_config.default_inactivity_timeout,
         };
-        let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
-        let id = transaction.id();
+        let mut metadata = construct_metadata(request, entity_config, FileSizeSensitive::Small(0));
 
         let handle = thread::spawn(move || {
+            let file_size = match filestore.lock()?.get_size(&metadata.source_filename)? {
+                val if val <= u32::MAX as u64 => FileSizeSensitive::Small(val as u32),
+                val => FileSizeSensitive::Large(val),
+            };
+            metadata.file_size = file_size;
+            config.file_size_flag = match &metadata.file_size {
+                FileSizeSensitive::Small(_) => FileSizeFlag::Small,
+                FileSizeSensitive::Large(_) => FileSizeFlag::Large,
+            };
+
+            let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
             transaction.put(metadata)?;
             while transaction.get_status() != &TransactionStatus::Terminated {
                 // this function handles any timeouts and resends
@@ -355,20 +510,10 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
             }
             Ok(())
         });
-        (id, transaction_tx, handle)
+        Ok((id, transaction_tx, handle))
     }
 
-    pub fn put(
-        &self,
-        // source_filename: Utf8PathBuf,
-        // destination_filename: Utf8PathBuf,
-        // destination_entity_id: EntityID,
-    ) {
-        todo!()
-        // self.spawn_send_transaction(header, metadata, self.transport_tx)
-    }
-
-    pub fn manage_transactions(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn manage_transactions(&mut self) -> Result<(), Box<dyn std::error::Error + '_>> {
         // Boolean to track if a kill signal is received
         let terminate = Arc::new(AtomicBool::new(false));
 
@@ -389,6 +534,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
         // without blocking the entire thread.
         listener.set_nonblocking(true)?;
 
+        let mut sequence_num = self.sequence_num.clone();
         // Create the selection object to check if any messages are available.
         // the returned index will be used to determine which action to take.
         let mut selector = Select::new();
@@ -556,7 +702,31 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                 let _nread = conn.read_to_end(&mut buffer)?;
                 let primitive = UserPrimitive::decode(&mut &buffer[..])?;
                 match primitive {
-                    UserPrimitive::Put(_) => todo!(),
+                    UserPrimitive::Put(request) => {
+                        let entity_config = self
+                            .entity_configs
+                            .get(&request.destination_entity_id)
+                            .unwrap_or(&self.default_config);
+
+                        let transport_tx = self.transport_tx_vec[0].clone();
+                        let sequence_number = {
+                            let num = sequence_num.clone();
+                            sequence_num.increment();
+                            num
+                        };
+
+                        let (id, sender, handle) = Self::spawn_send_transaction(
+                            request,
+                            sequence_number,
+                            self.entity_id.clone(),
+                            transport_tx,
+                            entity_config,
+                            self.filestore.clone(),
+                            self.message_tx.clone(),
+                        )?;
+                        self.transaction_handles.push(handle);
+                        transaction_channels.insert(id, sender);
+                    }
                     UserPrimitive::Cancel(id, seq) => match transaction_channels.get(&(id, seq)) {
                         Some(channel) => channel.send(Command::Cancel)?,
                         None => {}
@@ -614,27 +784,77 @@ impl<T: FileStore + Send + 'static> Drop for Daemon<T> {
 mod test {
     use super::*;
 
-    use crate::pdu::{FileSizeSensitive, FileStoreAction, FileStoreRequest};
+    use crate::pdu::{FileStoreAction, FileStoreRequest};
 
-    use camino::Utf8Path;
     use rstest::rstest;
+
+    #[rstest]
+    #[case("", "")]
+    #[case("a_first/name.txt", "")]
+    #[case("a_first/name.txt", "b/second/name.txt")]
+    #[case("", "b/second/name.txt")]
+    fn put_encode(
+        #[case] source_filename: Utf8PathBuf,
+        #[case] destination_filename: Utf8PathBuf,
+        #[values(vec![], vec![
+            FileStoreRequest{
+                action_code: FileStoreAction::AppendFile,
+                first_filename: "some_name_here.txt".as_bytes().to_vec(),
+                second_filename: "another_name.txt".as_bytes().to_vec(),
+            },
+            FileStoreRequest{
+                action_code: FileStoreAction::RenameFile,
+                first_filename: "some_name_here.txt".as_bytes().to_vec(),
+                second_filename: "another_name.txt".as_bytes().to_vec(),
+            }
+        ])]
+        filestore_requests: Vec<FileStoreRequest>,
+        #[values(vec![], vec![
+            MessageToUser{message_text: "some text billy!".as_bytes().to_vec()},
+            MessageToUser{message_text: "cfdp \nmessage here!".as_bytes().to_vec()}
+
+        ])]
+        message_to_user: Vec<MessageToUser>,
+        #[values(TransmissionMode::Unacknowledged, TransmissionMode::Acknowledged)]
+        transmission_mode: TransmissionMode,
+        #[values(
+            EntityID::from(1_u8),
+            EntityID::from(300_u16),
+            EntityID::from(105748_u32),
+            EntityID::from(846372858564_u64)
+        )]
+        destination_entity_id: EntityID,
+    ) {
+        let expected = PutRequest {
+            source_filename,
+            destination_filename,
+            filestore_requests,
+            message_to_user,
+            destination_entity_id,
+            transmission_mode,
+        };
+
+        let buffer = expected.clone().encode();
+        let recovered = PutRequest::decode(&mut &buffer[..]).unwrap();
+
+        assert_eq!(expected, recovered)
+    }
 
     #[rstest]
     fn primitive_encode(
         #[values(
             UserPrimitive::Put(
-                Metadata{
-                    source_filename:Utf8Path::new("test").into(),
-                    destination_filename:Utf8Path::new("output").into(),
-                    file_size:FileSizeSensitive::Small(322),
+                PutRequest{
+                    source_filename: "test".into(),
+                    destination_filename: "out_file".into(),
+                    destination_entity_id: EntityID::from(32_u32),
+                    transmission_mode: TransmissionMode::Acknowledged,
                     filestore_requests: vec![
                         FileStoreRequest{
                             action_code:FileStoreAction::CreateDirectory,
                             first_filename:"/tmp/help".as_bytes().to_vec(),
                             second_filename:vec![]}],
                     message_to_user: vec![MessageToUser{message_text: "do something".as_bytes().to_vec()}],
-                    closure_requested: false,
-                    checksum_type: crate::filestore::ChecksumType::Modular
                 }
             ),
             UserPrimitive::Cancel(EntityID::from(1_u8), TransactionSeqNum::from(3_u8)),

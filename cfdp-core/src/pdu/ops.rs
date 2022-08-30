@@ -68,6 +68,14 @@ impl TryFrom<Vec<u8>> for VariableID {
     }
 }
 impl VariableID {
+    pub fn increment(&mut self) {
+        match self {
+            Self::U8(val) => *val = val.overflowing_add(1).0,
+            Self::U16(val) => *val = val.overflowing_add(1).0,
+            Self::U32(val) => *val = val.overflowing_add(1).0,
+            Self::U64(val) => *val = val.overflowing_add(1).0,
+        };
+    }
     pub fn get_len(&self) -> u8 {
         // largest values supported are u64s so this should always
         // be castable down to a u8.
@@ -881,6 +889,17 @@ mod test {
     };
 
     use rstest::rstest;
+
+    #[rstest]
+    #[case(VariableID::from(1_u8), VariableID::from(2_u8))]
+    #[case(VariableID::from(300_u16), VariableID::from(301_u16))]
+    #[case(VariableID::from(867381_u32), VariableID::from(867382_u32))]
+    #[case(VariableID::from(857198297_u64), VariableID::from(857198298_u64))]
+    fn increment_varible_id(#[case] id: VariableID, #[case] expected: VariableID) {
+        let mut id = id;
+        id.increment();
+        assert_eq!(expected, id)
+    }
 
     #[rstest]
     #[case(MetadataTLVFieldCode::FileStoreRequest, "FileStoreRequest".to_owned() )]

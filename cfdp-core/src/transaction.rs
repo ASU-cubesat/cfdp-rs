@@ -3,15 +3,13 @@ use std::{
     error::Error,
     fmt::{self, Display},
     fs::{File, OpenOptions},
-    io::{self, Error as IOError, ErrorKind, Read, Seek, SeekFrom, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     num::TryFromIntError,
-    string::FromUtf8Error,
     sync::{Arc, Mutex, PoisonError},
 };
 
 use camino::Utf8PathBuf;
 use crossbeam_channel::{SendError, Sender};
-use num_traits::FromPrimitive;
 
 use crate::{
     filestore::{ChecksumType, FileChecksum, FileStore, FileStoreError},
@@ -20,7 +18,7 @@ use crate::{
         FaultHandlerAction, FileDataPDU, FileSizeFlag, FileSizeSensitive, FileStatusCode,
         FileStoreRequest, FileStoreResponse, Finished, KeepAlivePDU, MessageToUser, MetadataPDU,
         MetadataTLV, NakOrKeepAlive, NegativeAcknowldegmentPDU, Operations, PDUDirective,
-        PDUEncode, PDUHeader, PDUPayload, PDUType, PositiveAcknowledgePDU, SegmentRequestForm,
+        PDUHeader, PDUPayload, PDUType, PositiveAcknowledgePDU, SegmentRequestForm,
         SegmentationControl, SegmentedData, TransactionSeqNum, TransactionStatus, TransmissionMode,
         UnsegmentedFileData, VariableID, PDU, U3,
     },
@@ -41,8 +39,6 @@ pub enum TransactionError {
     MissingMetadata((EntityID, TransactionSeqNum)),
     MissingNak,
     NoChecksum,
-    Encode(IOError),
-    Utf8(FromUtf8Error),
 }
 impl From<FileStoreError> for TransactionError {
     fn from(error: FileStoreError) -> Self {
@@ -69,11 +65,6 @@ impl<T> From<PoisonError<T>> for TransactionError {
         Self::Poison
     }
 }
-impl From<FromUtf8Error> for TransactionError {
-    fn from(err: FromUtf8Error) -> Self {
-        Self::Utf8(err)
-    }
-}
 
 impl Display for TransactionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -96,8 +87,6 @@ impl Display for TransactionError {
             Self::MissingMetadata(id) => write!(f, "Metadata missing for transaction: {id:?}."),
             Self::MissingNak => write!(f, "No NAKs present. Cannot send missing data."),
             Self::NoChecksum => write!(f, "No Checksum received. Cannot verify file integrity."),
-            Self::Encode(error) => write!(f, "Unable to Encode/Decode Metadata. {}", error),
-            Self::Utf8(error) => write!(f, "Invalid file path encoding. {}", error),
         }
     }
 }
@@ -115,8 +104,6 @@ impl Error for TransactionError {
             Self::MissingMetadata(_) => None,
             Self::MissingNak => None,
             Self::NoChecksum => None,
-            Self::Encode(source) => Some(source),
-            Self::Utf8(source) => Some(source),
         }
     }
 }
@@ -157,137 +144,6 @@ pub(crate) struct Metadata {
     pub closure_requested: bool,
     /// Flag to track what kind of [Checksum](crate::filestore::ChecksumType) will be used in this transaction.
     pub checksum_type: ChecksumType,
-}
-impl Metadata {
-    pub(crate) fn encode(self) -> Vec<u8> {
-        let mut buffer: Vec<u8> = vec![];
-        {
-            let vec = self.source_filename.as_str().as_bytes().to_vec();
-            buffer.push(vec.len() as u8);
-            buffer.extend(vec);
-        }
-        {
-            let vec = self.destination_filename.as_str().as_bytes().to_vec();
-            buffer.push(vec.len() as u8);
-            buffer.extend(vec);
-        }
-        let fss = self.file_size.to_be_bytes();
-        buffer.push((fss.len() == 4) as u8);
-        buffer.extend(fss);
-
-        buffer.push(self.filestore_requests.len() as u8);
-
-        self.filestore_requests
-            .into_iter()
-            .for_each(|req| buffer.extend(req.encode()));
-
-        buffer.push(self.message_to_user.len() as u8);
-
-        self.message_to_user
-            .into_iter()
-            .for_each(|msg| buffer.extend(msg.encode()));
-
-        buffer.push(self.closure_requested as u8);
-
-        buffer.push(self.checksum_type as u8);
-
-        buffer
-    }
-
-    pub(crate) fn decode<T: Read>(buffer: &mut T) -> TransactionResult<Self> {
-        let mut u8buff = [0_u8; 1];
-        let source_filename = {
-            buffer
-                .read_exact(&mut u8buff)
-                .map_err(TransactionError::Encode)?;
-            let mut vec = vec![0_u8; u8buff[0] as usize];
-            buffer
-                .read_exact(vec.as_mut_slice())
-                .map_err(TransactionError::Encode)?;
-            Utf8PathBuf::from(String::from_utf8(vec)?)
-        };
-
-        let destination_filename = {
-            buffer
-                .read_exact(&mut u8buff)
-                .map_err(TransactionError::Encode)?;
-            let mut vec = vec![0_u8; u8buff[0] as usize];
-            buffer
-                .read_exact(vec.as_mut_slice())
-                .map_err(TransactionError::Encode)?;
-            Utf8PathBuf::from(String::from_utf8(vec)?)
-        };
-        let file_size = {
-            buffer
-                .read_exact(&mut u8buff)
-                .map_err(TransactionError::Encode)?;
-            let file_size_flag = match u8buff[0] == 1 {
-                true => FileSizeFlag::Small,
-                false => FileSizeFlag::Large,
-            };
-
-            FileSizeSensitive::from_be_bytes(buffer, file_size_flag)
-                .map_err(|_| TransactionError::Encode(IOError::from(ErrorKind::InvalidData)))?
-        };
-
-        let filestore_requests =
-            {
-                let mut vec = vec![];
-
-                buffer
-                    .read_exact(&mut u8buff)
-                    .map_err(TransactionError::Encode)?;
-
-                for _ind in 0..u8buff[0].into() {
-                    vec.push(FileStoreRequest::decode(buffer).map_err(|_| {
-                        TransactionError::Encode(IOError::from(ErrorKind::InvalidData))
-                    })?)
-                }
-                vec
-            };
-
-        let message_to_user =
-            {
-                let mut vec = vec![];
-
-                buffer
-                    .read_exact(&mut u8buff)
-                    .map_err(TransactionError::Encode)?;
-
-                for _ind in 0..u8buff[0].into() {
-                    vec.push(MessageToUser::decode(buffer).map_err(|_| {
-                        TransactionError::Encode(IOError::from(ErrorKind::InvalidData))
-                    })?)
-                }
-                vec
-            };
-
-        let closure_requested = {
-            buffer
-                .read_exact(&mut u8buff)
-                .map_err(TransactionError::Encode)?;
-            u8buff[0] != 0
-        };
-
-        let checksum_type = {
-            buffer
-                .read_exact(&mut u8buff)
-                .map_err(TransactionError::Encode)?;
-
-            ChecksumType::from_u8(u8buff[0])
-                .ok_or_else(|| TransactionError::Encode(IOError::from(ErrorKind::InvalidData)))?
-        };
-
-        Ok(Self {
-            source_filename,
-            destination_filename,
-            file_size,
-            filestore_requests,
-            message_to_user,
-            closure_requested,
-            checksum_type,
-        })
-    }
 }
 
 #[cfg_attr(test, derive(Clone))]
@@ -1740,54 +1596,6 @@ mod test {
     }
 
     #[rstest]
-    #[case("", "")]
-    #[case("a_first/name.txt", "")]
-    #[case("a_first/name.txt", "b/second/name.txt")]
-    #[case("", "b/second/name.txt")]
-    fn metadata_encode(
-        #[case] source_filename: Utf8PathBuf,
-        #[case] destination_filename: Utf8PathBuf,
-        #[values(FileSizeSensitive::Small(32), FileSizeSensitive::Large(600))]
-        file_size: FileSizeSensitive,
-        #[values(vec![], vec![
-            FileStoreRequest{
-                action_code: FileStoreAction::AppendFile,
-                first_filename: "some_name_here.txt".as_bytes().to_vec(),
-                second_filename: "another_name.txt".as_bytes().to_vec(),
-            },
-            FileStoreRequest{
-                action_code: FileStoreAction::RenameFile,
-                first_filename: "some_name_here.txt".as_bytes().to_vec(),
-                second_filename: "another_name.txt".as_bytes().to_vec(),
-            }
-        ])]
-        filestore_requests: Vec<FileStoreRequest>,
-        #[values(vec![], vec![
-            MessageToUser{message_text: "some text billy!".as_bytes().to_vec()},
-            MessageToUser{message_text: "cfdp \nmessage here!".as_bytes().to_vec()}
-
-        ])]
-        message_to_user: Vec<MessageToUser>,
-        #[values(true, false)] closure_requested: bool,
-        #[values(ChecksumType::Null, ChecksumType::Modular)] checksum_type: ChecksumType,
-    ) {
-        let expected = Metadata {
-            source_filename,
-            destination_filename,
-            file_size,
-            filestore_requests,
-            message_to_user,
-            closure_requested,
-            checksum_type,
-        };
-
-        let buffer = expected.clone().encode();
-        let recovered = Metadata::decode(&mut &buffer[..]).unwrap();
-
-        assert_eq!(expected, recovered)
-    }
-
-    #[rstest]
     fn test_transaction(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
         let (transport_tx, _) = unbounded();
         let (message_tx, _) = unbounded();
@@ -2041,7 +1849,7 @@ mod test {
         let filestore = Arc::new(Mutex::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         )));
-        let mut transaction = Transaction::new(config, filestore.clone(), transport_tx, message_tx);
+        let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
 
         let mut path = Utf8PathBuf::new();
         path.push("testfile_missing");

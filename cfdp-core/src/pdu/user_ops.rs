@@ -1,5 +1,6 @@
 use std::io::Read;
 
+use camino::Utf8PathBuf;
 use num_traits::FromPrimitive;
 
 use super::{
@@ -10,7 +11,7 @@ use super::{
         read_length_value_pair, Condition, DeliveryCode, Direction, FileStatusCode, MessageType,
         PDUEncode, SegmentationControl, TraceControl, TransactionStatus, TransmissionMode,
     },
-    ops::{FlowLabel, MessageToUser},
+    ops::{EntityID, FlowLabel, MessageToUser, TransactionSeqNum},
 };
 
 const USER_OPS_IDENTIFIER: &[u8] = "cfdp".as_bytes();
@@ -26,7 +27,7 @@ pub enum UserOperation {
     ProxyFileStoreRequest(FileStoreRequest),
     ProxyFileStoreResponse(FileStoreResponse),
     ProxyFaultHandlerOverride(FaultHandlerOverride),
-    ProxyTransmissionMode(ProxyTransmissionMode),
+    ProxyTransmissionMode(TransmissionMode),
     ProxyFlowLabel(FlowLabel),
     ProxySegmentationControl(ProxySegmentationControl),
     ProxyPutCancel,
@@ -171,9 +172,9 @@ impl PDUEncode for UserOperation {
             MessageType::ProxyFaultHandlerOverride => Ok(Self::ProxyFaultHandlerOverride(
                 FaultHandlerOverride::decode(buffer)?,
             )),
-            MessageType::ProxyTransmissionMode => Ok(Self::ProxyTransmissionMode(
-                ProxyTransmissionMode::decode(buffer)?,
-            )),
+            MessageType::ProxyTransmissionMode => Ok(Self::ProxyTransmissionMode({
+                TransmissionMode::decode(buffer)?
+            })),
             MessageType::ProxyFlowLabel => Ok(Self::ProxyFlowLabel(FlowLabel::decode(buffer)?)),
 
             MessageType::ProxySegmentationControl => Ok(Self::ProxySegmentationControl(
@@ -248,20 +249,20 @@ pub struct ReservedMessageHeader {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OriginatingTransactionIDMessage {
-    source_entity_id: Vec<u8>,
-    transaction_sequence_number: Vec<u8>,
+    pub(crate) source_entity_id: EntityID,
+    pub(crate) transaction_sequence_number: TransactionSeqNum,
 }
 impl PDUEncode for OriginatingTransactionIDMessage {
     type PDUType = Self;
     fn encode(self) -> Vec<u8> {
         let mut buffer: Vec<u8> = vec![];
 
-        let first_byte = (((self.source_entity_id.len() as u8 - 1u8) & 0x3) << 4)
-            | ((self.transaction_sequence_number.len() as u8 - 1u8) & 0x3);
+        let first_byte = (((self.source_entity_id.get_len() as u8 - 1u8) & 0x3) << 4)
+            | ((self.transaction_sequence_number.get_len() as u8 - 1u8) & 0x3);
         buffer.push(first_byte);
 
-        buffer.extend(self.source_entity_id);
-        buffer.extend(self.transaction_sequence_number);
+        buffer.extend(self.source_entity_id.to_be_bytes());
+        buffer.extend(self.transaction_sequence_number.to_be_bytes());
         buffer
     }
     fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
@@ -272,11 +273,17 @@ impl PDUEncode for OriginatingTransactionIDMessage {
         let entity_id_len = ((first_byte & 0x70) >> 4) + 1;
         let transaction_seq_len = (first_byte & 0x7) + 1;
 
-        let mut source_entity_id = vec![0u8; entity_id_len as usize];
-        buffer.read_exact(&mut source_entity_id)?;
+        let source_entity_id = {
+            let mut buff = vec![0u8; entity_id_len as usize];
+            buffer.read_exact(&mut buff)?;
+            EntityID::try_from(buff)?
+        };
 
-        let mut transaction_sequence_number = vec![0u8; transaction_seq_len as usize];
-        buffer.read_exact(&mut transaction_sequence_number)?;
+        let transaction_sequence_number = {
+            let mut buff = vec![0u8; transaction_seq_len as usize];
+            buffer.read_exact(&mut buff)?;
+            TransactionSeqNum::try_from(buff)?
+        };
 
         Ok(Self {
             source_entity_id,
@@ -287,29 +294,33 @@ impl PDUEncode for OriginatingTransactionIDMessage {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProxyPutRequest {
-    destination_entity_id: Vec<u8>,
-    source_filename: Vec<u8>,
-    destination_filename: Vec<u8>,
+    pub destination_entity_id: EntityID,
+    pub source_filename: Utf8PathBuf,
+    pub destination_filename: Utf8PathBuf,
 }
 impl PDUEncode for ProxyPutRequest {
     type PDUType = Self;
     fn encode(self) -> Vec<u8> {
-        let mut buffer = vec![self.destination_entity_id.len() as u8];
-        buffer.extend(self.destination_entity_id);
+        let mut buffer = vec![self.destination_entity_id.get_len() as u8];
+        buffer.extend(self.destination_entity_id.to_be_bytes());
 
-        buffer.push(self.source_filename.len() as u8);
-        buffer.extend(self.source_filename);
+        let source_name = self.source_filename.as_str().as_bytes();
+        buffer.push(source_name.len() as u8);
+        buffer.extend(source_name);
 
-        buffer.push(self.destination_filename.len() as u8);
-        buffer.extend(self.destination_filename);
+        let dest_name = self.destination_filename.as_str().as_bytes();
+        buffer.push(dest_name.len() as u8);
+        buffer.extend(dest_name);
 
         buffer
     }
 
     fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let destination_entity_id = read_length_value_pair(buffer)?;
-        let source_filename = read_length_value_pair(buffer)?;
-        let destination_filename = read_length_value_pair(buffer)?;
+        let destination_entity_id = EntityID::try_from(read_length_value_pair(buffer)?)?;
+        let source_filename =
+            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer)?)?);
+        let destination_filename =
+            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer)?)?);
 
         Ok(Self {
             destination_entity_id,
@@ -361,27 +372,6 @@ impl PDUEncode for ProxyPutResponse {
             delivery_code,
             file_status,
         })
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProxyTransmissionMode {
-    mode: TransmissionMode,
-}
-impl PDUEncode for ProxyTransmissionMode {
-    type PDUType = Self;
-    fn encode(self) -> Vec<u8> {
-        vec![self.mode as u8]
-    }
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let mode = {
-            let mut u8_buff = [0u8; 1];
-            buffer.read_exact(&mut u8_buff)?;
-            let possible_mode = u8_buff[0];
-            TransmissionMode::from_u8(possible_mode)
-                .ok_or(PDUError::InvalidTransmissionMode(possible_mode))?
-        };
-        Ok(Self { mode })
     }
 }
 
@@ -1042,15 +1032,15 @@ mod test {
     #[rstest]
     #[case::transaction_id(UserOperation::OriginatingTransactionIDMessage(
         OriginatingTransactionIDMessage{
-            source_entity_id: 2467867u32.to_be_bytes().to_vec(),
-            transaction_sequence_number: 11123132u32.to_be_bytes().to_vec()
+            source_entity_id: EntityID::from(2467867u32),
+            transaction_sequence_number: TransactionSeqNum::from(11123132u32),
         })
     )]
     #[case::proxy_put_request(
         UserOperation::ProxyPutRequest(ProxyPutRequest{
-            destination_entity_id: 2398u32.to_be_bytes().to_vec(),
-            source_filename: "test_please.txt".as_bytes().to_vec(),
-            destination_filename: "new_test_please.dat".as_bytes().to_vec()
+            destination_entity_id: EntityID::from(2398u32),
+            source_filename: "test_please.txt".into(),
+            destination_filename: "new_test_please.dat".into()
         })
     )]
     #[case::proxy_put_response(
@@ -1086,9 +1076,7 @@ mod test {
         }
     ))]
     #[case::transmission_mode(UserOperation::ProxyTransmissionMode(
-        ProxyTransmissionMode{
-            mode: TransmissionMode::Unacknowledged
-        }
+        TransmissionMode::Unacknowledged
     ))]
     #[case::flow_label(UserOperation::ProxyFlowLabel(
         FlowLabel{

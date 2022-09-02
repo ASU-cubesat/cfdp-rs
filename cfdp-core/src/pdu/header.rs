@@ -108,7 +108,20 @@ pub enum TransmissionMode {
     Acknowledged = 0,
     Unacknowledged = 1,
 }
+impl PDUEncode for TransmissionMode {
+    type PDUType = Self;
 
+    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
+        let mut u8_buff = [0u8; 1];
+        buffer.read_exact(&mut u8_buff)?;
+        let possible_mode = u8_buff[0];
+        Self::from_u8(possible_mode).ok_or(PDUError::InvalidTransmissionMode(possible_mode))
+    }
+
+    fn encode(self) -> Vec<u8> {
+        vec![self as u8]
+    }
+}
 #[repr(u8)]
 #[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum TraceControl {

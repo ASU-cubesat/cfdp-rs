@@ -548,9 +548,9 @@ impl PDUEncode for DirectoryListingResponse {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteStatusReportRequest {
-    source_entity_id: Vec<u8>,
-    transaction_sequence_number: Vec<u8>,
-    report_filename: Vec<u8>,
+    source_entity_id: EntityID,
+    transaction_sequence_number: TransactionSeqNum,
+    report_filename: Utf8PathBuf,
 }
 impl PDUEncode for RemoteStatusReportRequest {
     type PDUType = Self;
@@ -558,15 +558,16 @@ impl PDUEncode for RemoteStatusReportRequest {
     fn encode(self) -> Vec<u8> {
         let mut buffer: Vec<u8> = vec![];
 
-        let first_byte = (((self.source_entity_id.len() as u8 - 1u8) & 0x3) << 4)
-            | ((self.transaction_sequence_number.len() as u8 - 1u8) & 0x3);
+        let first_byte = (((self.source_entity_id.get_len() as u8 - 1u8) & 0x3) << 4)
+            | ((self.transaction_sequence_number.get_len() as u8 - 1u8) & 0x3);
         buffer.push(first_byte);
 
-        buffer.extend(self.source_entity_id);
-        buffer.extend(self.transaction_sequence_number);
+        buffer.extend(self.source_entity_id.to_be_bytes());
+        buffer.extend(self.transaction_sequence_number.to_be_bytes());
 
-        buffer.push(self.report_filename.len() as u8);
-        buffer.extend(self.report_filename);
+        let filename = self.report_filename.as_str().as_bytes();
+        buffer.push(filename.len() as u8);
+        buffer.extend(filename);
 
         buffer
     }
@@ -579,16 +580,19 @@ impl PDUEncode for RemoteStatusReportRequest {
         let entity_id_len = ((first_byte & 0x70) >> 4) + 1;
         let transaction_seq_len = (first_byte & 0x7) + 1;
 
-        let mut source_entity_id = vec![0u8; entity_id_len as usize];
-        buffer.read_exact(&mut source_entity_id)?;
+        let source_entity_id = {
+            let mut tmp_buffer = vec![0u8; entity_id_len as usize];
+            buffer.read_exact(&mut tmp_buffer)?;
+            EntityID::try_from(tmp_buffer)?
+        };
 
-        let mut transaction_sequence_number = vec![0u8; transaction_seq_len as usize];
-        buffer.read_exact(&mut transaction_sequence_number)?;
-
-        buffer.read_exact(&mut u8_buff)?;
-        let filename_len = u8_buff[0];
-        let mut report_filename = vec![0u8; filename_len as usize];
-        buffer.read_exact(&mut report_filename)?;
+        let transaction_sequence_number = {
+            let mut tmp_buffer = vec![0u8; transaction_seq_len as usize];
+            buffer.read_exact(&mut tmp_buffer)?;
+            TransactionSeqNum::try_from(tmp_buffer)?
+        };
+        let report_filename =
+            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer)?)?);
 
         Ok(Self {
             source_entity_id,
@@ -602,8 +606,8 @@ impl PDUEncode for RemoteStatusReportRequest {
 pub struct RemoteStatusReportResponse {
     transaction_status: TransactionStatus,
     response_code: bool,
-    source_entity_id: Vec<u8>,
-    transaction_sequence_number: Vec<u8>,
+    source_entity_id: EntityID,
+    transaction_sequence_number: TransactionSeqNum,
 }
 impl PDUEncode for RemoteStatusReportResponse {
     type PDUType = Self;
@@ -614,12 +618,12 @@ impl PDUEncode for RemoteStatusReportResponse {
         let first_byte: u8 = ((self.transaction_status as u8) << 6) | (self.response_code as u8);
         buffer.push(first_byte);
 
-        let second_byte = (((self.source_entity_id.len() as u8 - 1u8) & 0x3) << 4)
-            | ((self.transaction_sequence_number.len() as u8 - 1u8) & 0x3);
+        let second_byte = (((self.source_entity_id.get_len() as u8 - 1u8) & 0x3) << 4)
+            | ((self.transaction_sequence_number.get_len() as u8 - 1u8) & 0x3);
         buffer.push(second_byte);
 
-        buffer.extend(self.source_entity_id);
-        buffer.extend(self.transaction_sequence_number);
+        buffer.extend(self.source_entity_id.to_be_bytes());
+        buffer.extend(self.transaction_sequence_number.to_be_bytes());
 
         buffer
     }
@@ -642,11 +646,17 @@ impl PDUEncode for RemoteStatusReportResponse {
         let entity_id_len = ((second_byte & 0x70) >> 4) + 1;
         let transaction_seq_len = (second_byte & 0x7) + 1;
 
-        let mut source_entity_id = vec![0u8; entity_id_len as usize];
-        buffer.read_exact(&mut source_entity_id)?;
+        let source_entity_id = {
+            let mut tmp_buffer = vec![0u8; entity_id_len as usize];
+            buffer.read_exact(&mut tmp_buffer)?;
+            EntityID::try_from(tmp_buffer)?
+        };
 
-        let mut transaction_sequence_number = vec![0u8; transaction_seq_len as usize];
-        buffer.read_exact(&mut transaction_sequence_number)?;
+        let transaction_sequence_number = {
+            let mut tmp_buffer = vec![0u8; transaction_seq_len as usize];
+            buffer.read_exact(&mut tmp_buffer)?;
+            TransactionSeqNum::try_from(tmp_buffer)?
+        };
 
         Ok(Self {
             transaction_status,
@@ -659,8 +669,8 @@ impl PDUEncode for RemoteStatusReportResponse {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteSuspendRequest {
-    source_entity_id: Vec<u8>,
-    transaction_sequence_number: Vec<u8>,
+    source_entity_id: EntityID,
+    transaction_sequence_number: TransactionSeqNum,
 }
 impl PDUEncode for RemoteSuspendRequest {
     type PDUType = Self;
@@ -668,12 +678,12 @@ impl PDUEncode for RemoteSuspendRequest {
     fn encode(self) -> Vec<u8> {
         let mut buffer: Vec<u8> = vec![];
 
-        let first_byte = (((self.source_entity_id.len() as u8 - 1u8) & 0x3) << 4)
-            | ((self.transaction_sequence_number.len() as u8 - 1u8) & 0x3);
+        let first_byte = (((self.source_entity_id.get_len() as u8 - 1u8) & 0x3) << 4)
+            | ((self.transaction_sequence_number.get_len() as u8 - 1u8) & 0x3);
         buffer.push(first_byte);
 
-        buffer.extend(self.source_entity_id);
-        buffer.extend(self.transaction_sequence_number);
+        buffer.extend(self.source_entity_id.to_be_bytes());
+        buffer.extend(self.transaction_sequence_number.to_be_bytes());
 
         buffer
     }
@@ -686,11 +696,17 @@ impl PDUEncode for RemoteSuspendRequest {
         let entity_id_len = ((first_byte & 0x70) >> 4) + 1;
         let transaction_seq_len = (first_byte & 0x7) + 1;
 
-        let mut source_entity_id = vec![0u8; entity_id_len as usize];
-        buffer.read_exact(&mut source_entity_id)?;
+        let source_entity_id = {
+            let mut tmp_buffer = vec![0u8; entity_id_len as usize];
+            buffer.read_exact(&mut tmp_buffer)?;
+            EntityID::try_from(tmp_buffer)?
+        };
 
-        let mut transaction_sequence_number = vec![0u8; transaction_seq_len as usize];
-        buffer.read_exact(&mut transaction_sequence_number)?;
+        let transaction_sequence_number = {
+            let mut tmp_buffer = vec![0u8; transaction_seq_len as usize];
+            buffer.read_exact(&mut tmp_buffer)?;
+            TransactionSeqNum::try_from(tmp_buffer)?
+        };
 
         Ok(Self {
             source_entity_id,
@@ -703,8 +719,8 @@ impl PDUEncode for RemoteSuspendRequest {
 pub struct RemoteSuspendResponse {
     suspend_indication: bool,
     transaction_status: TransactionStatus,
-    source_entity_id: Vec<u8>,
-    transaction_sequence_number: Vec<u8>,
+    source_entity_id: EntityID,
+    transaction_sequence_number: TransactionSeqNum,
 }
 impl PDUEncode for RemoteSuspendResponse {
     type PDUType = Self;
@@ -716,12 +732,12 @@ impl PDUEncode for RemoteSuspendResponse {
             ((self.suspend_indication as u8) << 7) | ((self.transaction_status as u8) << 5);
         buffer.push(first_byte);
 
-        let second_byte = (((self.source_entity_id.len() as u8 - 1u8) & 0x3) << 4)
-            | ((self.transaction_sequence_number.len() as u8 - 1u8) & 0x3);
+        let second_byte = (((self.source_entity_id.get_len() as u8 - 1u8) & 0x3) << 4)
+            | ((self.transaction_sequence_number.get_len() as u8 - 1u8) & 0x3);
         buffer.push(second_byte);
 
-        buffer.extend(self.source_entity_id);
-        buffer.extend(self.transaction_sequence_number);
+        buffer.extend(self.source_entity_id.to_be_bytes());
+        buffer.extend(self.transaction_sequence_number.to_be_bytes());
 
         buffer
     }
@@ -743,11 +759,17 @@ impl PDUEncode for RemoteSuspendResponse {
         let entity_id_len = ((second_byte & 0x70) >> 4) + 1;
         let transaction_seq_len = (second_byte & 0x7) + 1;
 
-        let mut source_entity_id = vec![0u8; entity_id_len as usize];
-        buffer.read_exact(&mut source_entity_id)?;
+        let source_entity_id = {
+            let mut tmp_buffer = vec![0u8; entity_id_len as usize];
+            buffer.read_exact(&mut tmp_buffer)?;
+            EntityID::try_from(tmp_buffer)?
+        };
 
-        let mut transaction_sequence_number = vec![0u8; transaction_seq_len as usize];
-        buffer.read_exact(&mut transaction_sequence_number)?;
+        let transaction_sequence_number = {
+            let mut tmp_buffer = vec![0u8; transaction_seq_len as usize];
+            buffer.read_exact(&mut tmp_buffer)?;
+            TransactionSeqNum::try_from(tmp_buffer)?
+        };
 
         Ok(Self {
             suspend_indication,
@@ -760,8 +782,8 @@ impl PDUEncode for RemoteSuspendResponse {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteResumeRequest {
-    source_entity_id: Vec<u8>,
-    transaction_sequence_number: Vec<u8>,
+    source_entity_id: EntityID,
+    transaction_sequence_number: TransactionSeqNum,
 }
 impl PDUEncode for RemoteResumeRequest {
     type PDUType = Self;
@@ -769,12 +791,12 @@ impl PDUEncode for RemoteResumeRequest {
     fn encode(self) -> Vec<u8> {
         let mut buffer: Vec<u8> = vec![];
 
-        let first_byte = (((self.source_entity_id.len() as u8 - 1u8) & 0x3) << 4)
-            | ((self.transaction_sequence_number.len() as u8 - 1u8) & 0x3);
+        let first_byte = (((self.source_entity_id.get_len() as u8 - 1u8) & 0x3) << 4)
+            | ((self.transaction_sequence_number.get_len() as u8 - 1u8) & 0x3);
         buffer.push(first_byte);
 
-        buffer.extend(self.source_entity_id);
-        buffer.extend(self.transaction_sequence_number);
+        buffer.extend(self.source_entity_id.to_be_bytes());
+        buffer.extend(self.transaction_sequence_number.to_be_bytes());
 
         buffer
     }
@@ -787,12 +809,17 @@ impl PDUEncode for RemoteResumeRequest {
         let entity_id_len = ((first_byte & 0x70) >> 4) + 1;
         let transaction_seq_len = (first_byte & 0x7) + 1;
 
-        let mut source_entity_id = vec![0u8; entity_id_len as usize];
-        buffer.read_exact(&mut source_entity_id)?;
+        let source_entity_id = {
+            let mut tmp_buffer = vec![0u8; entity_id_len as usize];
+            buffer.read_exact(&mut tmp_buffer)?;
+            EntityID::try_from(tmp_buffer)?
+        };
 
-        let mut transaction_sequence_number = vec![0u8; transaction_seq_len as usize];
-        buffer.read_exact(&mut transaction_sequence_number)?;
-
+        let transaction_sequence_number = {
+            let mut tmp_buffer = vec![0u8; transaction_seq_len as usize];
+            buffer.read_exact(&mut tmp_buffer)?;
+            TransactionSeqNum::try_from(tmp_buffer)?
+        };
         Ok(Self {
             source_entity_id,
             transaction_sequence_number,
@@ -804,8 +831,8 @@ impl PDUEncode for RemoteResumeRequest {
 pub struct RemoteResumeResponse {
     suspend_indication: bool,
     transaction_status: TransactionStatus,
-    source_entity_id: Vec<u8>,
-    transaction_sequence_number: Vec<u8>,
+    source_entity_id: EntityID,
+    transaction_sequence_number: TransactionSeqNum,
 }
 impl PDUEncode for RemoteResumeResponse {
     type PDUType = Self;
@@ -817,12 +844,12 @@ impl PDUEncode for RemoteResumeResponse {
             ((self.suspend_indication as u8) << 7) | ((self.transaction_status as u8) << 5);
         buffer.push(first_byte);
 
-        let second_byte = (((self.source_entity_id.len() as u8 - 1u8) & 0x3) << 4)
-            | ((self.transaction_sequence_number.len() as u8 - 1u8) & 0x3);
+        let second_byte = (((self.source_entity_id.get_len() as u8 - 1u8) & 0x3) << 4)
+            | ((self.transaction_sequence_number.get_len() as u8 - 1u8) & 0x3);
         buffer.push(second_byte);
 
-        buffer.extend(self.source_entity_id);
-        buffer.extend(self.transaction_sequence_number);
+        buffer.extend(self.source_entity_id.to_be_bytes());
+        buffer.extend(self.transaction_sequence_number.to_be_bytes());
 
         buffer
     }
@@ -844,12 +871,17 @@ impl PDUEncode for RemoteResumeResponse {
         let entity_id_len = ((second_byte & 0x70) >> 4) + 1;
         let transaction_seq_len = (second_byte & 0x7) + 1;
 
-        let mut source_entity_id = vec![0u8; entity_id_len as usize];
-        buffer.read_exact(&mut source_entity_id)?;
+        let source_entity_id = {
+            let mut tmp_buffer = vec![0u8; entity_id_len as usize];
+            buffer.read_exact(&mut tmp_buffer)?;
+            EntityID::try_from(tmp_buffer)?
+        };
 
-        let mut transaction_sequence_number = vec![0u8; transaction_seq_len as usize];
-        buffer.read_exact(&mut transaction_sequence_number)?;
-
+        let transaction_sequence_number = {
+            let mut tmp_buffer = vec![0u8; transaction_seq_len as usize];
+            buffer.read_exact(&mut tmp_buffer)?;
+            TransactionSeqNum::try_from(tmp_buffer)?
+        };
         Ok(Self {
             suspend_indication,
             transaction_status,
@@ -1181,9 +1213,9 @@ mod test {
     )]
     #[case::remote_staus_report_request(
         UserOperation::Request(UserRequest::RemoteStatusReport(RemoteStatusReportRequest{
-            source_entity_id: 786567183u32.to_be_bytes().to_vec(),
-            transaction_sequence_number: (u32::MAX - 3u32).to_be_bytes().to_vec(),
-            report_filename: "foobar".as_bytes().to_vec(),
+            source_entity_id: EntityID::from(786567183_u32),
+            transaction_sequence_number: TransactionSeqNum::from(u32::MAX - 3u32),
+            report_filename: "foobar".into(),
         }))
 
     )]
@@ -1192,15 +1224,15 @@ mod test {
             RemoteStatusReportResponse{
                 transaction_status: TransactionStatus::Unrecognized,
                 response_code: true,
-                source_entity_id: 130875758u32.to_be_bytes().to_vec(),
-                transaction_sequence_number: 27374848u32.to_be_bytes().to_vec(),
+                source_entity_id: EntityID::from(30875758_u32),
+                transaction_sequence_number: TransactionSeqNum::from(27374848_u32),
             }
     )))]
     #[case::remote_suspend_request(
         UserOperation::Request(UserRequest::RemoteSuspend(
             RemoteSuspendRequest{
-                source_entity_id: 8845748u32.to_be_bytes().to_vec(),
-                transaction_sequence_number: (u32::MAX - u32::MAX /2).to_be_bytes().to_vec(),
+                source_entity_id: EntityID::from(8845748_u32),
+                transaction_sequence_number: TransactionSeqNum::from(u32::MAX - u32::MAX /2),
             }
     )))]
     #[case::remote_suspend_response(
@@ -1208,15 +1240,15 @@ mod test {
             RemoteSuspendResponse{
                 suspend_indication: true,
                 transaction_status: TransactionStatus::Terminated,
-                source_entity_id: u32::MAX.to_be_bytes().to_vec(),
-                transaction_sequence_number: 7823454u32.to_be_bytes().to_vec(),
+                source_entity_id: EntityID::from(u32::MAX),
+                transaction_sequence_number: TransactionSeqNum::from(7823454u32),
             }
     )))]
     #[case::remote_resume_request(
         UserOperation::Request(UserRequest::RemoteResume(
             RemoteResumeRequest{
-                source_entity_id: 20058583u32.to_be_bytes().to_vec(),
-                transaction_sequence_number: 850895721u32.to_be_bytes().to_vec(),
+                source_entity_id: EntityID::from(20058583_u32),
+                transaction_sequence_number: TransactionSeqNum::from(850895721_u32),
             }
     )))]
     #[case::remote_resume_response(
@@ -1224,8 +1256,8 @@ mod test {
             RemoteResumeResponse{
                 suspend_indication: true,
                 transaction_status: TransactionStatus::Active,
-                source_entity_id: 2045853u32.to_be_bytes().to_vec(),
-                transaction_sequence_number: 85790329u32.to_be_bytes().to_vec(),
+                source_entity_id: EntityID::from(2045853_u32),
+                transaction_sequence_number: TransactionSeqNum::from(85790329_u32),
             }
     )))]
     #[case::sfo_request(

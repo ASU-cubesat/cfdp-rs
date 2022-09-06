@@ -548,9 +548,9 @@ impl PDUEncode for DirectoryListingResponse {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteStatusReportRequest {
-    source_entity_id: EntityID,
-    transaction_sequence_number: TransactionSeqNum,
-    report_filename: Utf8PathBuf,
+    pub source_entity_id: EntityID,
+    pub transaction_sequence_number: TransactionSeqNum,
+    pub report_filename: Utf8PathBuf,
 }
 impl PDUEncode for RemoteStatusReportRequest {
     type PDUType = Self;
@@ -604,10 +604,10 @@ impl PDUEncode for RemoteStatusReportRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteStatusReportResponse {
-    transaction_status: TransactionStatus,
-    response_code: bool,
-    source_entity_id: EntityID,
-    transaction_sequence_number: TransactionSeqNum,
+    pub transaction_status: TransactionStatus,
+    pub response_code: bool,
+    pub source_entity_id: EntityID,
+    pub transaction_sequence_number: TransactionSeqNum,
 }
 impl PDUEncode for RemoteStatusReportResponse {
     type PDUType = Self;

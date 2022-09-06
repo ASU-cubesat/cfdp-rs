@@ -90,6 +90,7 @@ dependencies = [
  "dirs",
  "interprocess",
  "itertools",
+ "log",
  "num-derive",
  "num-traits",
  "pathdiff",

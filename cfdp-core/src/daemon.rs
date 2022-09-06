@@ -17,6 +17,7 @@ use camino::Utf8PathBuf;
 use crossbeam_channel::{unbounded, Receiver, Select, SendTimeoutError, Sender, TryRecvError};
 use interprocess::local_socket::LocalSocketListener;
 use itertools::{Either, Itertools};
+use log::{error, info};
 use num_traits::FromPrimitive;
 use signal_hook::{consts::TERM_SIGNALS, flag};
 
@@ -26,9 +27,9 @@ use crate::{
         error::PDUError, CRCFlag, Condition, DirectoryListingResponse, EntityID,
         FaultHandlerAction, FileSizeFlag, FileSizeSensitive, FileStoreRequest, ListingResponseCode,
         MessageToUser, OriginatingTransactionIDMessage, PDUEncode, PDUHeader, ProxyOperation,
-        ProxyPutRequest, RemoteSuspendResponse, SegmentedData, TransactionSeqNum,
-        TransactionStatus, TransmissionMode, UserOperation, UserRequest, UserResponse, VariableID,
-        PDU,
+        ProxyPutRequest, RemoteStatusReportResponse, RemoteSuspendResponse, SegmentedData,
+        TransactionSeqNum, TransactionStatus, TransmissionMode, UserOperation, UserRequest,
+        UserResponse, VariableID, PDU,
     },
     transaction::{
         Action, Metadata, Transaction, TransactionConfig, TransactionError, TransactionID,
@@ -520,8 +521,9 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                 match transaction.process_pdu(pdu) {
                                     Ok(()) => {}
                                     Err(crate::transaction::TransactionError::UnexpectedPDU(
-                                        _info,
+                                        info,
                                     )) => {
+                                        info!("Recieved Unexpected PDU: {:?}", info);
                                         // log some info on the unexpected PDU?
                                     }
                                     Err(err) => return Err(err),
@@ -539,7 +541,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                     Err(TryRecvError::Disconnected) => {
                         // Really do not expect to be in this situation
                         // probably the thread should exit
-                        panic!(
+                        info!(
                             "Connection to Daemon Severed for Transaction {:?}",
                             transaction.id()
                         )
@@ -862,7 +864,67 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                             transaction_channels.insert(id, sender);
                                         }
                                     }
-                                    UserRequest::RemoteStatusReport(_) => todo!(),
+                                    UserRequest::RemoteStatusReport(report_request) => {
+                                        // TODO currently it is not possible to get the status of the working threads
+                                        let request = PutRequest {
+                                            source_filename: "".into(),
+                                            destination_filename: "".into(),
+                                            destination_entity_id: origin_id.0.clone(),
+                                            transmission_mode: tx_mode.clone(),
+                                            filestore_requests: vec![],
+                                            message_to_user: vec![
+                                                MessageToUser::from(
+                                                    UserOperation::OriginatingTransactionIDMessage(
+                                                        OriginatingTransactionIDMessage {
+                                                            source_entity_id: origin_id.0.clone(),
+                                                            transaction_sequence_number: origin_id
+                                                                .1
+                                                                .clone(),
+                                                        },
+                                                    ),
+                                                ),
+                                                MessageToUser::from(UserOperation::Response(
+                                                    UserResponse::RemoteStatusReport(
+                                                        RemoteStatusReportResponse {
+                                                            transaction_status:
+                                                                TransactionStatus::Unrecognized,
+                                                            source_entity_id: report_request
+                                                                .source_entity_id,
+                                                            transaction_sequence_number:
+                                                                report_request
+                                                                    .transaction_sequence_number,
+                                                            response_code: false,
+                                                        },
+                                                    ),
+                                                )),
+                                            ],
+                                        };
+
+                                        let sequence_number = sequence_num.get_and_increment();
+                                        let entity_config = self
+                                            .entity_configs
+                                            .get(&request.destination_entity_id)
+                                            .unwrap_or(&self.default_config);
+
+                                        let transport_tx = self
+                                            .transport_tx_map
+                                            .get(&request.destination_entity_id)
+                                            .expect("No transport for Entity ID.")
+                                            .clone();
+
+                                        let (id, sender, handle) = Self::spawn_send_transaction(
+                                            request,
+                                            sequence_number,
+                                            self.entity_id.clone(),
+                                            transport_tx,
+                                            entity_config,
+                                            self.filestore.clone(),
+                                            self.message_tx.clone(),
+                                            false,
+                                        )?;
+                                        self.transaction_handles.push(handle);
+                                        transaction_channels.insert(id, sender);
+                                    }
                                     UserRequest::RemoteSuspend(suspend_req) => {
                                         let suspend_indication = match transaction_channels.get(&(
                                             suspend_req.source_entity_id.clone(),
@@ -936,8 +998,8 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                             resume_request.source_entity_id.clone(),
                                             resume_request.transaction_sequence_number.clone(),
                                         )) {
-                                            Some(chan) => chan.send(Command::Resume).is_ok(),
-                                            None => false,
+                                            Some(chan) => chan.send(Command::Resume).is_err(),
+                                            None => true,
                                         };
 
                                         let request = PutRequest {
@@ -1003,9 +1065,11 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                             }
                             for response in responses {
                                 // log indication of the response received!
+                                info!("Received User Operation Response: {:?}", response);
                             }
                             for message in other_messages {
                                 // also log this!
+                                info!("Received Messages I can't decifer {:?}", message);
                             }
                         }
                         Err(TryRecvError::Empty) => {
@@ -1173,9 +1237,9 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                 self.proxy_id_map.retain(|_, value| *value != id);
                             }
                             Ok(Err(err)) => {
-                                println!("Error occured during transaction: {}", err)
+                                info!("Error occured during transaction: {}", err)
                             }
-                            Err(_) => println!("Unable to join handle!"),
+                            Err(_) => error!("Unable to join handle!"),
                         };
                     } else {
                         ind += 1;

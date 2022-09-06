@@ -10,33 +10,37 @@ use std::{
 
 use camino::Utf8PathBuf;
 use crossbeam_channel::{SendError, Sender};
+use interprocess::local_socket::LocalSocketStream;
 
 use crate::{
+    daemon::PutRequest,
     filestore::{ChecksumType, FileChecksum, FileStore, FileStoreError},
     pdu::{
         ACKSubDirective, CRCFlag, Condition, DeliveryCode, Direction, EndOfFile, EntityID,
         FaultHandlerAction, FileDataPDU, FileSizeFlag, FileSizeSensitive, FileStatusCode,
         FileStoreRequest, FileStoreResponse, Finished, KeepAlivePDU, MessageToUser, MetadataPDU,
         MetadataTLV, NakOrKeepAlive, NegativeAcknowldegmentPDU, Operations, PDUDirective,
-        PDUHeader, PDUPayload, PDUType, PositiveAcknowledgePDU, SegmentRequestForm,
-        SegmentationControl, SegmentedData, TransactionSeqNum, TransactionStatus, TransmissionMode,
-        UnsegmentedFileData, VariableID, PDU, U3,
+        PDUEncode, PDUHeader, PDUPayload, PDUType, PositiveAcknowledgePDU, ProxyPutResponse,
+        SegmentRequestForm, SegmentationControl, SegmentedData, TransactionSeqNum,
+        TransactionStatus, TransmissionMode, UnsegmentedFileData, UserOperation, UserResponse,
+        VariableID, PDU, U3,
     },
     timer::Timer,
 };
 
+pub type TransactionID = (EntityID, TransactionSeqNum);
 pub type TransactionResult<T> = Result<T, TransactionError>;
 #[derive(Debug)]
 pub enum TransactionError {
     FileStore(FileStoreError),
     Transport(SendError<(VariableID, PDU)>),
-    UserMessage(SendError<MessageToUser>),
-    NoFile((EntityID, TransactionSeqNum)),
+    UserMessage(SendError<(TransactionID, TransmissionMode, Vec<MessageToUser>)>),
+    NoFile(TransactionID),
     Daemon(String),
     Poison,
     IntConverstion(TryFromIntError),
     UnexpectedPDU((TransactionSeqNum, Action, TransmissionMode, String)),
-    MissingMetadata((EntityID, TransactionSeqNum)),
+    MissingMetadata(TransactionID),
     MissingNak,
     NoChecksum,
 }
@@ -55,8 +59,8 @@ impl From<SendError<(VariableID, PDU)>> for TransactionError {
         Self::Transport(error)
     }
 }
-impl From<SendError<MessageToUser>> for TransactionError {
-    fn from(error: SendError<MessageToUser>) -> Self {
+impl From<SendError<(TransactionID, TransmissionMode, Vec<MessageToUser>)>> for TransactionError {
+    fn from(error: SendError<(TransactionID, TransmissionMode, Vec<MessageToUser>)>) -> Self {
         Self::UserMessage(error)
     }
 }
@@ -174,6 +178,8 @@ pub struct TransactionConfig {
     pub max_count: u32,
     /// Maximum amount timeof without activity before a [Timer] increments its count.
     pub inactivity_timeout: i64,
+    // used when a proxy put request is received to originate a transaction
+    pub send_proxy_response: bool,
 }
 
 pub struct Transaction<T: FileStore> {
@@ -186,7 +192,7 @@ pub struct Transaction<T: FileStore> {
     /// Channel used to send outgoing PDUs through the Transport layer.
     transport_tx: Sender<(VariableID, PDU)>,
     /// Channel for message to users to propagate back up
-    message_tx: Sender<MessageToUser>,
+    message_tx: Sender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
     /// The current file being worked by this Transaction.
     file_handle: Option<File>,
     /// A mapping of offsets and segments lengths to monitor progress.
@@ -196,7 +202,7 @@ pub struct Transaction<T: FileStore> {
     /// The list of all missing information
     naks: VecDeque<SegmentRequestForm>,
     /// Flag to check if metadata on the file has been received
-    metadata: Option<Metadata>,
+    pub(crate) metadata: Option<Metadata>,
     /// Measurement of how large of a file has been received so far
     received_file_size: FileSizeSensitive,
     /// a cache of the header used for interactions in this transmission
@@ -232,7 +238,7 @@ impl<T: FileStore> Transaction<T> {
         // Sender channel connected to the Transport thread to send PDUs.
         transport_tx: Sender<(VariableID, PDU)>,
         // Sender channel used to propagate Message To User back up to the Daemon Thread.
-        message_tx: Sender<MessageToUser>,
+        message_tx: Sender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
     ) -> Self {
         let received_file_size = match &config.file_size_flag {
             FileSizeFlag::Small => FileSizeSensitive::Small(0),
@@ -927,6 +933,14 @@ impl<T: FileStore> Transaction<T> {
         Ok(())
     }
 
+    pub fn get_proxy_response(&mut self) -> ProxyPutResponse {
+        ProxyPutResponse {
+            condition: self.condition.clone(),
+            delivery_code: self.delivery_code.clone(),
+            file_status: self.file_status.clone(),
+        }
+    }
+
     pub fn monitor_timeout(&mut self) -> TransactionResult<()> {
         if self.inactivity_timer.timeout_occured()
             && !self.proceed_despite_fault(Condition::InactivityDetected)?
@@ -987,6 +1001,57 @@ impl<T: FileStore> Transaction<T> {
                             // there's nothing else to do
                             self.proceed_despite_fault(finished.condition)?;
                             // shutdown
+                        }
+                        if self.config.send_proxy_response {
+                            // if this originiated from a ProxyPutRequest
+                            // originate a Put request to send the results back
+                            if let Some(origin) = self.metadata.as_ref().and_then(|meta| {
+                                meta.message_to_user.iter().find_map(|msg| {
+                                    match UserOperation::decode(&mut msg.message_text.as_slice())
+                                        .ok()?
+                                    {
+                                        UserOperation::OriginatingTransactionIDMessage(id) => {
+                                            Some(id)
+                                        }
+                                        _ => None,
+                                    }
+                                })
+                            }) {
+                                let mut message_to_user = vec![
+                                    MessageToUser::from(UserOperation::Response(
+                                        UserResponse::ProxyPut(self.get_proxy_response()),
+                                    )),
+                                    MessageToUser::from(
+                                        UserOperation::OriginatingTransactionIDMessage(
+                                            origin.clone(),
+                                        ),
+                                    ),
+                                ];
+                                finished.filestore_response.iter().for_each(|res| {
+                                    message_to_user.push(MessageToUser::from(
+                                        UserOperation::Response(UserResponse::ProxyFileStore(
+                                            res.clone(),
+                                        )),
+                                    ))
+                                });
+                                // });
+
+                                let req = PutRequest {
+                                    source_filename: "".into(),
+                                    destination_filename: "".into(),
+                                    destination_entity_id: origin.source_entity_id,
+                                    transmission_mode: TransmissionMode::Unacknowledged,
+                                    filestore_requests: vec![],
+                                    message_to_user,
+                                };
+                                // we should be able to connect to the socket we are running
+                                // just fine. but we can ignore errors per
+                                // CCSDS 727.0-B-5  § 6.2.5.1.2
+                                if let Ok(mut conn) = LocalSocketStream::connect("/tmp/cdfp.socket")
+                                {
+                                    let _ = conn.write_all(req.encode().as_slice());
+                                }
+                            }
                         }
                         // abandon sounds scary but it just tells the
                         // thread we are done here
@@ -1269,9 +1334,11 @@ impl<T: FileStore> Transaction<T> {
                                             _ => None,
                                         });
                                     // push each request up to the Daemon
-                                    message_to_user
-                                        .clone()
-                                        .try_for_each(|msg| self.message_tx.send(msg))?;
+                                    self.message_tx.send((
+                                        self.id(),
+                                        self.config.transmission_mode.clone(),
+                                        message_to_user.clone().collect(),
+                                    ))?;
 
                                     self.metadata = Some(Metadata {
                                         source_filename: std::str::from_utf8(
@@ -1422,9 +1489,11 @@ impl<T: FileStore> Transaction<T> {
                                     _ => None,
                                 });
                             // push each request up to the Daemon
-                            message_to_user
-                                .clone()
-                                .try_for_each(|msg| self.message_tx.send(msg))?;
+                            self.message_tx.send((
+                                self.id(),
+                                self.config.transmission_mode.clone(),
+                                message_to_user.clone().collect(),
+                            ))?;
 
                             self.metadata = Some(Metadata {
                                 source_filename: std::str::from_utf8(
@@ -1592,6 +1661,7 @@ mod test {
             segment_metadata_flag: SegmentedData::NotPresent,
             max_count: 5_u32,
             inactivity_timeout: 300_i64,
+            send_proxy_response: false,
         }
     }
 
@@ -3074,9 +3144,9 @@ mod test {
             assert_eq!(expected, transaction.metadata);
         });
 
-        let user_msg = message_rx.recv().unwrap();
-
-        assert_eq!(expected_msg, user_msg)
+        let (_, _, user_msg) = message_rx.recv().unwrap();
+        assert_eq!(1, user_msg.len());
+        assert_eq!(expected_msg, user_msg[0])
     }
 
     #[rstest]

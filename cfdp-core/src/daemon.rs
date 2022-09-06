@@ -2,7 +2,8 @@ use std::{
     collections::HashMap,
     error::Error,
     fmt::Display,
-    io::{Error as IOError, Read},
+    fs::OpenOptions,
+    io::{Error as IOError, Read, Write},
     string::FromUtf8Error,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -15,17 +16,22 @@ use std::{
 use camino::Utf8PathBuf;
 use crossbeam_channel::{unbounded, Receiver, Select, SendTimeoutError, Sender, TryRecvError};
 use interprocess::local_socket::LocalSocketListener;
+use itertools::{Either, Itertools};
 use num_traits::FromPrimitive;
 use signal_hook::{consts::TERM_SIGNALS, flag};
 
 use crate::{
     filestore::{ChecksumType, FileStore},
     pdu::{
-        error::PDUError, CRCFlag, Condition, EntityID, FaultHandlerAction, FileSizeFlag,
-        FileSizeSensitive, FileStoreRequest, MessageToUser, PDUEncode, PDUHeader, SegmentedData,
-        TransactionSeqNum, TransactionStatus, TransmissionMode, UserOperation, VariableID, PDU,
+        error::PDUError, CRCFlag, Condition, DirectoryListingResponse, EntityID,
+        FaultHandlerAction, FileSizeFlag, FileSizeSensitive, FileStoreRequest, ListingResponseCode,
+        MessageToUser, OriginatingTransactionIDMessage, PDUEncode, PDUHeader, ProxyOperation,
+        ProxyPutRequest, SegmentedData, TransactionSeqNum, TransactionStatus, TransmissionMode,
+        UserOperation, UserRequest, UserResponse, VariableID, PDU,
     },
-    transaction::{Action, Metadata, Transaction, TransactionConfig, TransactionError},
+    transaction::{
+        Action, Metadata, Transaction, TransactionConfig, TransactionError, TransactionID,
+    },
 };
 
 #[derive(Debug)]
@@ -303,8 +309,142 @@ pub struct EntityConfig {
 type SpawnerTuple = (
     (EntityID, TransactionSeqNum),
     Sender<Command>,
-    JoinHandle<Result<(), TransactionError>>,
+    JoinHandle<Result<TransactionID, TransactionError>>,
 );
+
+fn get_proxy_request(origin_id: &TransactionID, messages: &[ProxyOperation]) -> Vec<PutRequest> {
+    let mut out = vec![];
+    let proxy_puts: Vec<ProxyPutRequest> = messages
+        .iter()
+        .filter_map(|msg| match msg {
+            ProxyOperation::ProxyPutRequest(req) => Some(req.clone()),
+            _ => None,
+        })
+        .collect();
+
+    for put in proxy_puts {
+        let transmission_mode = messages
+            .iter()
+            .find_map(|msg| match msg {
+                ProxyOperation::ProxyTransmissionMode(mode) => Some(mode.clone()),
+                _ => None,
+            })
+            .unwrap_or(TransmissionMode::Unacknowledged);
+
+        let filestore_requests = messages
+            .iter()
+            .filter_map(|msg| match msg {
+                ProxyOperation::ProxyFileStoreRequest(req) => Some(req.clone()),
+                _ => None,
+            })
+            .collect();
+
+        let mut message_to_user: Vec<MessageToUser> = messages
+            .iter()
+            .filter_map(|msg| match msg {
+                ProxyOperation::ProxyMessageToUser(req) => Some(req.clone()),
+                _ => None,
+            })
+            .collect();
+
+        // Should include an originating TransactionIDMessage
+        // But if the implementation doesn't let's not worry about it too much
+        message_to_user.push(MessageToUser::from(
+            UserOperation::OriginatingTransactionIDMessage(OriginatingTransactionIDMessage {
+                source_entity_id: origin_id.0.clone(),
+                transaction_sequence_number: origin_id.1.clone(),
+            }),
+        ));
+
+        let req = PutRequest {
+            source_filename: put.source_filename,
+            destination_filename: put.destination_filename,
+            destination_entity_id: put.destination_entity_id,
+            transmission_mode,
+            filestore_requests,
+            message_to_user,
+        };
+        out.push(req)
+    }
+
+    out
+}
+
+type UserMessageCategories = (
+    // proxy operations
+    Vec<PutRequest>,
+    // user requests
+    Vec<UserRequest>,
+    // responses to log
+    Vec<UserResponse>,
+    // Transaction ID to cancel
+    Option<TransactionID>,
+    // Others
+    Vec<MessageToUser>,
+);
+
+fn categorize_user_msg(
+    origin_id: &TransactionID,
+    messages: Vec<MessageToUser>,
+) -> UserMessageCategories {
+    let (user_ops, other_messages): (Vec<UserOperation>, Vec<MessageToUser>) =
+        messages.into_iter().partition_map(|msg| {
+            match UserOperation::decode(&mut msg.message_text.as_slice()) {
+                Ok(operation) => Either::Left(operation),
+                Err(_) => Either::Right(msg),
+            }
+        });
+
+    let cancel_id = user_ops
+        .iter()
+        .find(|&msg| msg == &UserOperation::ProxyOperation(ProxyOperation::ProxyPutCancel))
+        .and_then(|_| {
+            user_ops.iter().find_map(|msg| {
+                if let UserOperation::OriginatingTransactionIDMessage(origin_id) = msg {
+                    Some((
+                        origin_id.source_entity_id.clone(),
+                        origin_id.transaction_sequence_number.clone(),
+                    ))
+                } else {
+                    None
+                }
+            })
+        });
+    let proxy_ops: Vec<ProxyOperation> = user_ops
+        .iter()
+        .filter_map(|req| {
+            if let UserOperation::ProxyOperation(op) = req {
+                Some(op.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let other_reqs = user_ops
+        .iter()
+        .filter_map(|req| {
+            if let UserOperation::Request(request) = req {
+                Some(request.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let responses = user_ops
+        .iter()
+        .filter_map(|req| {
+            if let UserOperation::Response(response) = req {
+                Some(response.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    let proxy_reqs = get_proxy_request(origin_id, proxy_ops.as_slice());
+    (proxy_reqs, other_reqs, responses, cancel_id, other_messages)
+}
 
 /// The CFDP Daemon is responsible for connecting [PDUTransport](crate::transport::PDUTransport) implementation
 /// with each individual [Transaction](crate::transaction::Transaction). When a PDUTransport implementation
@@ -312,9 +452,9 @@ type SpawnerTuple = (
 /// PDUs are sent from each Transaction directly to their respective PDUTransport implementations.
 pub struct Daemon<T: FileStore + Send + 'static> {
     // The collection of all current transactions
-    transaction_handles: Vec<JoinHandle<Result<(), TransactionError>>>,
+    transaction_handles: Vec<JoinHandle<Result<TransactionID, TransactionError>>>,
     // the vector of transportation tx channel connections
-    transport_tx_vec: Vec<Sender<(VariableID, PDU)>>,
+    transport_tx_map: HashMap<EntityID, Sender<(VariableID, PDU)>>,
     // the vector of transportation rx channel connections
     transport_rx_vec: Vec<Receiver<(VariableID, PDU)>>,
     // // mapping of unique transaction ids to channels used to talk to each transaction
@@ -322,9 +462,9 @@ pub struct Daemon<T: FileStore + Send + 'static> {
     // the underlying filestore used by this Daemon
     filestore: Arc<Mutex<T>>,
     // message reciept channel used to execute User Operations
-    message_rx: Receiver<MessageToUser>,
+    message_rx: Receiver<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
     // message sender channel used to execute User Operations by Transactions
-    message_tx: Sender<MessageToUser>,
+    message_tx: Sender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
     // a mapping of individual fault handler actions per remote entity
     entity_configs: HashMap<VariableID, EntityConfig>,
     // the default fault handling configuration
@@ -333,6 +473,8 @@ pub struct Daemon<T: FileStore + Send + 'static> {
     entity_id: EntityID,
     // current running count of the sequence numbers of transaction initiated by this entity
     sequence_num: TransactionSeqNum,
+    // a mapping of originating transaction IDs to currently running Proxy Transactions
+    proxy_id_map: HashMap<TransactionID, TransactionID>,
 }
 impl<T: FileStore + Send + 'static> Daemon<T> {
     fn spawn_receive_transaction(
@@ -340,7 +482,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
         transport_tx: Sender<(VariableID, PDU)>,
         entity_config: &EntityConfig,
         filestore: Arc<Mutex<T>>,
-        message_tx: Sender<MessageToUser>,
+        message_tx: Sender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
     ) -> SpawnerTuple {
         let (transaction_tx, transaction_rx) = unbounded();
 
@@ -357,6 +499,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
             segment_metadata_flag: header.segment_metadata_flag.clone(),
             max_count: entity_config.default_transaction_max_count,
             inactivity_timeout: entity_config.default_inactivity_timeout,
+            send_proxy_response: false,
         };
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
         let id = transaction.id();
@@ -403,12 +546,13 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                 }
                 thread::sleep(Duration::from_millis(1));
             }
-            Ok(())
+            Ok(transaction.id())
         });
 
         (id, transaction_tx, handle)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn spawn_send_transaction(
         request: PutRequest,
         sequence_number: TransactionSeqNum,
@@ -416,7 +560,8 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
         transport_tx: Sender<(EntityID, PDU)>,
         entity_config: &EntityConfig,
         filestore: Arc<Mutex<T>>,
-        message_tx: Sender<MessageToUser>,
+        message_tx: Sender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
+        send_proxy_response: bool,
     ) -> Result<SpawnerTuple, Box<dyn std::error::Error + '_>> {
         let (transaction_tx, transaction_rx) = unbounded();
         let id = (source_entity_id.clone(), sequence_number.clone());
@@ -436,6 +581,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
             segment_metadata_flag: SegmentedData::NotPresent,
             max_count: entity_config.default_transaction_max_count,
             inactivity_timeout: entity_config.default_inactivity_timeout,
+            send_proxy_response,
         };
         let mut metadata = construct_metadata(request, entity_config, FileSizeSensitive::Small(0));
 
@@ -508,7 +654,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                 }
                 thread::sleep(Duration::from_millis(1));
             }
-            Ok(())
+            Ok(transaction.id())
         });
         Ok((id, transaction_tx, handle))
     }
@@ -556,50 +702,216 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                 Ok(val) if val == 0 => {
                     // this is a message to user
                     match self.message_rx.try_recv() {
-                        Ok(msg) => {
-                            // decode UserOperation
-                            match UserOperation::decode(&mut msg.message_text.as_slice()) {
-                                Ok(operation) => {
-                                    // match and perform operation
-                                    match operation {
-                                        UserOperation::OriginatingTransactionIDMessage(_) => {
-                                            todo!()
-                                        }
-                                        UserOperation::ProxyPutRequest(_) => todo!(),
-                                        UserOperation::ProxyPutResponse(_) => todo!(),
-                                        UserOperation::ProxyMessageToUser(_) => todo!(),
-                                        UserOperation::ProxyFileStoreRequest(_) => todo!(),
-                                        UserOperation::ProxyFileStoreResponse(_) => todo!(),
-                                        UserOperation::ProxyFaultHandlerOverride(_) => todo!(),
-                                        UserOperation::ProxyTransmissionMode(_) => todo!(),
-                                        UserOperation::ProxyFlowLabel(_) => todo!(),
-                                        UserOperation::ProxySegmentationControl(_) => todo!(),
-                                        UserOperation::ProxyPutCancel => todo!(),
-                                        UserOperation::DirectoryListingRequest(_) => todo!(),
-                                        UserOperation::DirectoryListingResponse(_) => todo!(),
-                                        UserOperation::RemoteStatusReportRequest(_) => todo!(),
-                                        UserOperation::RemoteStatusReportResponse(_) => todo!(),
-                                        UserOperation::RemoteSuspendRequest(_) => todo!(),
-                                        UserOperation::RemoteSuspendResponse(_) => todo!(),
-                                        UserOperation::RemoteResumeRequest(_) => todo!(),
-                                        UserOperation::RemoteResumeResponse(_) => todo!(),
-                                        UserOperation::SFORequest(_) => todo!(),
-                                        UserOperation::SFOMessageToUser(_) => todo!(),
-                                        UserOperation::SFOFlowLabel(_) => todo!(),
-                                        UserOperation::SFOFaultHandlerOverride(_) => todo!(),
-                                        UserOperation::SFOFileStoreRequest(_) => todo!(),
-                                        UserOperation::SFOFileStoreResponse(_) => todo!(),
-                                        UserOperation::SFOReport(_) => todo!(),
+                        Ok((origin_id, tx_mode, messages)) => {
+                            let (put_requests, user_reqs, _responses, cancel_id, _other_messages) =
+                                categorize_user_msg(&origin_id, messages);
+
+                            for request in put_requests {
+                                let sequence_number = sequence_num.get_and_increment();
+
+                                let entity_config = self
+                                    .entity_configs
+                                    .get(&request.destination_entity_id)
+                                    .unwrap_or(&self.default_config);
+
+                                let transport_tx = self
+                                    .transport_tx_map
+                                    .get(&request.destination_entity_id)
+                                    .expect("No transport for Entity ID.")
+                                    .clone();
+
+                                let (id, sender, handle) = Self::spawn_send_transaction(
+                                    request,
+                                    sequence_number,
+                                    self.entity_id.clone(),
+                                    transport_tx,
+                                    entity_config,
+                                    self.filestore.clone(),
+                                    self.message_tx.clone(),
+                                    true,
+                                )?;
+                                self.proxy_id_map.insert(origin_id.clone(), id.clone());
+                                self.transaction_handles.push(handle);
+                                transaction_channels.insert(id, sender);
+                            }
+                            if let Some(id) = cancel_id {
+                                // Check if we have a running ID corresponding to the Originating ID in the cancel
+                                if let Some(running_id) = self.proxy_id_map.get(&id) {
+                                    // If the channel is still open to that transaction send a cancel.
+                                    if let Some(channel) = transaction_channels.get(running_id) {
+                                        channel.send(Command::Cancel)?;
                                     }
                                 }
-                                Err(PDUError::UnexpectedIdentifier(_recv, _expected)) => {
-                                    // try to print out message
-                                }
-                                Err(_error) => {
-                                    // error handling message decoding.
-                                    // what to do here?
+                            }
+
+                            for req in user_reqs.into_iter() {
+                                match req {
+                                    UserRequest::DirectoryListing(directory_request) => {
+                                        let request = match self.filestore.lock().map(|fs| {
+                                            fs.list_directory(&directory_request.directory_name)
+                                        }) {
+                                            Ok(Ok(listing)) => {
+                                                let outfile = directory_request
+                                                    .directory_name
+                                                    .as_path()
+                                                    .with_extension(".listing");
+
+                                                let response_code =match
+                                                    self.filestore.lock().map(|fs| {
+                                                        fs
+                                                            .open(
+                                                                &outfile,
+                                                                OpenOptions::new()
+                                                                    .create(true)
+                                                                    .truncate(true)
+                                                                    .write(true),
+                                                            )
+                                                            .map(|mut handle| {
+                                                                handle.write_all(
+                                                                    listing.as_bytes(),
+                                                                )
+                                                            })
+                                                    }){
+                                                        Ok(Ok(Ok(()))) => ListingResponseCode::Successful,
+                                                        _ => ListingResponseCode::Unsuccessful,
+                                                    };
+                                                PutRequest {
+                                                source_filename: outfile,
+                                                destination_filename: directory_request.directory_filename.clone(),
+                                                destination_entity_id: origin_id.0.clone(),
+                                                transmission_mode: tx_mode.clone(),
+                                                filestore_requests: vec![],
+                                                message_to_user: vec![
+                                                    MessageToUser::from(
+                                                        UserOperation::OriginatingTransactionIDMessage(
+                                                            OriginatingTransactionIDMessage{
+                                                                source_entity_id: origin_id.0.clone(),
+                                                                transaction_sequence_number: origin_id.1.clone(),
+                                                            }
+                                                        )
+                                                    ),
+                                                    MessageToUser::from(
+                                                        UserOperation::Response(UserResponse::DirectoryListing(
+                                                            DirectoryListingResponse{
+                                                                response_code,
+                                                                directory_name: directory_request.directory_name,
+                                                                directory_filename: directory_request.directory_filename,
+                                                            }
+                                                        ))
+                                                    ),
+                                                ],
+                                            }
+                                            }
+                                            Err(_) | Ok(Err(_)) => {
+
+                                                PutRequest {
+                                                source_filename: "".into(),
+                                                destination_filename: "".into(),
+                                                destination_entity_id: origin_id.0.clone(),
+                                                transmission_mode: tx_mode.clone(),
+                                                filestore_requests: vec![],
+                                                message_to_user: vec![
+                                                    MessageToUser::from(
+                                                        UserOperation::OriginatingTransactionIDMessage(
+                                                            OriginatingTransactionIDMessage{
+                                                                source_entity_id: origin_id.0.clone(),
+                                                                transaction_sequence_number: origin_id.1.clone(),
+                                                            }
+                                                        )
+                                                    ),
+                                                    MessageToUser::from(
+                                                        UserOperation::Response(UserResponse::DirectoryListing(
+                                                            DirectoryListingResponse{
+                                                                response_code: ListingResponseCode::Unsuccessful,
+                                                                directory_name: directory_request.directory_name,
+                                                                directory_filename: directory_request.directory_filename,
+                                                            }
+                                                        ))
+                                                    ),
+                                                ],
+                                            }
+                                            }
+                                        };
+
+                                        {
+                                            let sequence_number = sequence_num.get_and_increment();
+                                            let entity_config = self
+                                                .entity_configs
+                                                .get(&request.destination_entity_id)
+                                                .unwrap_or(&self.default_config);
+
+                                            let transport_tx = self
+                                                .transport_tx_map
+                                                .get(&request.destination_entity_id)
+                                                .expect("No transport for Entity ID.")
+                                                .clone();
+
+                                            let (id, sender, handle) =
+                                                Self::spawn_send_transaction(
+                                                    request,
+                                                    sequence_number,
+                                                    self.entity_id.clone(),
+                                                    transport_tx,
+                                                    entity_config,
+                                                    self.filestore.clone(),
+                                                    self.message_tx.clone(),
+                                                    false,
+                                                )?;
+                                            self.transaction_handles.push(handle);
+                                            transaction_channels.insert(id, sender);
+                                        }
+                                    }
+                                    UserRequest::RemoteStatusReport(_) => todo!(),
+                                    UserRequest::RemoteSuspend(_) => todo!(),
+                                    UserRequest::RemoteResume(_) => todo!(),
                                 }
                             }
+
+                            // Check for Directory Listing Requests
+                            // if Some(dir_list_req) = user_ops.as_slice().find_map(|msg| match )
+                            // decode UserOperation
+                            // match UserOperation::decode(&mut msg.message_text.as_slice()) {
+                            //     Ok(operation) => {
+                            //         // match and perform operation
+                            //         match operation {
+                            //             UserOperation::OriginatingTransactionIDMessage(_) => {
+                            //                 todo!()
+                            //             }
+                            //             UserOperation::ProxyPutRequest(_) => todo!(),
+                            //             UserOperation::ProxyPutResponse(_) => todo!(),
+                            //             UserOperation::ProxyMessageToUser(_) => todo!(),
+                            //             UserOperation::ProxyFileStoreRequest(_) => todo!(),
+                            //             UserOperation::ProxyFileStoreResponse(_) => todo!(),
+                            //             UserOperation::ProxyFaultHandlerOverride(_) => todo!(),
+                            //             UserOperation::ProxyTransmissionMode(_) => todo!(),
+                            //             UserOperation::ProxyFlowLabel(_) => todo!(),
+                            //             UserOperation::ProxySegmentationControl(_) => todo!(),
+                            //             UserOperation::ProxyPutCancel => todo!(),
+                            //             UserOperation::DirectoryListingRequest(_) => todo!(),
+                            //             UserOperation::DirectoryListingResponse(_) => todo!(),
+                            //             UserOperation::RemoteStatusReportRequest(_) => todo!(),
+                            //             UserOperation::RemoteStatusReportResponse(_) => todo!(),
+                            //             UserOperation::RemoteSuspendRequest(_) => todo!(),
+                            //             UserOperation::RemoteSuspendResponse(_) => todo!(),
+                            //             UserOperation::RemoteResumeRequest(_) => todo!(),
+                            //             UserOperation::RemoteResumeResponse(_) => todo!(),
+                            //             UserOperation::SFORequest(_) => todo!(),
+                            //             UserOperation::SFOMessageToUser(_) => todo!(),
+                            //             UserOperation::SFOFlowLabel(_) => todo!(),
+                            //             UserOperation::SFOFaultHandlerOverride(_) => todo!(),
+                            //             UserOperation::SFOFileStoreRequest(_) => todo!(),
+                            //             UserOperation::SFOFileStoreResponse(_) => todo!(),
+                            //             UserOperation::SFOReport(_) => todo!(),
+                            //         }
+                            //     }
+                            //     Err(PDUError::UnexpectedIdentifier(_recv, _expected)) => {
+                            //         // try to print out message
+                            //     }
+                            //     Err(_error) => {
+                            //         // error handling message decoding.
+                            //         // what to do here?
+                            //     }
+                            // }
                         }
                         Err(TryRecvError::Empty) => {
                             // was not actually ready, go back to selection
@@ -610,7 +922,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                             // remove from possible selections
                             selector.remove(val);
                         }
-                    }
+                    };
                 }
                 Ok(val) if val > 0 => {
                     // this is a pdu from a transport
@@ -636,7 +948,11 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
 
                                     let (_id, channel, handle) = Self::spawn_receive_transaction(
                                         &pdu.header,
-                                        self.transport_tx_vec[val - 1].clone(),
+                                        // TODO! Fill in this error
+                                        self.transport_tx_map
+                                            .get(&key.0)
+                                            .expect("No transport for Entity ID.")
+                                            .clone(),
                                         entity_config,
                                         self.filestore.clone(),
                                         self.message_tx.clone(),
@@ -664,7 +980,10 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                     let (_id, new_channel, handle) =
                                         Self::spawn_receive_transaction(
                                             &pdu.header,
-                                            self.transport_tx_vec[val - 1].clone(),
+                                            self.transport_tx_map
+                                                .get(&key.0)
+                                                .expect("No transport for Entity ID.")
+                                                .clone(),
                                             entity_config,
                                             self.filestore.clone(),
                                             self.message_tx.clone(),
@@ -703,13 +1022,18 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                 let primitive = UserPrimitive::decode(&mut &buffer[..])?;
                 match primitive {
                     UserPrimitive::Put(request) => {
+                        let sequence_number = sequence_num.get_and_increment();
+
                         let entity_config = self
                             .entity_configs
                             .get(&request.destination_entity_id)
                             .unwrap_or(&self.default_config);
 
-                        let transport_tx = self.transport_tx_vec[0].clone();
-                        let sequence_number = sequence_num.get_and_increment();
+                        let transport_tx = self
+                            .transport_tx_map
+                            .get(&request.destination_entity_id)
+                            .expect("No transport for Entity ID.")
+                            .clone();
 
                         let (id, sender, handle) = Self::spawn_send_transaction(
                             request,
@@ -719,6 +1043,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                             entity_config,
                             self.filestore.clone(),
                             self.message_tx.clone(),
+                            false,
                         )?;
                         self.transaction_handles.push(handle);
                         transaction_channels.insert(id, sender);
@@ -746,7 +1071,12 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                     if self.transaction_handles[ind].is_finished() {
                         let handle = self.transaction_handles.remove(ind);
                         match handle.join() {
-                            Ok(Ok(())) => {}
+                            Ok(Ok(id)) => {
+                                // remove the channel for this transaction if it is complete
+                                let _ = transaction_channels.remove(&id);
+                                // keep all proxy id maps where the finished transaction ID is not the entry
+                                self.proxy_id_map.retain(|_, value| *value != id);
+                            }
                             Ok(Err(err)) => {
                                 println!("Error occured during transaction: {}", err)
                             }
@@ -867,5 +1197,77 @@ mod test {
         let recovered = UserPrimitive::decode(&mut &buffer[..]).unwrap();
 
         assert_eq!(expected, recovered)
+    }
+
+    #[rstest]
+    fn proxy_req(#[values(true, false)] use_mode: bool) {
+        let origin_id = (EntityID::from(55_u16), TransactionSeqNum::from(12_u16));
+        let mut messages = vec![
+            ProxyOperation::ProxyFileStoreRequest(FileStoreRequest {
+                action_code: FileStoreAction::CreateDirectory,
+                first_filename: "/tmp".as_bytes().to_vec(),
+                second_filename: vec![],
+            }),
+            ProxyOperation::ProxyPutRequest(ProxyPutRequest {
+                destination_entity_id: EntityID::from(3_u16),
+                source_filename: "test_file".into(),
+                destination_filename: "out_file".into(),
+            }),
+            ProxyOperation::ProxyFileStoreRequest(FileStoreRequest {
+                action_code: FileStoreAction::AppendFile,
+                first_filename: "first_file".as_bytes().to_vec(),
+                second_filename: "second_file".as_bytes().to_vec(),
+            }),
+            ProxyOperation::ProxyMessageToUser(MessageToUser {
+                message_text: "help".as_bytes().to_vec(),
+            }),
+        ];
+
+        if use_mode {
+            messages.push(ProxyOperation::ProxyTransmissionMode(
+                TransmissionMode::Acknowledged,
+            ));
+        }
+
+        let recovered = get_proxy_request(&origin_id, messages.as_slice());
+
+        let expected = PutRequest {
+            source_filename: "test_file".into(),
+            destination_filename: "out_file".into(),
+            destination_entity_id: EntityID::from(3_u16),
+            transmission_mode: if use_mode {
+                TransmissionMode::Acknowledged
+            } else {
+                TransmissionMode::Unacknowledged
+            },
+            filestore_requests: vec![
+                FileStoreRequest {
+                    action_code: FileStoreAction::CreateDirectory,
+                    first_filename: "/tmp".as_bytes().to_vec(),
+                    second_filename: vec![],
+                },
+                FileStoreRequest {
+                    action_code: FileStoreAction::AppendFile,
+                    first_filename: "first_file".as_bytes().to_vec(),
+                    second_filename: "second_file".as_bytes().to_vec(),
+                },
+            ],
+            message_to_user: vec![
+                MessageToUser {
+                    message_text: "help".as_bytes().to_vec(),
+                },
+                MessageToUser {
+                    message_text: UserOperation::OriginatingTransactionIDMessage(
+                        OriginatingTransactionIDMessage {
+                            source_entity_id: origin_id.0.clone(),
+                            transaction_sequence_number: origin_id.1,
+                        },
+                    )
+                    .encode(),
+                },
+            ],
+        };
+        assert_eq!(1, recovered.len());
+        assert_eq!(expected, recovered[0])
     }
 }

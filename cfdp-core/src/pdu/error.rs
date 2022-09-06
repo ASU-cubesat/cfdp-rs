@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, string::FromUtf8Error};
 
 use super::filestore::FileStoreAction;
 
@@ -30,6 +30,8 @@ pub enum PDUError {
     CRCFailure(u16, u16),
     ReadError(std::io::Error),
     UnkownIDLength(u8),
+    InvalidFileName(FromUtf8Error),
+    InvalidListingCode(u8),
 }
 impl fmt::Display for PDUError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -96,6 +98,10 @@ impl fmt::Display for PDUError {
                 "Bad length for Variable Identifier (not a power a of 2) {:}.",
                 other
             ),
+            Self::InvalidFileName(err) => write!(f, "Unable to decode filename. {err}"),
+            Self::InvalidListingCode(code) => {
+                write!(f, "Invalide Directory Listing Response Code: {}. ", code)
+            }
         }
     }
 }
@@ -128,6 +134,8 @@ impl std::error::Error for PDUError {
             Self::CRCFailure(_, _) => None,
             Self::ReadError(source) => Some(source),
             Self::UnkownIDLength(_) => None,
+            Self::InvalidFileName(source) => Some(source),
+            Self::InvalidListingCode(_) => None,
         }
     }
 }
@@ -137,5 +145,11 @@ pub type PDUResult<T> = Result<T, PDUError>;
 impl From<std::io::Error> for PDUError {
     fn from(err: std::io::Error) -> Self {
         Self::ReadError(err)
+    }
+}
+
+impl From<FromUtf8Error> for PDUError {
+    fn from(err: FromUtf8Error) -> Self {
+        Self::InvalidFileName(err)
     }
 }

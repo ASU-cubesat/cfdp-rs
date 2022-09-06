@@ -1,6 +1,7 @@
 use std::io::Read;
 
 use camino::Utf8PathBuf;
+use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 
 use super::{
@@ -17,28 +18,127 @@ use super::{
 const USER_OPS_IDENTIFIER: &[u8] = "cfdp".as_bytes();
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// User Operations are transported as the paylod of a [MessageToUser]
-/// in a metadataPDU. A reserved "CFDP" identifier is used to delinate User Operations.
-pub enum UserOperation {
-    OriginatingTransactionIDMessage(OriginatingTransactionIDMessage),
+pub enum ProxyOperation {
     ProxyPutRequest(ProxyPutRequest),
-    ProxyPutResponse(ProxyPutResponse),
     ProxyMessageToUser(MessageToUser),
     ProxyFileStoreRequest(FileStoreRequest),
-    ProxyFileStoreResponse(FileStoreResponse),
     ProxyFaultHandlerOverride(FaultHandlerOverride),
     ProxyTransmissionMode(TransmissionMode),
     ProxyFlowLabel(FlowLabel),
     ProxySegmentationControl(ProxySegmentationControl),
     ProxyPutCancel,
-    DirectoryListingRequest(DirectoryListingRequest),
-    DirectoryListingResponse(DirectoryListingResponse),
-    RemoteStatusReportRequest(RemoteStatusReportRequest),
-    RemoteStatusReportResponse(RemoteStatusReportResponse),
-    RemoteSuspendRequest(RemoteSuspendRequest),
-    RemoteSuspendResponse(RemoteSuspendResponse),
-    RemoteResumeRequest(RemoteResumeRequest),
-    RemoteResumeResponse(RemoteResumeResponse),
+}
+impl ProxyOperation {
+    pub fn get_message_type(&self) -> MessageType {
+        match self {
+            Self::ProxyPutRequest(_) => MessageType::ProxyPutRequest,
+            // Self::ProxyPutResponse(_) => MessageType::ProxyPutResponse,
+            Self::ProxyMessageToUser(_) => MessageType::ProxyMessageToUser,
+            Self::ProxyFileStoreRequest(_) => MessageType::ProxyFileStoreRequest,
+            Self::ProxyFaultHandlerOverride(_) => MessageType::ProxyFaultHandlerOverride,
+            Self::ProxyTransmissionMode(_) => MessageType::ProxyTransmissionMode,
+            Self::ProxyFlowLabel(_) => MessageType::ProxyFlowLabel,
+            Self::ProxySegmentationControl(_) => MessageType::ProxySegmentationControl,
+            // Self::ProxyFileStoreResponse(_) => MessageType::ProxyFileStoreResponse,
+            Self::ProxyPutCancel => MessageType::ProxyPutCancel,
+        }
+    }
+    fn encode(self) -> Vec<u8> {
+        match self {
+            Self::ProxyPutRequest(msg) => msg.encode(),
+            // Self::ProxyPutResponse(msg) => msg.encode(),
+            Self::ProxyMessageToUser(msg) => msg.encode(),
+            Self::ProxyFileStoreRequest(msg) => {
+                let mut bytes = msg.encode();
+                bytes.insert(0, bytes.len() as u8);
+                bytes
+            }
+            // Self::ProxyFileStoreResponse(msg) => {
+            //     let mut bytes = msg.encode();
+            //     bytes.insert(0, bytes.len() as u8);
+            //     bytes
+            // }
+            Self::ProxyFaultHandlerOverride(msg) => msg.encode(),
+            Self::ProxyTransmissionMode(msg) => msg.encode(),
+            Self::ProxyFlowLabel(msg) => msg.encode(),
+            Self::ProxySegmentationControl(msg) => msg.encode(),
+            Self::ProxyPutCancel => vec![],
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UserResponse {
+    ProxyPut(ProxyPutResponse),
+    ProxyFileStore(FileStoreResponse),
+    DirectoryListing(DirectoryListingResponse),
+    RemoteStatusReport(RemoteStatusReportResponse),
+    RemoteResume(RemoteResumeResponse),
+    RemoteSuspend(RemoteSuspendResponse),
+}
+impl UserResponse {
+    pub fn get_message_type(&self) -> MessageType {
+        match self {
+            Self::ProxyPut(_) => MessageType::ProxyPutResponse,
+            Self::ProxyFileStore(_) => MessageType::ProxyFileStoreResponse,
+            Self::DirectoryListing(_) => MessageType::DirectoryListingResponse,
+            Self::RemoteStatusReport(_) => MessageType::RemoteStatusReportResponse,
+            Self::RemoteSuspend(_) => MessageType::RemoteSuspendResponse,
+            Self::RemoteResume(_) => MessageType::RemoteResumeResponse,
+        }
+    }
+    fn encode(self) -> Vec<u8> {
+        match self {
+            Self::ProxyPut(msg) => msg.encode(),
+            Self::ProxyFileStore(msg) => {
+                let mut bytes = msg.encode();
+                bytes.insert(0, bytes.len() as u8);
+                bytes
+            }
+            Self::DirectoryListing(msg) => msg.encode(),
+            Self::RemoteStatusReport(msg) => msg.encode(),
+            Self::RemoteSuspend(msg) => msg.encode(),
+            Self::RemoteResume(msg) => msg.encode(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UserRequest {
+    DirectoryListing(DirectoryListingRequest),
+    RemoteStatusReport(RemoteStatusReportRequest),
+    RemoteSuspend(RemoteSuspendRequest),
+    RemoteResume(RemoteResumeRequest),
+}
+impl UserRequest {
+    pub fn get_message_type(&self) -> MessageType {
+        match self {
+            Self::DirectoryListing(_) => MessageType::DirectoryListingRequest,
+            Self::RemoteStatusReport(_) => MessageType::RemoteStatusReportRequest,
+            Self::RemoteSuspend(_) => MessageType::RemoteSuspendRequest,
+            Self::RemoteResume(_) => MessageType::RemoteResumeRequest,
+        }
+    }
+
+    fn encode(self) -> Vec<u8> {
+        match self {
+            Self::DirectoryListing(msg) => msg.encode(),
+            Self::RemoteStatusReport(msg) => msg.encode(),
+            Self::RemoteSuspend(msg) => msg.encode(),
+            Self::RemoteResume(msg) => msg.encode(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+/// User Operations are transported as the paylod of a [MessageToUser]
+/// in a metadataPDU. A reserved "CFDP" identifier is used to delinate User Operations.
+pub enum UserOperation {
+    OriginatingTransactionIDMessage(OriginatingTransactionIDMessage),
+    ProxyOperation(ProxyOperation),
+    Response(UserResponse),
+    Request(UserRequest),
+
     SFORequest(SFORequest),
     SFOMessageToUser(MessageToUser),
     SFOFlowLabel(FlowLabel),
@@ -47,30 +147,16 @@ pub enum UserOperation {
     SFOFileStoreResponse(FileStoreResponse),
     SFOReport(SFOReport),
 }
+
 impl UserOperation {
     pub fn get_message_type(&self) -> MessageType {
         match self {
             Self::OriginatingTransactionIDMessage(_) => {
                 MessageType::OriginatingTransactionIDMessage
             }
-            Self::ProxyPutRequest(_) => MessageType::ProxyPutRequest,
-            Self::ProxyPutResponse(_) => MessageType::ProxyPutResponse,
-            Self::ProxyMessageToUser(_) => MessageType::ProxyMessageToUser,
-            Self::ProxyFileStoreRequest(_) => MessageType::ProxyFileStoreRequest,
-            Self::ProxyFaultHandlerOverride(_) => MessageType::ProxyFaultHandlerOverride,
-            Self::ProxyTransmissionMode(_) => MessageType::ProxyTransmissionMode,
-            Self::ProxyFlowLabel(_) => MessageType::ProxyFlowLabel,
-            Self::ProxySegmentationControl(_) => MessageType::ProxySegmentationControl,
-            Self::ProxyFileStoreResponse(_) => MessageType::ProxyFileStoreResponse,
-            Self::ProxyPutCancel => MessageType::ProxyPutCancel,
-            Self::DirectoryListingRequest(_) => MessageType::DirectoryListingRequest,
-            Self::DirectoryListingResponse(_) => MessageType::DirectoryListingResponse,
-            Self::RemoteStatusReportRequest(_) => MessageType::RemoteStatusReportRequest,
-            Self::RemoteStatusReportResponse(_) => MessageType::RemoteStatusReportResponse,
-            Self::RemoteSuspendRequest(_) => MessageType::RemoteSuspendRequest,
-            Self::RemoteSuspendResponse(_) => MessageType::RemoteSuspendResponse,
-            Self::RemoteResumeRequest(_) => MessageType::RemoteResumeRequest,
-            Self::RemoteResumeResponse(_) => MessageType::RemoteResumeResponse,
+            Self::ProxyOperation(op) => op.get_message_type(),
+            Self::Response(msg) => msg.get_message_type(),
+            Self::Request(response) => response.get_message_type(),
             Self::SFORequest(_) => MessageType::SFORequest,
             Self::SFOMessageToUser(_) => MessageType::SFOMessageToUser,
             Self::SFOFlowLabel(_) => MessageType::SFOFlowLabel,
@@ -88,32 +174,10 @@ impl PDUEncode for UserOperation {
         buffer.push(self.get_message_type() as u8);
         let message_buffer = match self {
             Self::OriginatingTransactionIDMessage(msg) => msg.encode(),
-            Self::ProxyPutRequest(msg) => msg.encode(),
-            Self::ProxyPutResponse(msg) => msg.encode(),
-            Self::ProxyMessageToUser(msg) => msg.encode(),
-            Self::ProxyFileStoreRequest(msg) => {
-                let mut bytes = msg.encode();
-                bytes.insert(0, bytes.len() as u8);
-                bytes
-            }
-            Self::ProxyFileStoreResponse(msg) => {
-                let mut bytes = msg.encode();
-                bytes.insert(0, bytes.len() as u8);
-                bytes
-            }
-            Self::ProxyFaultHandlerOverride(msg) => msg.encode(),
-            Self::ProxyTransmissionMode(msg) => msg.encode(),
-            Self::ProxyFlowLabel(msg) => msg.encode(),
-            Self::ProxySegmentationControl(msg) => msg.encode(),
-            Self::ProxyPutCancel => vec![],
-            Self::DirectoryListingRequest(msg) => msg.encode(),
-            Self::DirectoryListingResponse(msg) => msg.encode(),
-            Self::RemoteStatusReportRequest(msg) => msg.encode(),
-            Self::RemoteStatusReportResponse(msg) => msg.encode(),
-            Self::RemoteSuspendRequest(msg) => msg.encode(),
-            Self::RemoteSuspendResponse(msg) => msg.encode(),
-            Self::RemoteResumeRequest(msg) => msg.encode(),
-            Self::RemoteResumeResponse(msg) => msg.encode(),
+            Self::ProxyOperation(op) => op.encode(),
+            Self::Response(msg) => msg.encode(),
+            Self::Request(msg) => msg.encode(),
+
             Self::SFORequest(msg) => msg.encode(),
             Self::SFOMessageToUser(msg) => msg.encode(),
             Self::SFOFlowLabel(msg) => msg.encode(),
@@ -148,72 +212,74 @@ impl PDUEncode for UserOperation {
         let message_type =
             MessageType::from_u8(u8_buff[0]).ok_or(PDUError::MessageType(u8_buff[0]))?;
         match message_type {
-            MessageType::ProxyPutRequest => {
-                Ok(Self::ProxyPutRequest(ProxyPutRequest::decode(buffer)?))
-            }
-            MessageType::ProxyMessageToUser => {
-                Ok(Self::ProxyMessageToUser(MessageToUser::decode(buffer)?))
-            }
+            MessageType::ProxyPutRequest => Ok(Self::ProxyOperation(
+                ProxyOperation::ProxyPutRequest(ProxyPutRequest::decode(buffer)?),
+            )),
+            MessageType::ProxyMessageToUser => Ok(Self::ProxyOperation(
+                ProxyOperation::ProxyMessageToUser(MessageToUser::decode(buffer)?),
+            )),
             MessageType::ProxyFileStoreRequest => {
                 let mut u8_buff = [0u8];
                 buffer.read_exact(&mut u8_buff)?;
-                Ok(Self::ProxyFileStoreRequest(FileStoreRequest::decode(
-                    buffer,
-                )?))
+                Ok(Self::ProxyOperation(ProxyOperation::ProxyFileStoreRequest(
+                    FileStoreRequest::decode(buffer)?,
+                )))
             }
             MessageType::ProxyFileStoreResponse => {
                 let mut u8_buff = [0u8];
                 buffer.read_exact(&mut u8_buff)?;
-                Ok(Self::ProxyFileStoreResponse(FileStoreResponse::decode(
-                    buffer,
-                )?))
+                Ok(Self::Response(UserResponse::ProxyFileStore(
+                    FileStoreResponse::decode(buffer)?,
+                )))
             }
 
-            MessageType::ProxyFaultHandlerOverride => Ok(Self::ProxyFaultHandlerOverride(
-                FaultHandlerOverride::decode(buffer)?,
+            MessageType::ProxyFaultHandlerOverride => Ok(Self::ProxyOperation(
+                ProxyOperation::ProxyFaultHandlerOverride(FaultHandlerOverride::decode(buffer)?),
             )),
-            MessageType::ProxyTransmissionMode => Ok(Self::ProxyTransmissionMode({
-                TransmissionMode::decode(buffer)?
-            })),
-            MessageType::ProxyFlowLabel => Ok(Self::ProxyFlowLabel(FlowLabel::decode(buffer)?)),
+            MessageType::ProxyTransmissionMode => Ok(Self::ProxyOperation(
+                ProxyOperation::ProxyTransmissionMode(TransmissionMode::decode(buffer)?),
+            )),
+            MessageType::ProxyFlowLabel => Ok(Self::ProxyOperation(
+                ProxyOperation::ProxyFlowLabel(FlowLabel::decode(buffer)?),
+            )),
 
-            MessageType::ProxySegmentationControl => Ok(Self::ProxySegmentationControl(
-                ProxySegmentationControl::decode(buffer)?,
+            MessageType::ProxySegmentationControl => Ok(Self::ProxyOperation(
+                ProxyOperation::ProxySegmentationControl(ProxySegmentationControl::decode(buffer)?),
             )),
-            MessageType::ProxyPutResponse => {
-                Ok(Self::ProxyPutResponse(ProxyPutResponse::decode(buffer)?))
-            }
-            MessageType::ProxyPutCancel => Ok(Self::ProxyPutCancel),
+            MessageType::ProxyPutResponse => Ok(Self::Response(UserResponse::ProxyPut(
+                ProxyPutResponse::decode(buffer)?,
+            ))),
+            MessageType::ProxyPutCancel => Ok(Self::ProxyOperation(ProxyOperation::ProxyPutCancel)),
             MessageType::OriginatingTransactionIDMessage => {
                 Ok(Self::OriginatingTransactionIDMessage(
                     OriginatingTransactionIDMessage::decode(buffer)?,
                 ))
             }
             MessageType::ProxyClosureRequest => Err(PDUError::MessageType(u8_buff[0])),
-            MessageType::DirectoryListingRequest => Ok(Self::DirectoryListingRequest(
-                DirectoryListingRequest::decode(buffer)?,
+            MessageType::DirectoryListingRequest => Ok(Self::Request(
+                UserRequest::DirectoryListing(DirectoryListingRequest::decode(buffer)?),
             )),
-            MessageType::DirectoryListingResponse => Ok(Self::DirectoryListingResponse(
-                DirectoryListingResponse::decode(buffer)?,
+            MessageType::RemoteStatusReportRequest => Ok(Self::Request(
+                UserRequest::RemoteStatusReport(RemoteStatusReportRequest::decode(buffer)?),
             )),
-            MessageType::RemoteStatusReportRequest => Ok(Self::RemoteStatusReportRequest(
-                RemoteStatusReportRequest::decode(buffer)?,
-            )),
-            MessageType::RemoteStatusReportResponse => Ok(Self::RemoteStatusReportResponse(
-                RemoteStatusReportResponse::decode(buffer)?,
-            )),
-            MessageType::RemoteSuspendRequest => Ok(Self::RemoteSuspendRequest(
+            MessageType::RemoteSuspendRequest => Ok(Self::Request(UserRequest::RemoteSuspend(
                 RemoteSuspendRequest::decode(buffer)?,
-            )),
-            MessageType::RemoteSuspendResponse => Ok(Self::RemoteSuspendResponse(
-                RemoteSuspendResponse::decode(buffer)?,
-            )),
-            MessageType::RemoteResumeRequest => Ok(Self::RemoteResumeRequest(
+            ))),
+            MessageType::RemoteResumeRequest => Ok(Self::Request(UserRequest::RemoteResume(
                 RemoteResumeRequest::decode(buffer)?,
+            ))),
+            MessageType::DirectoryListingResponse => Ok(Self::Response(
+                UserResponse::DirectoryListing(DirectoryListingResponse::decode(buffer)?),
             )),
-            MessageType::RemoteResumeResponse => Ok(Self::RemoteResumeResponse(
+            MessageType::RemoteStatusReportResponse => Ok(Self::Response(
+                UserResponse::RemoteStatusReport(RemoteStatusReportResponse::decode(buffer)?),
+            )),
+            MessageType::RemoteSuspendResponse => Ok(Self::Response(UserResponse::RemoteSuspend(
+                RemoteSuspendResponse::decode(buffer)?,
+            ))),
+            MessageType::RemoteResumeResponse => Ok(Self::Response(UserResponse::RemoteResume(
                 RemoteResumeResponse::decode(buffer)?,
-            )),
+            ))),
             MessageType::SFORequest => Ok(Self::SFORequest(SFORequest::decode(buffer)?)),
             MessageType::SFOMessageToUser => {
                 Ok(Self::SFOMessageToUser(MessageToUser::decode(buffer)?))
@@ -332,9 +398,9 @@ impl PDUEncode for ProxyPutRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProxyPutResponse {
-    condition: Condition,
-    delivery_code: DeliveryCode,
-    file_status: FileStatusCode,
+    pub condition: Condition,
+    pub delivery_code: DeliveryCode,
+    pub file_status: FileStatusCode,
 }
 impl PDUEncode for ProxyPutResponse {
     type PDUType = Self;
@@ -400,24 +466,27 @@ impl PDUEncode for ProxySegmentationControl {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirectoryListingRequest {
-    directory_name: Vec<u8>,
-    directory_filename: Vec<u8>,
+    pub directory_name: Utf8PathBuf,
+    pub directory_filename: Utf8PathBuf,
 }
 impl PDUEncode for DirectoryListingRequest {
     type PDUType = Self;
     fn encode(self) -> Vec<u8> {
-        let mut buffer = vec![self.directory_name.len() as u8];
-        buffer.extend(self.directory_name);
+        let dir_name = self.directory_name.as_str().as_bytes();
+        let mut buffer = vec![dir_name.len() as u8];
+        buffer.extend(dir_name);
 
-        buffer.push(self.directory_filename.len() as u8);
-        buffer.extend(self.directory_filename);
+        let dir_filename = self.directory_filename.as_str().as_bytes();
+        buffer.push(dir_filename.len() as u8);
+        buffer.extend(dir_filename);
 
         buffer
     }
 
     fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let directory_name = read_length_value_pair(buffer)?;
-        let directory_filename = read_length_value_pair(buffer)?;
+        let directory_name = Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer)?)?);
+        let directory_filename =
+            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer)?)?);
 
         Ok(Self {
             directory_name,
@@ -426,29 +495,32 @@ impl PDUEncode for DirectoryListingRequest {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
+#[repr(u8)]
 pub enum ListingResponseCode {
-    Successful = 0x007F,
-    Unsuccessful = 0x80FF,
+    Successful = 0x00,
+    Unsuccessful = 0x80,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirectoryListingResponse {
-    response_code: u8,
-    directory_name: Vec<u8>,
-    directory_filename: Vec<u8>,
+    pub response_code: ListingResponseCode,
+    pub directory_name: Utf8PathBuf,
+    pub directory_filename: Utf8PathBuf,
 }
 impl PDUEncode for DirectoryListingResponse {
     type PDUType = Self;
 
     fn encode(self) -> Vec<u8> {
-        let mut buffer = vec![self.response_code];
+        let mut buffer = vec![self.response_code as u8];
 
-        buffer.push(self.directory_name.len() as u8);
-        buffer.extend(self.directory_name);
+        let dir_name = self.directory_name.as_str().as_bytes();
+        buffer.push(dir_name.len() as u8);
+        buffer.extend(dir_name);
 
-        buffer.push(self.directory_filename.len() as u8);
-        buffer.extend(self.directory_filename);
+        let dir_filename = self.directory_filename.as_str().as_bytes();
+        buffer.push(dir_filename.len() as u8);
+        buffer.extend(dir_filename);
 
         buffer
     }
@@ -456,10 +528,15 @@ impl PDUEncode for DirectoryListingResponse {
     fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
         let mut u8_buff = [0u8; 1];
         buffer.read_exact(&mut u8_buff)?;
-        let response_code = u8_buff[0];
+        let response_code = {
+            let possible = u8_buff[0];
+            ListingResponseCode::from_u8(possible).ok_or(PDUError::InvalidListingCode(possible))?
+        };
 
-        let directory_name = read_length_value_pair(buffer)?;
-        let directory_filename = read_length_value_pair(buffer)?;
+        let directory_name = Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer)?)?);
+
+        let directory_filename =
+            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer)?)?);
 
         Ok(Self {
             response_code,
@@ -1037,120 +1114,120 @@ mod test {
         })
     )]
     #[case::proxy_put_request(
-        UserOperation::ProxyPutRequest(ProxyPutRequest{
+        UserOperation::ProxyOperation(ProxyOperation::ProxyPutRequest(ProxyPutRequest{
             destination_entity_id: EntityID::from(2398u32),
             source_filename: "test_please.txt".into(),
             destination_filename: "new_test_please.dat".into()
-        })
+        }))
     )]
     #[case::proxy_put_response(
-        UserOperation::ProxyPutResponse(ProxyPutResponse{
+        UserOperation::Response(UserResponse::ProxyPut(ProxyPutResponse{
             condition: Condition::CancelReceived,
             delivery_code: DeliveryCode::Incomplete,
             file_status: FileStatusCode::Unreported
-        })
+        }))
     )]
     #[case::proxy_message(
-        UserOperation::ProxyMessageToUser(MessageToUser{
+        UserOperation::ProxyOperation(ProxyOperation::ProxyMessageToUser(MessageToUser{
             message_text: "Test Hello World".as_bytes().to_vec()
-        })
+        }))
     )]
-    #[case::proxy_filestore_request(UserOperation::ProxyFileStoreRequest(
+    #[case::proxy_filestore_request(UserOperation::ProxyOperation(ProxyOperation::ProxyFileStoreRequest(
         FileStoreRequest{
             action_code: FileStoreAction::AppendFile,
             first_filename: "/the/first/file/to/append.dat".as_bytes().to_vec(),
             second_filename: "/an/additional/file/to/append.txt".as_bytes().to_vec(),
         }
-    ))]
-    #[case::proxy_filestore_response(UserOperation::ProxyFileStoreResponse(
+    )))]
+    #[case::proxy_filestore_response(UserOperation::Response(UserResponse::ProxyFileStore(
         FileStoreResponse{
             action_and_status: FileStoreStatus::DenyDirectory(DenyStatus::NotAllowed),
             first_filename: "/this/is/a/test/directory/".as_bytes().to_vec(),
             second_filename: vec![],
             filestore_message: vec![]
         }
-    ))]
-    #[case::proxy_fault_override(UserOperation::ProxyFaultHandlerOverride(
+    )))]
+    #[case::proxy_fault_override(UserOperation::ProxyOperation(ProxyOperation::ProxyFaultHandlerOverride(
         FaultHandlerOverride{
             fault_handler_code: HandlerCode::IgnoreError
         }
+    )))]
+    #[case::transmission_mode(UserOperation::ProxyOperation(
+        ProxyOperation::ProxyTransmissionMode(TransmissionMode::Unacknowledged)
     ))]
-    #[case::transmission_mode(UserOperation::ProxyTransmissionMode(
-        TransmissionMode::Unacknowledged
-    ))]
-    #[case::flow_label(UserOperation::ProxyFlowLabel(
+    #[case::flow_label(UserOperation::ProxyOperation(ProxyOperation::ProxyFlowLabel(
         FlowLabel{
             value: "THis is a test".as_bytes().to_vec()
         }
-    ))]
-    #[case::segmentation_control(UserOperation::ProxySegmentationControl(
+    )))]
+    #[case::segmentation_control(UserOperation::ProxyOperation(ProxyOperation::ProxySegmentationControl(
         ProxySegmentationControl{
             control: SegmentationControl::Preserved
         }
-    ))]
-    #[case::proxy_put_cancel(UserOperation::ProxyPutCancel)]
-    #[case::directory_listing_request(UserOperation::DirectoryListingRequest(
+    )))]
+    #[case::proxy_put_cancel(UserOperation::ProxyOperation(ProxyOperation::ProxyPutCancel))]
+    #[case::directory_listing_request(UserOperation::Request(UserRequest::DirectoryListing(
         DirectoryListingRequest{
-            directory_name: "/home/user/help".as_bytes().to_vec(),
-            directory_filename: "/home/me/this_is_Result.txt".as_bytes().to_vec(),
+            directory_name: "/home/user/help".into(),
+            directory_filename: "/home/me/this_is_Result.txt".into(),
         }
-    ))]
+    )))]
     #[case::directory_listing_response(
-        UserOperation::DirectoryListingResponse(DirectoryListingResponse{
-            response_code: 215u8,
-            directory_name: "/home/user/help22".as_bytes().to_vec(),
-            directory_filename: "/home/me/this_is_Result11.txt".as_bytes().to_vec(),
-        })
+        UserOperation::Response(UserResponse::DirectoryListing(DirectoryListingResponse{
+            response_code: ListingResponseCode::Unsuccessful,
+            directory_name: "/home/user/help22".into(),
+            directory_filename: "/home/me/this_is_Result11.txt".into(),
+        }))
     )]
     #[case::remote_staus_report_request(
-        UserOperation::RemoteStatusReportRequest(RemoteStatusReportRequest{
+        UserOperation::Request(UserRequest::RemoteStatusReport(RemoteStatusReportRequest{
             source_entity_id: 786567183u32.to_be_bytes().to_vec(),
             transaction_sequence_number: (u32::MAX - 3u32).to_be_bytes().to_vec(),
             report_filename: "foobar".as_bytes().to_vec(),
-        })
+        }))
 
     )]
     #[case::remote_status_report_response(
-        UserOperation::RemoteStatusReportResponse(
+        UserOperation::Response(UserResponse::RemoteStatusReport(
             RemoteStatusReportResponse{
                 transaction_status: TransactionStatus::Unrecognized,
                 response_code: true,
                 source_entity_id: 130875758u32.to_be_bytes().to_vec(),
                 transaction_sequence_number: 27374848u32.to_be_bytes().to_vec(),
             }
-    ))]
+    )))]
     #[case::remote_suspend_request(
-        UserOperation::RemoteSuspendRequest(
+        UserOperation::Request(UserRequest::RemoteSuspend(
             RemoteSuspendRequest{
                 source_entity_id: 8845748u32.to_be_bytes().to_vec(),
                 transaction_sequence_number: (u32::MAX - u32::MAX /2).to_be_bytes().to_vec(),
             }
-    ))]
+    )))]
     #[case::remote_suspend_response(
-        UserOperation::RemoteSuspendResponse(
+        UserOperation::Response(UserResponse::RemoteSuspend(
             RemoteSuspendResponse{
                 suspend_indication: true,
                 transaction_status: TransactionStatus::Terminated,
                 source_entity_id: u32::MAX.to_be_bytes().to_vec(),
                 transaction_sequence_number: 7823454u32.to_be_bytes().to_vec(),
             }
-    ))]
+    )))]
     #[case::remote_resume_request(
-        UserOperation::RemoteResumeRequest(
+        UserOperation::Request(UserRequest::RemoteResume(
             RemoteResumeRequest{
                 source_entity_id: 20058583u32.to_be_bytes().to_vec(),
                 transaction_sequence_number: 850895721u32.to_be_bytes().to_vec(),
             }
-    ))]
+    )))]
     #[case::remote_resume_response(
-        UserOperation::RemoteResumeResponse(
+        UserOperation::Response(UserResponse::RemoteResume(
             RemoteResumeResponse{
                 suspend_indication: true,
                 transaction_status: TransactionStatus::Active,
                 source_entity_id: 2045853u32.to_be_bytes().to_vec(),
                 transaction_sequence_number: 85790329u32.to_be_bytes().to_vec(),
             }
-    ))]
+    )))]
     #[case::sfo_request(
         UserOperation::SFORequest(
             SFORequest{

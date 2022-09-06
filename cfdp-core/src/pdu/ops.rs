@@ -12,6 +12,7 @@ use super::{
         FileSizeSensitive, FileStatusCode, NakOrKeepAlive, PDUEncode, SegmentEncode, SegmentedData,
         TransactionStatus,
     },
+    UserOperation,
 };
 use crate::filestore::ChecksumType;
 
@@ -172,6 +173,13 @@ impl PDUEncode for MessageToUser {
     fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
         let message_text = read_length_value_pair(buffer)?;
         Ok(Self { message_text })
+    }
+}
+impl From<UserOperation> for MessageToUser {
+    fn from(op: UserOperation) -> Self {
+        Self {
+            message_text: op.encode(),
+        }
     }
 }
 
@@ -891,7 +899,7 @@ mod test {
 
     use crate::pdu::{
         AppendStatus, CreateFileStatus, DenyStatus, FileStoreAction, FileStoreResponse,
-        FileStoreStatus, HandlerCode, RenameStatus, ReplaceStatus, UserOperation,
+        FileStoreStatus, HandlerCode, ProxyOperation, RenameStatus, ReplaceStatus, UserOperation,
     };
 
     use rstest::rstest;
@@ -1253,9 +1261,7 @@ mod test {
             }
         ),
         MetadataTLV::MessageToUser(
-            MessageToUser{
-                message_text: UserOperation::ProxyPutCancel.encode()
-            }
+            MessageToUser::from(UserOperation::ProxyOperation(ProxyOperation::ProxyPutCancel))
         )
     ])]
     #[case(vec![

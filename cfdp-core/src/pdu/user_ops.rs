@@ -669,8 +669,8 @@ impl PDUEncode for RemoteStatusReportResponse {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteSuspendRequest {
-    source_entity_id: EntityID,
-    transaction_sequence_number: TransactionSeqNum,
+    pub source_entity_id: EntityID,
+    pub transaction_sequence_number: TransactionSeqNum,
 }
 impl PDUEncode for RemoteSuspendRequest {
     type PDUType = Self;
@@ -717,10 +717,10 @@ impl PDUEncode for RemoteSuspendRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteSuspendResponse {
-    suspend_indication: bool,
-    transaction_status: TransactionStatus,
-    source_entity_id: EntityID,
-    transaction_sequence_number: TransactionSeqNum,
+    pub suspend_indication: bool,
+    pub transaction_status: TransactionStatus,
+    pub source_entity_id: EntityID,
+    pub transaction_sequence_number: TransactionSeqNum,
 }
 impl PDUEncode for RemoteSuspendResponse {
     type PDUType = Self;
@@ -782,8 +782,8 @@ impl PDUEncode for RemoteSuspendResponse {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteResumeRequest {
-    source_entity_id: EntityID,
-    transaction_sequence_number: TransactionSeqNum,
+    pub source_entity_id: EntityID,
+    pub transaction_sequence_number: TransactionSeqNum,
 }
 impl PDUEncode for RemoteResumeRequest {
     type PDUType = Self;
@@ -829,10 +829,10 @@ impl PDUEncode for RemoteResumeRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteResumeResponse {
-    suspend_indication: bool,
-    transaction_status: TransactionStatus,
-    source_entity_id: EntityID,
-    transaction_sequence_number: TransactionSeqNum,
+    pub suspend_indication: bool,
+    pub transaction_status: TransactionStatus,
+    pub source_entity_id: EntityID,
+    pub transaction_sequence_number: TransactionSeqNum,
 }
 impl PDUEncode for RemoteResumeResponse {
     type PDUType = Self;

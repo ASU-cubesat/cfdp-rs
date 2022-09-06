@@ -26,8 +26,9 @@ use crate::{
         error::PDUError, CRCFlag, Condition, DirectoryListingResponse, EntityID,
         FaultHandlerAction, FileSizeFlag, FileSizeSensitive, FileStoreRequest, ListingResponseCode,
         MessageToUser, OriginatingTransactionIDMessage, PDUEncode, PDUHeader, ProxyOperation,
-        ProxyPutRequest, SegmentedData, TransactionSeqNum, TransactionStatus, TransmissionMode,
-        UserOperation, UserRequest, UserResponse, VariableID, PDU,
+        ProxyPutRequest, RemoteSuspendResponse, SegmentedData, TransactionSeqNum,
+        TransactionStatus, TransmissionMode, UserOperation, UserRequest, UserResponse, VariableID,
+        PDU,
     },
     transaction::{
         Action, Metadata, Transaction, TransactionConfig, TransactionError, TransactionID,
@@ -703,7 +704,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                     // this is a message to user
                     match self.message_rx.try_recv() {
                         Ok((origin_id, tx_mode, messages)) => {
-                            let (put_requests, user_reqs, _responses, cancel_id, _other_messages) =
+                            let (put_requests, user_reqs, responses, cancel_id, other_messages) =
                                 categorize_user_msg(&origin_id, messages);
 
                             for request in put_requests {
@@ -862,56 +863,150 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                         }
                                     }
                                     UserRequest::RemoteStatusReport(_) => todo!(),
-                                    UserRequest::RemoteSuspend(_) => todo!(),
-                                    UserRequest::RemoteResume(_) => todo!(),
+                                    UserRequest::RemoteSuspend(suspend_req) => {
+                                        let suspend_indication = match transaction_channels.get(&(
+                                            suspend_req.source_entity_id.clone(),
+                                            suspend_req.transaction_sequence_number.clone(),
+                                        )) {
+                                            Some(chan) => chan.send(Command::Suspend).is_ok(),
+                                            None => false,
+                                        };
+
+                                        let request = PutRequest {
+                                            source_filename: "".into(),
+                                            destination_filename: "".into(),
+                                            destination_entity_id: origin_id.0.clone(),
+                                            transmission_mode: tx_mode.clone(),
+                                            filestore_requests: vec![],
+                                            message_to_user: vec![
+                                                MessageToUser::from(
+                                                    UserOperation::OriginatingTransactionIDMessage(
+                                                        OriginatingTransactionIDMessage {
+                                                            source_entity_id: origin_id.0.clone(),
+                                                            transaction_sequence_number: origin_id
+                                                                .1
+                                                                .clone(),
+                                                        },
+                                                    ),
+                                                ),
+                                                MessageToUser::from(UserOperation::Response(
+                                                    UserResponse::RemoteSuspend(
+                                                        RemoteSuspendResponse {
+                                                            suspend_indication,
+                                                            transaction_status:
+                                                                TransactionStatus::Unrecognized,
+                                                            source_entity_id: suspend_req
+                                                                .source_entity_id,
+                                                            transaction_sequence_number:
+                                                                suspend_req
+                                                                    .transaction_sequence_number,
+                                                        },
+                                                    ),
+                                                )),
+                                            ],
+                                        };
+
+                                        let sequence_number = sequence_num.get_and_increment();
+                                        let entity_config = self
+                                            .entity_configs
+                                            .get(&request.destination_entity_id)
+                                            .unwrap_or(&self.default_config);
+
+                                        let transport_tx = self
+                                            .transport_tx_map
+                                            .get(&request.destination_entity_id)
+                                            .expect("No transport for Entity ID.")
+                                            .clone();
+
+                                        let (id, sender, handle) = Self::spawn_send_transaction(
+                                            request,
+                                            sequence_number,
+                                            self.entity_id.clone(),
+                                            transport_tx,
+                                            entity_config,
+                                            self.filestore.clone(),
+                                            self.message_tx.clone(),
+                                            false,
+                                        )?;
+                                        self.transaction_handles.push(handle);
+                                        transaction_channels.insert(id, sender);
+                                    }
+                                    UserRequest::RemoteResume(resume_request) => {
+                                        let suspend_indication = match transaction_channels.get(&(
+                                            resume_request.source_entity_id.clone(),
+                                            resume_request.transaction_sequence_number.clone(),
+                                        )) {
+                                            Some(chan) => chan.send(Command::Resume).is_ok(),
+                                            None => false,
+                                        };
+
+                                        let request = PutRequest {
+                                            source_filename: "".into(),
+                                            destination_filename: "".into(),
+                                            destination_entity_id: origin_id.0.clone(),
+                                            transmission_mode: tx_mode.clone(),
+                                            filestore_requests: vec![],
+                                            message_to_user: vec![
+                                                MessageToUser::from(
+                                                    UserOperation::OriginatingTransactionIDMessage(
+                                                        OriginatingTransactionIDMessage {
+                                                            source_entity_id: origin_id.0.clone(),
+                                                            transaction_sequence_number: origin_id
+                                                                .1
+                                                                .clone(),
+                                                        },
+                                                    ),
+                                                ),
+                                                MessageToUser::from(UserOperation::Response(
+                                                    UserResponse::RemoteSuspend(
+                                                        RemoteSuspendResponse {
+                                                            suspend_indication,
+                                                            transaction_status:
+                                                                TransactionStatus::Unrecognized,
+                                                            source_entity_id: resume_request
+                                                                .source_entity_id,
+                                                            transaction_sequence_number:
+                                                                resume_request
+                                                                    .transaction_sequence_number,
+                                                        },
+                                                    ),
+                                                )),
+                                            ],
+                                        };
+
+                                        let sequence_number = sequence_num.get_and_increment();
+                                        let entity_config = self
+                                            .entity_configs
+                                            .get(&request.destination_entity_id)
+                                            .unwrap_or(&self.default_config);
+
+                                        let transport_tx = self
+                                            .transport_tx_map
+                                            .get(&request.destination_entity_id)
+                                            .expect("No transport for Entity ID.")
+                                            .clone();
+
+                                        let (id, sender, handle) = Self::spawn_send_transaction(
+                                            request,
+                                            sequence_number,
+                                            self.entity_id.clone(),
+                                            transport_tx,
+                                            entity_config,
+                                            self.filestore.clone(),
+                                            self.message_tx.clone(),
+                                            false,
+                                        )?;
+                                        self.transaction_handles.push(handle);
+                                        transaction_channels.insert(id, sender);
+                                    }
                                 }
                             }
-
-                            // Check for Directory Listing Requests
-                            // if Some(dir_list_req) = user_ops.as_slice().find_map(|msg| match )
-                            // decode UserOperation
-                            // match UserOperation::decode(&mut msg.message_text.as_slice()) {
-                            //     Ok(operation) => {
-                            //         // match and perform operation
-                            //         match operation {
-                            //             UserOperation::OriginatingTransactionIDMessage(_) => {
-                            //                 todo!()
-                            //             }
-                            //             UserOperation::ProxyPutRequest(_) => todo!(),
-                            //             UserOperation::ProxyPutResponse(_) => todo!(),
-                            //             UserOperation::ProxyMessageToUser(_) => todo!(),
-                            //             UserOperation::ProxyFileStoreRequest(_) => todo!(),
-                            //             UserOperation::ProxyFileStoreResponse(_) => todo!(),
-                            //             UserOperation::ProxyFaultHandlerOverride(_) => todo!(),
-                            //             UserOperation::ProxyTransmissionMode(_) => todo!(),
-                            //             UserOperation::ProxyFlowLabel(_) => todo!(),
-                            //             UserOperation::ProxySegmentationControl(_) => todo!(),
-                            //             UserOperation::ProxyPutCancel => todo!(),
-                            //             UserOperation::DirectoryListingRequest(_) => todo!(),
-                            //             UserOperation::DirectoryListingResponse(_) => todo!(),
-                            //             UserOperation::RemoteStatusReportRequest(_) => todo!(),
-                            //             UserOperation::RemoteStatusReportResponse(_) => todo!(),
-                            //             UserOperation::RemoteSuspendRequest(_) => todo!(),
-                            //             UserOperation::RemoteSuspendResponse(_) => todo!(),
-                            //             UserOperation::RemoteResumeRequest(_) => todo!(),
-                            //             UserOperation::RemoteResumeResponse(_) => todo!(),
-                            //             UserOperation::SFORequest(_) => todo!(),
-                            //             UserOperation::SFOMessageToUser(_) => todo!(),
-                            //             UserOperation::SFOFlowLabel(_) => todo!(),
-                            //             UserOperation::SFOFaultHandlerOverride(_) => todo!(),
-                            //             UserOperation::SFOFileStoreRequest(_) => todo!(),
-                            //             UserOperation::SFOFileStoreResponse(_) => todo!(),
-                            //             UserOperation::SFOReport(_) => todo!(),
-                            //         }
-                            //     }
-                            //     Err(PDUError::UnexpectedIdentifier(_recv, _expected)) => {
-                            //         // try to print out message
-                            //     }
-                            //     Err(_error) => {
-                            //         // error handling message decoding.
-                            //         // what to do here?
-                            //     }
-                            // }
+                            for response in responses {
+                                // log indication of the response received!
+                            }
+                            for message in other_messages {
+                                // also log this!
+                            }
                         }
                         Err(TryRecvError::Empty) => {
                             // was not actually ready, go back to selection

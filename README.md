@@ -2,4 +2,4 @@
 
 
 # cfdp-rs
-A rust implementation of the CCSDS File Transfer Protocol (CFDP).
+A rust implementation of the CCSDS File Delivery Protocol (CFDP).

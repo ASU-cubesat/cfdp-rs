@@ -402,10 +402,10 @@ fn categorize_user_msg(
         .find(|&msg| msg == &UserOperation::ProxyOperation(ProxyOperation::ProxyPutCancel))
         .and_then(|_| {
             user_ops.iter().find_map(|msg| {
-                if let UserOperation::OriginatingTransactionIDMessage(origin_id) = msg {
+                if let UserOperation::OriginatingTransactionIDMessage(origin) = msg {
                     Some((
-                        origin_id.source_entity_id.clone(),
-                        origin_id.transaction_sequence_number.clone(),
+                        origin.source_entity_id.clone(),
+                        origin.transaction_sequence_number.clone(),
                     ))
                 } else {
                     None
@@ -1269,7 +1269,10 @@ impl<T: FileStore + Send + 'static> Drop for Daemon<T> {
 mod test {
     use super::*;
 
-    use crate::pdu::{FileStoreAction, FileStoreRequest};
+    use crate::pdu::{
+        DeliveryCode, DirectoryListingRequest, FileStatusCode, FileStoreAction, FileStoreRequest,
+        ProxyPutResponse, RemoteResumeRequest,
+    };
 
     use rstest::rstest;
 
@@ -1428,5 +1431,119 @@ mod test {
         };
         assert_eq!(1, recovered.len());
         assert_eq!(expected, recovered[0])
+    }
+
+    #[test]
+    fn categorize_user_message() {
+        let origin_id = (EntityID::from(55_u16), TransactionSeqNum::from(12_u16));
+        let proxy_ops = vec![
+            ProxyOperation::ProxyFileStoreRequest(FileStoreRequest {
+                action_code: FileStoreAction::CreateDirectory,
+                first_filename: "/tmp".as_bytes().to_vec(),
+                second_filename: vec![],
+            }),
+            ProxyOperation::ProxyPutRequest(ProxyPutRequest {
+                destination_entity_id: EntityID::from(3_u16),
+                source_filename: "test_file".into(),
+                destination_filename: "out_file".into(),
+            }),
+            ProxyOperation::ProxyFileStoreRequest(FileStoreRequest {
+                action_code: FileStoreAction::AppendFile,
+                first_filename: "first_file".as_bytes().to_vec(),
+                second_filename: "second_file".as_bytes().to_vec(),
+            }),
+            ProxyOperation::ProxyMessageToUser(MessageToUser {
+                message_text: "help".as_bytes().to_vec(),
+            }),
+            ProxyOperation::ProxyTransmissionMode(TransmissionMode::Acknowledged),
+        ];
+
+        let put_requests = vec![PutRequest {
+            source_filename: "test_file".into(),
+            destination_filename: "out_file".into(),
+            destination_entity_id: EntityID::from(3_u16),
+            transmission_mode: TransmissionMode::Acknowledged,
+            filestore_requests: vec![
+                FileStoreRequest {
+                    action_code: FileStoreAction::CreateDirectory,
+                    first_filename: "/tmp".as_bytes().to_vec(),
+                    second_filename: vec![],
+                },
+                FileStoreRequest {
+                    action_code: FileStoreAction::AppendFile,
+                    first_filename: "first_file".as_bytes().to_vec(),
+                    second_filename: "second_file".as_bytes().to_vec(),
+                },
+            ],
+            message_to_user: vec![
+                MessageToUser {
+                    message_text: "help".as_bytes().to_vec(),
+                },
+                MessageToUser::from(UserOperation::OriginatingTransactionIDMessage(
+                    OriginatingTransactionIDMessage {
+                        source_entity_id: EntityID::from(55_u16),
+                        transaction_sequence_number: TransactionSeqNum::from(12_u16),
+                    },
+                )),
+            ],
+        }];
+
+        let requests = vec![
+            UserRequest::DirectoryListing(DirectoryListingRequest {
+                directory_name: "/home/do".into(),
+                directory_filename: "/home/do.listing".into(),
+            }),
+            UserRequest::RemoteResume(RemoteResumeRequest {
+                source_entity_id: EntityID::from(1_u16),
+                transaction_sequence_number: TransactionSeqNum::from(2_u16),
+            }),
+        ];
+
+        let responses = vec![UserResponse::ProxyPut(ProxyPutResponse {
+            condition: Condition::FileChecksumFailure,
+            delivery_code: DeliveryCode::Incomplete,
+            file_status: FileStatusCode::Unreported,
+        })];
+
+        let other_message = vec![MessageToUser {
+            message_text: "help".as_bytes().to_vec(),
+        }];
+
+        let cancel_id: TransactionID = (EntityID::from(16_u16), TransactionSeqNum::from(3_u32));
+
+        let mut user_messages: Vec<MessageToUser> = proxy_ops
+            .iter()
+            .map(|msg| MessageToUser::from(UserOperation::ProxyOperation(msg.clone())))
+            .chain(
+                responses
+                    .iter()
+                    .map(|resp| MessageToUser::from(UserOperation::Response(resp.clone()))),
+            )
+            .chain(
+                requests
+                    .iter()
+                    .map(|req| MessageToUser::from(UserOperation::Request(req.clone()))),
+            )
+            .chain(other_message.clone().into_iter())
+            .collect();
+        user_messages.extend(vec![
+            MessageToUser::from(UserOperation::ProxyOperation(
+                ProxyOperation::ProxyPutCancel,
+            )),
+            MessageToUser::from(UserOperation::OriginatingTransactionIDMessage(
+                OriginatingTransactionIDMessage {
+                    source_entity_id: EntityID::from(16_u16),
+                    transaction_sequence_number: TransactionSeqNum::from(3_u32),
+                },
+            )),
+        ]);
+
+        let (proxy, req, resp, cancel, message) = categorize_user_msg(&origin_id, user_messages);
+
+        assert_eq!(put_requests, proxy);
+        assert_eq!(requests, req);
+        assert_eq!(responses, resp);
+        assert_eq!(cancel_id, cancel.unwrap());
+        assert_eq!(other_message, message)
     }
 }

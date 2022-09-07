@@ -475,7 +475,7 @@ pub struct Daemon<T: FileStore + Send + 'static> {
     // the vector of transportation tx channel connections
     transport_tx_map: HashMap<EntityID, Sender<(VariableID, PDU)>>,
     // the vector of transportation rx channel connections
-    transport_rx_vec: Vec<Receiver<(VariableID, PDU)>>,
+    transport_rx_vec: Vec<Receiver<PDU>>,
     // // mapping of unique transaction ids to channels used to talk to each transaction
     // transaction_channels: HashMap<(EntityID, Vec<u8>), Sender<Command>>,
     // the underlying filestore used by this Daemon
@@ -1107,7 +1107,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                     // but are 0 indexed in the vec
                     let rx = &self.transport_rx_vec[val - 1];
                     match rx.try_recv() {
-                        Ok((_, pdu)) => {
+                        Ok(pdu) => {
                             let key = (
                                 pdu.header.source_entity_id.clone(),
                                 pdu.header.transaction_sequence_number.clone(),

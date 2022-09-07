@@ -88,8 +88,8 @@ impl Error for PrimitiveError {
     }
 }
 
-#[cfg_attr(test, derive(Debug, Clone, PartialEq))]
-pub(crate) struct PutRequest {
+#[cfg_attr(test, derive(Debug, Clone, PartialEq, Eq))]
+pub struct PutRequest {
     /// Bytes of the source filename, can be null if length is 0.
     pub source_filename: Utf8PathBuf,
     /// Bytes of the destination filename, can be null if length is 0.
@@ -212,8 +212,8 @@ fn construct_metadata(
 
 type PrimitiveResult<T> = Result<T, PrimitiveError>;
 
-#[cfg_attr(test, derive(Debug, Clone, PartialEq))]
-pub(crate) enum UserPrimitive {
+#[cfg_attr(test, derive(Debug, Clone, PartialEq, Eq))]
+pub enum UserPrimitive {
     Put(PutRequest),
     Cancel(EntityID, TransactionSeqNum),
     Suspend(EntityID, TransactionSeqNum),

@@ -89,6 +89,7 @@ impl Error for PrimitiveError {
 }
 
 #[cfg_attr(test, derive(Debug, Clone, PartialEq, Eq))]
+/// Necessary Configuration for a Put.Request operation
 pub struct PutRequest {
     /// Bytes of the source filename, can be null if length is 0.
     pub source_filename: Utf8PathBuf,
@@ -213,11 +214,18 @@ fn construct_metadata(
 type PrimitiveResult<T> = Result<T, PrimitiveError>;
 
 #[cfg_attr(test, derive(Debug, Clone, PartialEq, Eq))]
+/// Possible User Primitives sent from a end user application to the
+/// interprocess pipe.
 pub enum UserPrimitive {
+    /// Initiate a Put transaction with the specificed [PutRequest] configuration.
     Put(PutRequest),
+    /// Cancel the give transaction.
     Cancel(EntityID, TransactionSeqNum),
+    /// Suspend operations of the given transaction.
     Suspend(EntityID, TransactionSeqNum),
+    /// Resume operations of the given transaction.
     Resume(EntityID, TransactionSeqNum),
+    /// Report progress of the given transaction.
     Report(EntityID, TransactionSeqNum),
 }
 impl UserPrimitive {
@@ -288,23 +296,32 @@ impl UserPrimitive {
     }
 }
 
-pub enum Command {
-    PDU(PDU),
+/// Lightweight commands
+enum Command {
+    Pdu(PDU),
     Cancel,
     Suspend,
     Resume,
+    // may find a use for abandon in the future.
+    #[allow(unused)]
     Abandon,
 }
 
+/// Configuration parameters for transactions which may change based on the receiving entity.
 pub struct EntityConfig {
+    /// Mapping to decide how each fault type should be handled
     fault_handler_override: HashMap<Condition, FaultHandlerAction>,
+    /// Maximum file size fragment this entity can receive
     file_size_segment: u16,
     // The number of timeouts before a fault is issued on a transaction
     default_transaction_max_count: u32,
     // default number of seconds for transaction timers to wait
     default_inactivity_timeout: i64,
+    /// Flag to determine if the CRC protocol should be used
     crc_flag: CRCFlag,
+    /// Whether closure whould be requested on Unacknowledged transactions.
     closure_requested: bool,
+    /// The default ChecksumType to use for file transfers
     checksum_type: ChecksumType,
 }
 
@@ -517,7 +534,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                 match transaction_rx.try_recv() {
                     Ok(command) => {
                         match command {
-                            Command::PDU(pdu) => {
+                            Command::Pdu(pdu) => {
                                 match transaction.process_pdu(pdu) {
                                     Ok(()) => {}
                                     Err(crate::transaction::TransactionError::UnexpectedPDU(
@@ -626,7 +643,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                 match transaction_rx.try_recv() {
                     Ok(command) => {
                         match command {
-                            Command::PDU(pdu) => {
+                            Command::Pdu(pdu) => {
                                 match transaction.process_pdu(pdu) {
                                     Ok(()) => {}
                                     Err(crate::transaction::TransactionError::UnexpectedPDU(
@@ -662,6 +679,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
         Ok((id, transaction_tx, handle))
     }
 
+    /// This function will consist of the main logic loop in any daemon process.
     pub fn manage_transactions(&mut self) -> Result<(), Box<dyn std::error::Error + '_>> {
         // Boolean to track if a kill signal is received
         let terminate = Arc::new(AtomicBool::new(false));
@@ -1122,7 +1140,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                 });
 
                             match channel
-                                .send_timeout(Command::PDU(pdu.clone()), Duration::from_millis(500))
+                                .send_timeout(Command::Pdu(pdu.clone()), Duration::from_millis(500))
                             {
                                 Ok(()) => {}
                                 Err(SendTimeoutError::Timeout(msg))

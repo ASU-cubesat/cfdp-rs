@@ -4,6 +4,7 @@ pub mod pdu;
 pub(crate) mod timer;
 pub mod transaction;
 pub mod transport;
+pub mod user;
 
 #[cfg(test)]
 mod tests {

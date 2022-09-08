@@ -36,6 +36,11 @@ use crate::{
     },
 };
 
+#[cfg(windows)]
+pub(crate) const SOCKET_ADDR: &str = "cfdp";
+#[cfg(not(windows))]
+pub(crate) const SOCKET_ADDR: &str = "/var/run/cdfp.socket";
+
 #[derive(Debug)]
 pub enum PrimitiveError {
     IO(IOError),
@@ -696,7 +701,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                 .expect("Unable to register termination signals.");
         }
 
-        let listener = LocalSocketListener::bind("/tmp/cdfp.socket")?;
+        let listener = LocalSocketListener::bind(SOCKET_ADDR)?;
         // setting to non-blocking lets us grab conections that are open
         // without blocking the entire thread.
         listener.set_nonblocking(true)?;

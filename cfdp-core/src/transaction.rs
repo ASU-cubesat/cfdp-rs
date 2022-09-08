@@ -13,7 +13,7 @@ use crossbeam_channel::{SendError, Sender};
 use interprocess::local_socket::LocalSocketStream;
 
 use crate::{
-    daemon::PutRequest,
+    daemon::{PutRequest, SOCKET_ADDR},
     filestore::{ChecksumType, FileChecksum, FileStore, FileStoreError},
     pdu::{
         ACKSubDirective, CRCFlag, Condition, DeliveryCode, Direction, EndOfFile, EntityID,
@@ -1047,8 +1047,7 @@ impl<T: FileStore> Transaction<T> {
                                 // we should be able to connect to the socket we are running
                                 // just fine. but we can ignore errors per
                                 // CCSDS 727.0-B-5  § 6.2.5.1.2
-                                if let Ok(mut conn) = LocalSocketStream::connect("/tmp/cdfp.socket")
-                                {
+                                if let Ok(mut conn) = LocalSocketStream::connect(SOCKET_ADDR) {
                                     let _ = conn.write_all(req.encode().as_slice());
                                 }
                             }

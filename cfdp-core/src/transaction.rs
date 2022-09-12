@@ -43,6 +43,14 @@ pub enum TransactionError {
     MissingMetadata(TransactionID),
     MissingNak,
     NoChecksum,
+    Report(
+        SendError<(
+            TransactionID,
+            TransactionState,
+            TransactionStatus,
+            Condition,
+        )>,
+    ),
 }
 impl From<FileStoreError> for TransactionError {
     fn from(error: FileStoreError) -> Self {
@@ -62,6 +70,27 @@ impl From<SendError<(VariableID, PDU)>> for TransactionError {
 impl From<SendError<(TransactionID, TransmissionMode, Vec<MessageToUser>)>> for TransactionError {
     fn from(error: SendError<(TransactionID, TransmissionMode, Vec<MessageToUser>)>) -> Self {
         Self::UserMessage(error)
+    }
+}
+impl
+    From<
+        SendError<(
+            TransactionID,
+            TransactionState,
+            TransactionStatus,
+            Condition,
+        )>,
+    > for TransactionError
+{
+    fn from(
+        error: SendError<(
+            TransactionID,
+            TransactionState,
+            TransactionStatus,
+            Condition,
+        )>,
+    ) -> Self {
+        Self::Report(error)
     }
 }
 impl<T> From<PoisonError<T>> for TransactionError {
@@ -91,6 +120,9 @@ impl Display for TransactionError {
             Self::MissingMetadata(id) => write!(f, "Metadata missing for transaction: {id:?}."),
             Self::MissingNak => write!(f, "No NAKs present. Cannot send missing data."),
             Self::NoChecksum => write!(f, "No Checksum received. Cannot verify file integrity."),
+            Self::Report(report) => {
+                write!(f, "Unable to send report to Daemon process. {:?}.", report)
+            }
         }
     }
 }
@@ -108,6 +140,7 @@ impl Error for TransactionError {
             Self::MissingMetadata(_) => None,
             Self::MissingNak => None,
             Self::NoChecksum => None,
+            Self::Report(_) => None,
         }
     }
 }
@@ -120,6 +153,14 @@ enum WaitingOn {
     AckFin,
     Nak,
     MissingData,
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransactionState {
+    Active,
+    Suspended,
+    Terminated,
 }
 
 #[repr(u8)]
@@ -226,6 +267,9 @@ pub struct Transaction<T: FileStore> {
     checksum: Option<u32>,
     // tracker to know what to do when a timeout occurs
     waiting_on: WaitingOn,
+    // The current state of the transaction.
+    // Used to determine when the thread should be killed
+    state: TransactionState,
 }
 impl<T: FileStore> Transaction<T> {
     /// Start a new Transaction with the given [configuration](TransactionConfig)
@@ -269,6 +313,7 @@ impl<T: FileStore> Transaction<T> {
             ack_timer,
             checksum: None,
             waiting_on: WaitingOn::None,
+            state: TransactionState::Active,
         };
         transaction.inactivity_timer.restart();
         transaction
@@ -278,10 +323,28 @@ impl<T: FileStore> Transaction<T> {
         &self.status
     }
 
+    pub(crate) fn get_state(&self) -> &TransactionState {
+        &self.state
+    }
+
     pub fn get_mode(&self) -> TransmissionMode {
         self.config.transmission_mode.clone()
     }
-
+    pub fn generate_report(
+        &self,
+    ) -> (
+        TransactionID,
+        TransactionState,
+        TransactionStatus,
+        Condition,
+    ) {
+        (
+            self.id(),
+            self.get_state().clone(),
+            self.get_status().clone(),
+            self.condition.clone(),
+        )
+    }
     fn get_header(
         &mut self,
         direction: Direction,
@@ -496,9 +559,14 @@ impl<T: FileStore> Transaction<T> {
     }
 
     pub fn all_data_sent(&mut self) -> TransactionResult<bool> {
-        let handle = self.get_handle()?;
-        Ok(handle.stream_position().map_err(FileStoreError::IO)?
-            == handle.metadata().map_err(FileStoreError::IO)?.len())
+        match self.is_file_transfer() {
+            true => {
+                let handle = self.get_handle()?;
+                Ok(handle.stream_position().map_err(FileStoreError::IO)?
+                    == handle.metadata().map_err(FileStoreError::IO)?.len())
+            }
+            false => Ok(true),
+        }
     }
 
     pub fn send_missing_data(&mut self) -> TransactionResult<()> {
@@ -646,7 +714,13 @@ impl<T: FileStore> Transaction<T> {
 
     pub fn abandon(&mut self) {
         self.status = TransactionStatus::Terminated;
+        self.shutdown();
     }
+
+    pub fn shutdown(&mut self) {
+        self.state = TransactionState::Terminated;
+    }
+
     pub fn cancel(&mut self) -> TransactionResult<()> {
         self.condition = Condition::CancelReceived;
         match (&self.config.action_type, &self.config.transmission_mode) {
@@ -655,7 +729,7 @@ impl<T: FileStore> Transaction<T> {
             }
             (Action::Send, TransmissionMode::Unacknowledged) => {
                 self.send_eof(Some(self.config.source_entity_id.clone()))?;
-                self.abandon();
+                self.shutdown();
                 Ok(())
             }
             (Action::Receive, TransmissionMode::Acknowledged) => self.send_finished(None),
@@ -669,7 +743,7 @@ impl<T: FileStore> Transaction<T> {
                     // need to check on fault_location
                     self.send_finished(None)?;
                 }
-                self.abandon();
+                self.shutdown();
                 Ok(())
             }
         }
@@ -680,6 +754,7 @@ impl<T: FileStore> Transaction<T> {
         self.ack_timer.pause();
         self.nak_timer.pause();
         self.inactivity_timer.pause();
+        self.state = TransactionState::Suspended;
     }
 
     pub fn resume(&mut self) {
@@ -689,6 +764,8 @@ impl<T: FileStore> Transaction<T> {
             WaitingOn::Nak => self.nak_timer.restart(),
             _ => {}
         }
+        self.state = TransactionState::Active;
+
         // what to do about the other timers?
         // We need to track if one is needed?
     }
@@ -1052,9 +1129,7 @@ impl<T: FileStore> Transaction<T> {
                                 }
                             }
                         }
-                        // abandon sounds scary but it just tells the
-                        // thread we are done here
-                        self.abandon();
+                        self.shutdown();
                         Ok(())
                     }
                     Operations::Nak(nak) => {
@@ -1203,9 +1278,7 @@ impl<T: FileStore> Transaction<T> {
                                         // but nothing else to do
                                         // shutdown
                                     }
-                                    // abandon sounds scary but it just tells the
-                                    // thread we are done here
-                                    self.abandon();
+                                    self.shutdown();
                                     Ok(())
                                 }
                                 false => Err(TransactionError::UnexpectedPDU((
@@ -1308,9 +1381,7 @@ impl<T: FileStore> Transaction<T> {
                                 {
                                     self.ack_timer.pause();
                                     self.waiting_on = WaitingOn::None;
-                                    // abandon sounds scary but it just tells the
-                                    // thread we are done here
-                                    self.abandon();
+                                    self.shutdown();
                                     Ok(())
                                 } else {
                                     // No other ACKs are expected for a receiver

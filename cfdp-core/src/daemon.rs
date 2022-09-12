@@ -14,10 +14,12 @@ use std::{
 };
 
 use camino::Utf8PathBuf;
-use crossbeam_channel::{unbounded, Receiver, Select, SendTimeoutError, Sender, TryRecvError};
+use crossbeam_channel::{
+    bounded, unbounded, Receiver, Select, SendTimeoutError, Sender, TryRecvError,
+};
 use interprocess::local_socket::LocalSocketListener;
 use itertools::{Either, Itertools};
-use log::{error, info};
+use log::{error, info, warn};
 use num_traits::FromPrimitive;
 use signal_hook::{consts::TERM_SIGNALS, flag};
 
@@ -33,6 +35,7 @@ use crate::{
     },
     transaction::{
         Action, Metadata, Transaction, TransactionConfig, TransactionError, TransactionID,
+        TransactionState,
     },
 };
 
@@ -307,6 +310,14 @@ enum Command {
     Cancel,
     Suspend,
     Resume,
+    Report(
+        Sender<(
+            TransactionID,
+            TransactionState,
+            TransactionStatus,
+            Condition,
+        )>,
+    ),
     // may find a use for abandon in the future.
     #[allow(unused)]
     Abandon,
@@ -501,6 +512,30 @@ pub struct Daemon<T: FileStore + Send + 'static> {
     proxy_id_map: HashMap<TransactionID, TransactionID>,
 }
 impl<T: FileStore + Send + 'static> Daemon<T> {
+    pub fn new(
+        entity_id: EntityID,
+        sequence_num: TransactionSeqNum,
+        transport_tx_map: HashMap<EntityID, Sender<(VariableID, PDU)>>,
+        transport_rx_vec: Vec<Receiver<PDU>>,
+        filestore: Arc<Mutex<T>>,
+        entity_configs: HashMap<VariableID, EntityConfig>,
+        default_config: EntityConfig,
+    ) -> Self {
+        let (message_tx, message_rx) = unbounded();
+        Self {
+            transaction_handles: vec![],
+            transport_tx_map,
+            transport_rx_vec,
+            filestore,
+            message_rx,
+            message_tx,
+            entity_configs,
+            default_config,
+            entity_id,
+            sequence_num,
+            proxy_id_map: HashMap::new(),
+        }
+    }
     fn spawn_receive_transaction(
         header: &PDUHeader,
         transport_tx: Sender<(VariableID, PDU)>,
@@ -529,7 +564,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
         let id = transaction.id();
 
         let handle = thread::spawn(move || {
-            while transaction.get_status() != &TransactionStatus::Terminated {
+            while transaction.get_state() != &TransactionState::Terminated {
                 // this function handles any timeouts and resends
                 transaction.monitor_timeout()?;
                 // if instant mode send naks
@@ -554,7 +589,10 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                             Command::Resume => transaction.resume(),
                             Command::Cancel => transaction.cancel()?,
                             Command::Suspend => transaction.suspend(),
-                            Command::Abandon => transaction.abandon(),
+                            Command::Abandon => transaction.shutdown(),
+                            Command::Report(sender) => {
+                                sender.send(transaction.generate_report())?
+                            }
                         }
                     }
                     Err(TryRecvError::Empty) => {
@@ -623,7 +661,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
 
             let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
             transaction.put(metadata)?;
-            while transaction.get_status() != &TransactionStatus::Terminated {
+            while transaction.get_state() != &TransactionState::Terminated {
                 // this function handles any timeouts and resends
                 transaction.monitor_timeout()?;
                 // if we have recieved a NAK send the missing data
@@ -639,7 +677,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                         match transaction.get_mode() {
                             // for unacknowledged transactions.
                             // this is the end
-                            TransmissionMode::Unacknowledged => transaction.abandon(),
+                            TransmissionMode::Unacknowledged => transaction.shutdown(),
                             TransmissionMode::Acknowledged => {}
                         }
                     }
@@ -662,7 +700,10 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                             Command::Resume => transaction.resume(),
                             Command::Cancel => transaction.cancel()?,
                             Command::Suspend => transaction.suspend(),
-                            Command::Abandon => transaction.abandon(),
+                            Command::Abandon => transaction.shutdown(),
+                            Command::Report(sender) => {
+                                sender.send(transaction.generate_report())?
+                            }
                         }
                     }
                     Err(TryRecvError::Empty) => {
@@ -889,6 +930,37 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                     }
                                     UserRequest::RemoteStatusReport(report_request) => {
                                         // TODO currently it is not possible to get the status of the working threads
+                                        let report = transaction_channels
+                                            .get(&(
+                                                report_request.source_entity_id.clone(),
+                                                report_request.transaction_sequence_number.clone(),
+                                            ))
+                                            .and_then(|chan| {
+                                                let (tx, rx) = bounded(1);
+                                                chan.send(Command::Report(tx))
+                                                    .map(|_| rx.recv().ok())
+                                                    .ok()
+                                            })
+                                            .flatten();
+                                        let response = {
+                                            match report {
+                                                Some(data) => RemoteStatusReportResponse {
+                                                    transaction_status: data.2,
+                                                    source_entity_id: data.0 .0,
+                                                    transaction_sequence_number: data.0 .1,
+                                                    response_code: true,
+                                                },
+                                                None => RemoteStatusReportResponse {
+                                                    transaction_status:
+                                                        TransactionStatus::Unrecognized,
+                                                    source_entity_id: report_request
+                                                        .source_entity_id,
+                                                    transaction_sequence_number: report_request
+                                                        .transaction_sequence_number,
+                                                    response_code: false,
+                                                },
+                                            }
+                                        };
                                         let request = PutRequest {
                                             source_filename: "".into(),
                                             destination_filename: "".into(),
@@ -907,18 +979,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                                     ),
                                                 ),
                                                 MessageToUser::from(UserOperation::Response(
-                                                    UserResponse::RemoteStatusReport(
-                                                        RemoteStatusReportResponse {
-                                                            transaction_status:
-                                                                TransactionStatus::Unrecognized,
-                                                            source_entity_id: report_request
-                                                                .source_entity_id,
-                                                            transaction_sequence_number:
-                                                                report_request
-                                                                    .transaction_sequence_number,
-                                                            response_code: false,
-                                                        },
-                                                    ),
+                                                    UserResponse::RemoteStatusReport(response),
                                                 )),
                                             ],
                                         };
@@ -1242,7 +1303,27 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                         Some(channel) => channel.send(Command::Resume)?,
                         None => {}
                     },
-                    UserPrimitive::Report(_id, _seq) => todo!(),
+                    UserPrimitive::Report(id, seq) => {
+                        match transaction_channels.get(&(id.clone(), seq.clone())) {
+                            Some(channel) => {
+                                let (sender, rx) = bounded(1);
+                                let report = channel
+                                    .send(Command::Report(sender))
+                                    .map(|_| rx.recv().ok())
+                                    .ok()
+                                    .flatten();
+                                if let Some(data) = report {
+                                    info!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", data.0.0, data.0.1, data.1, data.2, data.3)
+                                }
+                            }
+                            None => {
+                                warn!(
+                                    "No Transaction communication channel found for ({:?}, {:?}).",
+                                    id, seq
+                                )
+                            }
+                        }
+                    }
                 }
             }
             // join any handles that have completed

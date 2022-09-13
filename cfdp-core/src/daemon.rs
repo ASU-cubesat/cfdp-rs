@@ -305,6 +305,7 @@ impl UserPrimitive {
 }
 
 /// Lightweight commands
+#[derive(Debug)]
 enum Command {
     Pdu(PDU),
     Cancel,
@@ -695,6 +696,9 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
 
             let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
             transaction.put(metadata)?;
+
+            let mut do_once: bool = true;
+
             while transaction.get_state() != &TransactionState::Terminated {
                 // this function handles any timeouts and resends
                 transaction.monitor_timeout()?;
@@ -706,7 +710,10 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                     true => {
                         // if all data has been sent (for the first time)
                         // send eof
-                        transaction.send_eof(None)?;
+                        if do_once {
+                            transaction.send_eof(None)?;
+                            do_once = false;
+                        }
 
                         match transaction.get_mode() {
                             // for unacknowledged transactions.
@@ -765,6 +772,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
     /// This function will consist of the main logic loop in any daemon process.
     pub fn manage_transactions(&mut self) -> Result<(), Box<dyn std::error::Error + '_>> {
         let mut sequence_num = self.sequence_num.clone();
+
         // Create the selection object to check if any messages are available.
         // the returned index will be used to determine which action to take.
 
@@ -1239,7 +1247,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                         .entity_configs
                                         .get(&key.0)
                                         .unwrap_or(&self.default_config);
-
+                                    println!("Command {msg:?}");
                                     let (_id, new_channel, handle) =
                                         Self::spawn_receive_transaction(
                                             &pdu.header,

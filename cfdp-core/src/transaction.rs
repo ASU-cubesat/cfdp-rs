@@ -719,6 +719,9 @@ impl<T: FileStore> Transaction<T> {
 
     pub fn shutdown(&mut self) {
         self.state = TransactionState::Terminated;
+        self.ack_timer.pause();
+        self.nak_timer.pause();
+        self.inactivity_timer.pause();
     }
 
     pub fn cancel(&mut self) -> TransactionResult<()> {
@@ -1322,6 +1325,7 @@ impl<T: FileStore> Transaction<T> {
                             self.finalize_receive()?;
                             self.nak_timer.pause();
                             self.waiting_on = WaitingOn::None;
+
                             self.send_finished(if self.condition == Condition::NoError {
                                 None
                             } else {

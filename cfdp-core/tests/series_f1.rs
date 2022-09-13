@@ -64,8 +64,13 @@ fn f1s1() {
         )]);
     let temp_dir = TempDir::new().unwrap();
 
-    let utf8_path =
-        Utf8PathBuf::from_path_buf(temp_dir.into_path()).expect("Unable to make utf8 tempdir");
+    let utf8_path = Utf8PathBuf::from(
+        temp_dir
+            .path()
+            .as_os_str()
+            .to_str()
+            .expect("Unable to coerce tmp path to String."),
+    );
 
     let filestore = Arc::new(Mutex::new(NativeFileStore::new(&utf8_path)));
     filestore

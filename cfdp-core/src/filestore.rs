@@ -843,7 +843,6 @@ f,test.txt,{s5},{t5}
 
         match &action_code {
             FileStoreAction::DeleteFile | FileStoreAction::DenyFile => {
-                println!("file: {:?}", filestore.get_native_path(path));
                 filestore.create_file(path).expect("Unable to create.")
             }
             FileStoreAction::RemoveDirectory | FileStoreAction::DenyDirectory => {

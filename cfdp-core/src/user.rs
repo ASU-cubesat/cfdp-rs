@@ -5,19 +5,22 @@ use crate::{
     transaction::TransactionID,
 };
 
+use camino::Utf8PathBuf;
 use interprocess::local_socket::LocalSocketStream;
 
 pub struct User {
-    connection: LocalSocketStream,
+    socket: Utf8PathBuf,
 }
 impl User {
-    pub fn new() -> Result<Self, IoError> {
+    pub fn new(socket_address: Option<&str>) -> Result<Self, IoError> {
+        let socket = socket_address.unwrap_or(SOCKET_ADDR);
         Ok(Self {
-            connection: LocalSocketStream::connect(SOCKET_ADDR)?,
+            socket: Utf8PathBuf::from(socket),
         })
     }
     fn send(&mut self, primitive: UserPrimitive) -> Result<(), IoError> {
-        self.connection.write_all(primitive.encode().as_slice())
+        let mut connection = LocalSocketStream::connect(self.socket.as_str())?;
+        connection.write_all(primitive.encode().as_slice())
     }
 
     pub fn put(&mut self, request: PutRequest) -> Result<(), IoError> {

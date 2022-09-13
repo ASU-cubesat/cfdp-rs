@@ -3,7 +3,7 @@ use std::{
     error::Error,
     fmt::Display,
     fs::OpenOptions,
-    io::{Error as IOError, Read, Write},
+    io::{Error as IOError, ErrorKind, Read, Write},
     string::FromUtf8Error,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -21,7 +21,6 @@ use interprocess::local_socket::LocalSocketListener;
 use itertools::{Either, Itertools};
 use log::{error, info, warn};
 use num_traits::FromPrimitive;
-use signal_hook::{consts::TERM_SIGNALS, flag};
 
 use crate::{
     filestore::{ChecksumType, FileStore},
@@ -37,6 +36,7 @@ use crate::{
         Action, Metadata, Transaction, TransactionConfig, TransactionError, TransactionID,
         TransactionState,
     },
+    transport::PDUTransport,
 };
 
 #[cfg(windows)]
@@ -96,7 +96,7 @@ impl Error for PrimitiveError {
     }
 }
 
-#[cfg_attr(test, derive(Debug, Clone, PartialEq, Eq))]
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Necessary Configuration for a Put.Request operation
 pub struct PutRequest {
     /// Bytes of the source filename, can be null if length is 0.
@@ -221,7 +221,7 @@ fn construct_metadata(
 
 type PrimitiveResult<T> = Result<T, PrimitiveError>;
 
-#[cfg_attr(test, derive(Debug, Clone, PartialEq, Eq))]
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Possible User Primitives sent from a end user application to the
 /// interprocess pipe.
 pub enum UserPrimitive {
@@ -323,22 +323,23 @@ enum Command {
     Abandon,
 }
 
+#[derive(Clone)]
 /// Configuration parameters for transactions which may change based on the receiving entity.
 pub struct EntityConfig {
     /// Mapping to decide how each fault type should be handled
-    fault_handler_override: HashMap<Condition, FaultHandlerAction>,
+    pub fault_handler_override: HashMap<Condition, FaultHandlerAction>,
     /// Maximum file size fragment this entity can receive
-    file_size_segment: u16,
+    pub file_size_segment: u16,
     // The number of timeouts before a fault is issued on a transaction
-    default_transaction_max_count: u32,
+    pub default_transaction_max_count: u32,
     // default number of seconds for transaction timers to wait
-    default_inactivity_timeout: i64,
+    pub default_inactivity_timeout: i64,
     /// Flag to determine if the CRC protocol should be used
-    crc_flag: CRCFlag,
+    pub crc_flag: CRCFlag,
     /// Whether closure whould be requested on Unacknowledged transactions.
-    closure_requested: bool,
+    pub closure_requested: bool,
     /// The default ChecksumType to use for file transfers
-    checksum_type: ChecksumType,
+    pub checksum_type: ChecksumType,
 }
 
 type SpawnerTuple = (
@@ -510,19 +511,50 @@ pub struct Daemon<T: FileStore + Send + 'static> {
     sequence_num: TransactionSeqNum,
     // a mapping of originating transaction IDs to currently running Proxy Transactions
     proxy_id_map: HashMap<TransactionID, TransactionID>,
+    // termination signal sent to children threads
+    terminate: Arc<AtomicBool>,
+
+    listener: LocalSocketListener,
 }
 impl<T: FileStore + Send + 'static> Daemon<T> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         entity_id: EntityID,
         sequence_num: TransactionSeqNum,
-        transport_tx_map: HashMap<EntityID, Sender<(VariableID, PDU)>>,
-        transport_rx_vec: Vec<Receiver<PDU>>,
+        transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>>,
         filestore: Arc<Mutex<T>>,
         entity_configs: HashMap<VariableID, EntityConfig>,
         default_config: EntityConfig,
-    ) -> Self {
+        terminate: Arc<AtomicBool>,
+        socket_address: Option<&str>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let socket = socket_address.unwrap_or(SOCKET_ADDR);
+
+        let listener = LocalSocketListener::bind(socket)?;
+        // setting to non-blocking lets us grab conections that are open
+        // without blocking the entire thread.
+        listener.set_nonblocking(true)?;
+
         let (message_tx, message_rx) = unbounded();
-        Self {
+
+        let mut transport_tx_map: HashMap<EntityID, Sender<(VariableID, PDU)>> = HashMap::new();
+        let mut transport_rx_vec = vec![];
+
+        for (vec, mut transport) in transport_map.into_iter() {
+            let (pdu_send, pdu_receive) = unbounded();
+            let (remote_send, remote_receive) = unbounded();
+
+            vec.iter().for_each(|id| {
+                transport_tx_map.insert(id.clone(), remote_send.clone());
+            });
+
+            transport_rx_vec.push(pdu_receive);
+
+            let signal = terminate.clone();
+
+            thread::spawn(move || transport.pdu_handler(signal, pdu_send, remote_receive));
+        }
+        Ok(Self {
             transaction_handles: vec![],
             transport_tx_map,
             transport_rx_vec,
@@ -534,7 +566,9 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
             entity_id,
             sequence_num,
             proxy_id_map: HashMap::new(),
-        }
+            terminate,
+            listener,
+        })
     }
     fn spawn_receive_transaction(
         header: &PDUHeader,
@@ -693,8 +727,11 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                         _info,
                                     )) => {
                                         // log some info on the unexpected PDU?
+                                        println!("Unexpected PDU {_info:?}");
                                     }
-                                    Err(err) => return Err(err),
+                                    Err(err) => {
+                                        return Err(err);
+                                    }
                                 }
                             }
                             Command::Resume => transaction.resume(),
@@ -727,31 +764,11 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
 
     /// This function will consist of the main logic loop in any daemon process.
     pub fn manage_transactions(&mut self) -> Result<(), Box<dyn std::error::Error + '_>> {
-        // Boolean to track if a kill signal is received
-        let terminate = Arc::new(AtomicBool::new(false));
-
-        for sig in TERM_SIGNALS {
-            // When terminated by a second term signal, exit with exit code 1.
-            // This will do nothing the first time (because term_now is false).
-            flag::register_conditional_shutdown(*sig, 1, Arc::clone(&terminate))
-                .expect("Unable to register termination signals.");
-            // But this will "arm" the above for the second time, by setting it to true.
-            // The order of registering these is important, if you put this one first, it will
-            // first arm and then terminate ‒ all in the first round.
-            flag::register(*sig, Arc::clone(&terminate))
-                .expect("Unable to register termination signals.");
-        }
-
-        let listener = LocalSocketListener::bind(SOCKET_ADDR)?;
-        // setting to non-blocking lets us grab conections that are open
-        // without blocking the entire thread.
-        listener.set_nonblocking(true)?;
-
         let mut sequence_num = self.sequence_num.clone();
         // Create the selection object to check if any messages are available.
         // the returned index will be used to determine which action to take.
-        let mut selector = Select::new();
 
+        let mut selector = Select::new();
         selector.recv(&self.message_rx);
 
         for rx in self.transport_rx_vec.iter() {
@@ -764,11 +781,11 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
 
         let mut cleanup = Instant::now();
 
-        while !terminate.load(Ordering::Relaxed) {
-            match selector.ready_timeout(Duration::from_millis(500)) {
-                Ok(val) if val == 0 => {
+        while !self.terminate.load(Ordering::Relaxed) {
+            match selector.select_timeout(Duration::from_millis(500)) {
+                Ok(oper) if oper.index() == 0 => {
                     // this is a message to user
-                    match self.message_rx.try_recv() {
+                    match oper.recv(&self.message_rx) {
                         Ok((origin_id, tx_mode, messages)) => {
                             let (put_requests, user_reqs, responses, cancel_id, other_messages) =
                                 categorize_user_msg(&origin_id, messages);
@@ -1156,23 +1173,27 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                 info!("Received Messages I can't decifer {:?}", message);
                             }
                         }
-                        Err(TryRecvError::Empty) => {
-                            // was not actually ready, go back to selection
-                        }
-                        Err(TryRecvError::Disconnected) => {
-                            // The transport instance disconnected?
-                            // what do we do?
-                            // remove from possible selections
-                            selector.remove(val);
+                        // Err(TryRecvError::Empty) => {
+                        //     // was not actually ready, go back to selection
+                        // }
+                        // Err(TryRecvError::Disconnected) => {
+                        //     // The transport instance disconnected?
+                        //     // what do we do?
+                        //     // remove from possible selections
+                        //     selector.remove(oper.index());
+                        // }
+                        Err(err) => {
+                            println!("Error on user msg {}", err)
                         }
                     };
                 }
-                Ok(val) if val > 0 => {
+                Ok(oper) if oper.index() > 0 => {
                     // this is a pdu from a transport
                     // subtract 1 because the transport indices start at 1 for the selector
                     // but are 0 indexed in the vec
+                    let val = oper.index();
                     let rx = &self.transport_rx_vec[val - 1];
-                    match rx.try_recv() {
+                    match oper.recv(rx) {
                         Ok(pdu) => {
                             let key = (
                                 pdu.header.source_entity_id.clone(),
@@ -1188,7 +1209,6 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                         .entity_configs
                                         .get(&key.0)
                                         .unwrap_or(&self.default_config);
-
                                     let (_id, channel, handle) = Self::spawn_receive_transaction(
                                         &pdu.header,
                                         // TODO! Fill in this error
@@ -1239,96 +1259,116 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                 }
                             };
                         }
-                        Err(TryRecvError::Empty) => {
-                            // was not actually ready, go back to selection
+                        // Err(TryRecvError::Empty) => {
+                        //     // was not actually ready, go back to selection
+                        // }
+                        // Err(TryRecvError::Disconnected) => {
+                        //     // The transport instance disconnected?
+                        //     // what do we do?
+                        //     // remove from possible selections
+                        //     selector.remove(val);
+                        // }
+                        Err(_err) => {
+                            // the channel is empty and disconnected
+                            // this should only happen when we are cleaning up.
                         }
-                        Err(TryRecvError::Disconnected) => {
-                            // The transport instance disconnected?
-                            // what do we do?
-                            // remove from possible selections
-                            selector.remove(val);
-                        }
-                    }
+                    };
                 }
                 Err(_) => {
                     // timeout occurred
                 }
                 Ok(_) => unreachable!(),
-            }
+            };
 
             // process any message from users from the outside application API
             // interprocess looks like a good choice for this
 
-            for mut conn in listener.incoming().filter_map(Result::ok) {
-                let mut buffer = Vec::<u8>::new();
-                let _nread = conn.read_to_end(&mut buffer)?;
-                let primitive = UserPrimitive::decode(&mut &buffer[..])?;
-                match primitive {
-                    UserPrimitive::Put(request) => {
-                        let sequence_number = sequence_num.get_and_increment();
+            match self.listener.accept() {
+                Ok(mut conn) => {
+                    let mut buffer = Vec::<u8>::new();
+                    let _nread = conn.read_to_end(&mut buffer)?;
+                    let primitive = UserPrimitive::decode(&mut &buffer[..])?;
+                    match primitive {
+                        UserPrimitive::Put(request) => {
+                            let sequence_number = sequence_num.get_and_increment();
 
-                        let entity_config = self
-                            .entity_configs
-                            .get(&request.destination_entity_id)
-                            .unwrap_or(&self.default_config);
+                            let entity_config = self
+                                .entity_configs
+                                .get(&request.destination_entity_id)
+                                .unwrap_or(&self.default_config);
 
-                        let transport_tx = self
-                            .transport_tx_map
-                            .get(&request.destination_entity_id)
-                            .expect("No transport for Entity ID.")
-                            .clone();
-
-                        let (id, sender, handle) = Self::spawn_send_transaction(
-                            request,
-                            sequence_number,
-                            self.entity_id.clone(),
-                            transport_tx,
-                            entity_config,
-                            self.filestore.clone(),
-                            self.message_tx.clone(),
-                            false,
-                        )?;
-                        self.transaction_handles.push(handle);
-                        transaction_channels.insert(id, sender);
-                    }
-                    UserPrimitive::Cancel(id, seq) => match transaction_channels.get(&(id, seq)) {
-                        Some(channel) => channel.send(Command::Cancel)?,
-                        None => {}
-                    },
-                    UserPrimitive::Suspend(id, seq) => match transaction_channels.get(&(id, seq)) {
-                        Some(channel) => channel.send(Command::Suspend)?,
-                        None => {}
-                    },
-                    UserPrimitive::Resume(id, seq) => match transaction_channels.get(&(id, seq)) {
-                        Some(channel) => channel.send(Command::Resume)?,
-                        None => {}
-                    },
-                    UserPrimitive::Report(id, seq) => {
-                        match transaction_channels.get(&(id.clone(), seq.clone())) {
-                            Some(channel) => {
-                                let (sender, rx) = bounded(1);
-                                let report = channel
-                                    .send(Command::Report(sender))
-                                    .map(|_| rx.recv().ok())
-                                    .ok()
-                                    .flatten();
-                                if let Some(data) = report {
-                                    info!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", data.0.0, data.0.1, data.1, data.2, data.3)
-                                }
+                            let transport_tx = self
+                                .transport_tx_map
+                                .get(&request.destination_entity_id)
+                                .expect("No transport for Entity ID.")
+                                .clone();
+                            let (id, sender, handle) = Self::spawn_send_transaction(
+                                request,
+                                sequence_number,
+                                self.entity_id.clone(),
+                                transport_tx,
+                                entity_config,
+                                self.filestore.clone(),
+                                self.message_tx.clone(),
+                                false,
+                            )?;
+                            self.transaction_handles.push(handle);
+                            transaction_channels.insert(id, sender);
+                        }
+                        UserPrimitive::Cancel(id, seq) => {
+                            match transaction_channels.get(&(id, seq)) {
+                                Some(channel) => channel.send(Command::Cancel)?,
+                                None => {}
                             }
-                            None => {
-                                warn!(
+                        }
+                        UserPrimitive::Suspend(id, seq) => {
+                            match transaction_channels.get(&(id, seq)) {
+                                Some(channel) => channel.send(Command::Suspend)?,
+                                None => {}
+                            }
+                        }
+                        UserPrimitive::Resume(id, seq) => {
+                            match transaction_channels.get(&(id, seq)) {
+                                Some(channel) => channel.send(Command::Resume)?,
+                                None => {}
+                            }
+                        }
+                        UserPrimitive::Report(id, seq) => {
+                            match transaction_channels.get(&(id.clone(), seq.clone())) {
+                                Some(channel) => {
+                                    let (sender, rx) = bounded(1);
+                                    let report = channel
+                                        .send(Command::Report(sender))
+                                        .map(|_| rx.recv().ok())
+                                        .ok()
+                                        .flatten();
+                                    if let Some(data) = report {
+                                        info!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", data.0.0, data.0.1, data.1, data.2, data.3)
+                                    }
+                                }
+                                None => {
+                                    warn!(
                                     "No Transaction communication channel found for ({:?}, {:?}).",
                                     id, seq
                                 )
+                                }
                             }
                         }
-                    }
+                    };
                 }
-            }
+                Err(ref e)
+                    if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut =>
+                {
+                    // continue to trying to send
+                }
+                Err(e) => {
+                    error!("encountered IO error: {e}");
+                    return Err(Box::new(e));
+                }
+            };
             // join any handles that have completed
             // maybe should only run every so often?
-            if cleanup.elapsed() >= Duration::from_secs(10) {
+            if cleanup.elapsed() >= Duration::from_secs(1) {
                 let mut ind = 0;
                 while ind < self.transaction_handles.len() {
                     if self.transaction_handles[ind].is_finished() {

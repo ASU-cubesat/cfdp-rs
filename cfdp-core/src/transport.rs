@@ -20,12 +20,14 @@ use crate::pdu::{PDUEncode, VariableID, PDU};
 #[derive(Debug)]
 pub enum TransportError {
     Io(IoError),
+    #[cfg(feature = "uart")]
     Serial(SerialError),
 }
 impl std::fmt::Display for TransportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(error) => error.fmt(f),
+            #[cfg(feature = "uart")]
             Self::Serial(error) => error.fmt(f),
         }
     }
@@ -34,6 +36,7 @@ impl std::error::Error for TransportError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(source) => Some(source),
+            #[cfg(feature = "uart")]
             Self::Serial(source) => Some(source),
         }
     }
@@ -44,6 +47,7 @@ impl From<IoError> for TransportError {
         Self::Io(err)
     }
 }
+#[cfg(feature = "uart")]
 impl From<SerialError> for TransportError {
     fn from(err: SerialError) -> Self {
         Self::Serial(err)

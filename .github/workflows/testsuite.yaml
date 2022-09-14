@@ -57,7 +57,7 @@ jobs:
           components: llvm-tools-preview
 
       - name: Install libudev
-        if: ${{ runner.os }} == "ubuntu"
+        if: ${{ matrix.os }} == "ubuntu"
         run: sudo apt install libudev-dev
 
       - name: Install cargo-llvm-cov

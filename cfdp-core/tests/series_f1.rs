@@ -18,6 +18,7 @@ mod common;
 use common::get_filestore;
 
 #[rstest]
+#[timeout(Duration::from_secs(60))]
 // Series F1
 // Sequence 1 Test
 // Test goal:
@@ -49,6 +50,7 @@ fn f1s1(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
 }
 
 #[rstest]
+#[timeout(Duration::from_secs(60))]
 // Series F1
 // Sequence 2 Test
 // Test goal:
@@ -80,6 +82,7 @@ fn f1s2(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
 }
 
 #[rstest]
+#[timeout(Duration::from_secs(60))]
 // Series F1
 // Sequence 3 Test
 // Test goal:
@@ -92,6 +95,40 @@ fn f1s3(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
 
     let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
     let out_file: Utf8PathBuf = "remote/medium_f1s3.txt".into();
+    let path_to_out = filestore.lock().unwrap().get_native_path(&out_file);
+
+    user.put(PutRequest {
+        source_filename: "local/medium.txt".into(),
+        destination_filename: out_file,
+        destination_entity_id: EntityID::from(1_u16),
+        transmission_mode: TransmissionMode::Acknowledged,
+        filestore_requests: vec![],
+        message_to_user: vec![],
+    })
+    .expect("unable to send put request.");
+
+    while !path_to_out.exists() {
+        thread::sleep(Duration::from_millis(50))
+    }
+
+    assert!(path_to_out.exists())
+}
+
+#[rstest]
+#[timeout(Duration::from_secs(60))]
+// Series F1
+// Sequence 4 Test
+// Test goal:
+//  - Recovery of Lost data
+// Configuration:
+//  - Acknowledged
+//  - File Size: Medium
+//  - ~1% data lost in transport
+fn f1s4(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
+    let (local_path, filestore) = get_filestore;
+
+    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let out_file: Utf8PathBuf = "remote/medium_f1s4.txt".into();
     let path_to_out = filestore.lock().unwrap().get_native_path(&out_file);
 
     user.put(PutRequest {

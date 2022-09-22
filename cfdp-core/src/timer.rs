@@ -59,7 +59,12 @@ impl Timer {
     }
 
     pub fn timeout_occured(&self) -> bool {
-        *self.occurred.lock().unwrap()
+        let value = *self.occurred.lock().unwrap();
+        if value {
+            // reset to see if another timout occurred next time
+            *self.occurred.lock().unwrap() = false;
+        }
+        value
     }
 
     #[cfg(test)]

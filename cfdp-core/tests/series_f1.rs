@@ -1,4 +1,6 @@
 use std::{
+    collections::HashMap,
+    net::ToSocketAddrs,
     sync::{Arc, Mutex},
     thread,
     time::Duration,
@@ -9,16 +11,18 @@ use cfdp_core::{
     daemon::PutRequest,
     filestore::{FileStore, NativeFileStore},
     pdu::{EntityID, TransmissionMode},
+    transport::{PDUTransport, UdpTransport},
     user::User,
 };
 
-use rstest::rstest;
+use rstest::{fixture, rstest};
 
 mod common;
-use common::get_filestore;
+use common::{create_daemons, get_filestore, tempdir_fixture, JoD, LossyTransport, TransportIssue};
+use tempfile::TempDir;
 
 #[rstest]
-#[timeout(Duration::from_secs(60))]
+#[timeout(Duration::from_secs(2))]
 // Series F1
 // Sequence 1 Test
 // Test goal:
@@ -44,13 +48,13 @@ fn f1s1(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
     .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(50))
+        thread::sleep(Duration::from_millis(1))
     }
     assert!(path_to_out.exists())
 }
 
 #[rstest]
-#[timeout(Duration::from_secs(60))]
+#[timeout(Duration::from_secs(2))]
 // Series F1
 // Sequence 2 Test
 // Test goal:
@@ -76,13 +80,13 @@ fn f1s2(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
     .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(50))
+        thread::sleep(Duration::from_millis(1))
     }
     assert!(path_to_out.exists())
 }
 
 #[rstest]
-#[timeout(Duration::from_secs(60))]
+#[timeout(Duration::from_secs(2))]
 // Series F1
 // Sequence 3 Test
 // Test goal:
@@ -108,14 +112,83 @@ fn f1s3(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
     .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(50))
+        thread::sleep(Duration::from_millis(1))
     }
 
     assert!(path_to_out.exists())
 }
 
+#[fixture]
+#[once]
+fn fixture_f1s4(
+    tempdir_fixture: &TempDir,
+    get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>),
+) -> (
+    String,
+    JoD<'static, ()>,
+    JoD<'static, ()>,
+    Arc<Mutex<NativeFileStore>>,
+) {
+    let (_, filestore) = get_filestore;
+    let entity_map = {
+        let mut temp = HashMap::new();
+        temp.insert(
+            EntityID::from(0_u16),
+            "127.0.0.1:55347"
+                .to_socket_addrs()
+                .expect("Improperly Formatted socket Address.")
+                .next()
+                .unwrap(),
+        );
+        temp.insert(
+            EntityID::from(1_u16),
+            "127.0.0.1:55348"
+                .to_socket_addrs()
+                .expect("Improperly Formatted socket Address.")
+                .next()
+                .unwrap(),
+        );
+        temp
+    };
+
+    let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+        HashMap::from([(
+            vec![EntityID::from(0_u16)],
+            Box::new(
+                UdpTransport::new("127.0.0.1:55348", entity_map.clone())
+                    .expect("Unable to make UdpTransport."),
+            ) as Box<dyn PDUTransport + Send>,
+        )]);
+
+    let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+        HashMap::from([(
+            vec![EntityID::from(1_u16)],
+            Box::new(
+                LossyTransport::new("127.0.0.1:55347", entity_map, TransportIssue::Rate(13))
+                    .expect("Unable to make Lossy Transport."),
+            ) as Box<dyn PDUTransport + Send>,
+        )]);
+
+    let path = Utf8PathBuf::from(
+        tempdir_fixture
+            .path()
+            .as_os_str()
+            .to_str()
+            .expect("Unable to coerce tmp path to String."),
+    );
+    let (path, local, remote) = create_daemons(
+        path.as_path(),
+        filestore.clone(),
+        local_transport_map,
+        remote_transport_map,
+        "f1s4_local.socket",
+        "f1s4_remote.socket",
+    );
+    (path, local, remote, filestore.clone())
+}
+
 #[rstest]
-#[timeout(Duration::from_secs(60))]
+#[timeout(Duration::from_secs(30))]
 // Series F1
 // Sequence 4 Test
 // Test goal:
@@ -124,9 +197,9 @@ fn f1s3(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
 //  - Acknowledged
 //  - File Size: Medium
 //  - ~1% data lost in transport
-fn f1s4(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
-    let (local_path, filestore) = get_filestore;
-
+fn f1s4(fixture_f1s4: &'static (String, JoD<()>, JoD<()>, Arc<Mutex<NativeFileStore>>)) {
+    // let mut user = User::new(Some(_local_path))
+    let (local_path, _local, _remote, filestore) = fixture_f1s4;
     let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
     let out_file: Utf8PathBuf = "remote/medium_f1s4.txt".into();
     let path_to_out = filestore.lock().unwrap().get_native_path(&out_file);
@@ -142,7 +215,215 @@ fn f1s4(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
     .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(50))
+        thread::sleep(Duration::from_millis(1))
+    }
+
+    assert!(path_to_out.exists())
+}
+
+#[fixture]
+#[once]
+fn fixture_f1s5(
+    tempdir_fixture: &TempDir,
+    get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>),
+) -> (
+    String,
+    JoD<'static, ()>,
+    JoD<'static, ()>,
+    Arc<Mutex<NativeFileStore>>,
+) {
+    let (_, filestore) = get_filestore;
+    let entity_map = {
+        let mut temp = HashMap::new();
+        temp.insert(
+            EntityID::from(0_u16),
+            "127.0.0.1:55349"
+                .to_socket_addrs()
+                .expect("Improperly Formatted socket Address.")
+                .next()
+                .unwrap(),
+        );
+        temp.insert(
+            EntityID::from(1_u16),
+            "127.0.0.1:55350"
+                .to_socket_addrs()
+                .expect("Improperly Formatted socket Address.")
+                .next()
+                .unwrap(),
+        );
+        temp
+    };
+
+    let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+        HashMap::from([(
+            vec![EntityID::from(0_u16)],
+            Box::new(
+                UdpTransport::new("127.0.0.1:55350", entity_map.clone())
+                    .expect("Unable to make UdpTransport."),
+            ) as Box<dyn PDUTransport + Send>,
+        )]);
+
+    let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+        HashMap::from([(
+            vec![EntityID::from(1_u16)],
+            Box::new(
+                LossyTransport::new("127.0.0.1:55349", entity_map, TransportIssue::Duplicate(13))
+                    .expect("Unable to make Lossy Transport."),
+            ) as Box<dyn PDUTransport + Send>,
+        )]);
+
+    let path = Utf8PathBuf::from(
+        tempdir_fixture
+            .path()
+            .as_os_str()
+            .to_str()
+            .expect("Unable to coerce tmp path to String."),
+    );
+    let (path, local, remote) = create_daemons(
+        path.as_path(),
+        filestore.clone(),
+        local_transport_map,
+        remote_transport_map,
+        "f1s5_local.socket",
+        "f1s5_remote.socket",
+    );
+    (path, local, remote, filestore.clone())
+}
+
+#[rstest]
+#[timeout(Duration::from_secs(30))]
+// Series F1
+// Sequence 5 Test
+// Test goal:
+//  - Ignoring duplicated data
+// Configuration:
+//  - Acknowledged
+//  - File Size: Medium
+//  - ~1% data duplicated in transport
+fn f1s5(fixture_f1s5: &'static (String, JoD<()>, JoD<()>, Arc<Mutex<NativeFileStore>>)) {
+    // let mut user = User::new(Some(_local_path))
+    let (local_path, _local, _remote, filestore) = fixture_f1s5;
+    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+
+    let out_file: Utf8PathBuf = "remote/medium_f1s5.txt".into();
+    let path_to_out = filestore.lock().unwrap().get_native_path(&out_file);
+
+    user.put(PutRequest {
+        source_filename: "local/medium.txt".into(),
+        destination_filename: out_file,
+        destination_entity_id: EntityID::from(1_u16),
+        transmission_mode: TransmissionMode::Acknowledged,
+        filestore_requests: vec![],
+        message_to_user: vec![],
+    })
+    .expect("unable to send put request.");
+
+    while !path_to_out.exists() {
+        thread::sleep(Duration::from_millis(1))
+    }
+
+    assert!(path_to_out.exists())
+}
+
+#[fixture]
+#[once]
+fn fixture_f1s6(
+    tempdir_fixture: &TempDir,
+    get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>),
+) -> (
+    String,
+    JoD<'static, ()>,
+    JoD<'static, ()>,
+    Arc<Mutex<NativeFileStore>>,
+) {
+    let (_, filestore) = get_filestore;
+    let entity_map = {
+        let mut temp = HashMap::new();
+        temp.insert(
+            EntityID::from(0_u16),
+            "127.0.0.1:55351"
+                .to_socket_addrs()
+                .expect("Improperly Formatted socket Address.")
+                .next()
+                .unwrap(),
+        );
+        temp.insert(
+            EntityID::from(1_u16),
+            "127.0.0.1:55352"
+                .to_socket_addrs()
+                .expect("Improperly Formatted socket Address.")
+                .next()
+                .unwrap(),
+        );
+        temp
+    };
+
+    let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+        HashMap::from([(
+            vec![EntityID::from(0_u16)],
+            Box::new(
+                UdpTransport::new("127.0.0.1:55352", entity_map.clone())
+                    .expect("Unable to make UdpTransport."),
+            ) as Box<dyn PDUTransport + Send>,
+        )]);
+
+    let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+        HashMap::from([(
+            vec![EntityID::from(1_u16)],
+            Box::new(
+                LossyTransport::new("127.0.0.1:55351", entity_map, TransportIssue::Duplicate(13))
+                    .expect("Unable to make Lossy Transport."),
+            ) as Box<dyn PDUTransport + Send>,
+        )]);
+
+    let path = Utf8PathBuf::from(
+        tempdir_fixture
+            .path()
+            .as_os_str()
+            .to_str()
+            .expect("Unable to coerce tmp path to String."),
+    );
+    let (path, local, remote) = create_daemons(
+        path.as_path(),
+        filestore.clone(),
+        local_transport_map,
+        remote_transport_map,
+        "f1s6_local.socket",
+        "f1s6_remote.socket",
+    );
+    (path, local, remote, filestore.clone())
+}
+
+#[rstest]
+#[timeout(Duration::from_secs(30))]
+// Series F1
+// Sequence 6 Test
+// Test goal:
+//  - Reorder Data test
+// Configuration:
+//  - Acknowledged
+//  - File Size: Medium
+//  - ~1% data re-ordered in transport
+fn f1s6(fixture_f1s6: &'static (String, JoD<()>, JoD<()>, Arc<Mutex<NativeFileStore>>)) {
+    // let mut user = User::new(Some(_local_path))
+    let (local_path, _local, _remote, filestore) = fixture_f1s6;
+    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+
+    let out_file: Utf8PathBuf = "remote/medium_f1s6.txt".into();
+    let path_to_out = filestore.lock().unwrap().get_native_path(&out_file);
+
+    user.put(PutRequest {
+        source_filename: "local/medium.txt".into(),
+        destination_filename: out_file,
+        destination_entity_id: EntityID::from(1_u16),
+        transmission_mode: TransmissionMode::Acknowledged,
+        filestore_requests: vec![],
+        message_to_user: vec![],
+    })
+    .expect("unable to send put request.");
+
+    while !path_to_out.exists() {
+        thread::sleep(Duration::from_millis(1))
     }
 
     assert!(path_to_out.exists())

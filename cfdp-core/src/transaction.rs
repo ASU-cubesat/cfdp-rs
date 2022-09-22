@@ -2412,10 +2412,7 @@ mod test {
 
         let path = {
             let mut buf = Utf8PathBuf::new();
-            buf.push(format!(
-                "test_eof_{:}.dat",
-                config.transmission_mode.clone() as u8
-            ));
+            buf.push(format!("test_eof_{:}.dat", config.transmission_mode as u8));
             buf
         };
 

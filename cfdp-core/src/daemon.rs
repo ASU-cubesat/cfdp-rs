@@ -1324,21 +1324,18 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                             transaction_channels.insert(id, sender);
                         }
                         UserPrimitive::Cancel(id, seq) => {
-                            match transaction_channels.get(&(id, seq)) {
-                                Some(channel) => channel.send(Command::Cancel)?,
-                                None => {}
+                            if let Some(channel) = transaction_channels.get(&(id, seq)) {
+                                channel.send(Command::Cancel)?
                             }
                         }
                         UserPrimitive::Suspend(id, seq) => {
-                            match transaction_channels.get(&(id, seq)) {
-                                Some(channel) => channel.send(Command::Suspend)?,
-                                None => {}
+                            if let Some(channel) = transaction_channels.get(&(id, seq)) {
+                                channel.send(Command::Suspend)?
                             }
                         }
                         UserPrimitive::Resume(id, seq) => {
-                            match transaction_channels.get(&(id, seq)) {
-                                Some(channel) => channel.send(Command::Resume)?,
-                                None => {}
+                            if let Some(channel) = transaction_channels.get(&(id, seq)) {
+                                channel.send(Command::Resume)?
                             }
                         }
                         UserPrimitive::Report(id, seq) => {

@@ -570,6 +570,7 @@ impl<T: FileStore> Transaction<T> {
     }
 
     pub fn send_missing_data(&mut self) -> TransactionResult<()> {
+        self.inactivity_timer.restart();
         match self.naks.pop_front() {
             Some(request) => {
                 let (offset, length) = match (request.start_offset, request.end_offset) {
@@ -1023,6 +1024,7 @@ impl<T: FileStore> Transaction<T> {
 
     pub fn monitor_timeout(&mut self) -> TransactionResult<()> {
         if self.inactivity_timer.timeout_occured()
+            && self.inactivity_timer.limit_reached()
             && !self.proceed_despite_fault(Condition::InactivityDetected)?
         {
             return Ok(());
@@ -1321,16 +1323,20 @@ impl<T: FileStore> Transaction<T> {
                         // need a block here for if we have sent naks
                         // in deferred mode. a second EoF is not sent
                         // so we should check if we have the whole thing?
-                        if self.waiting_on == WaitingOn::Nak && self.naks.is_empty() {
-                            self.finalize_receive()?;
-                            self.nak_timer.pause();
-                            self.waiting_on = WaitingOn::None;
-
-                            self.send_finished(if self.condition == Condition::NoError {
-                                None
-                            } else {
-                                Some(self.config.destination_entity_id.clone())
-                            })?;
+                        if self.waiting_on == WaitingOn::Nak {
+                            match self.naks.is_empty() {
+                                false => self.send_naks()?,
+                                true => {
+                                    self.finalize_receive()?;
+                                    self.nak_timer.pause();
+                                    self.waiting_on = WaitingOn::None;
+                                    self.send_finished(if self.condition == Condition::NoError {
+                                        None
+                                    } else {
+                                        Some(self.config.destination_entity_id.clone())
+                                    })?
+                                }
+                            };
                         }
 
                         Ok(())
@@ -1627,6 +1633,7 @@ impl<T: FileStore> Transaction<T> {
     }
 
     fn send_metadata(&mut self) -> TransactionResult<()> {
+        self.inactivity_timer.restart();
         let id = self.id();
         let destination = self.config.destination_entity_id.clone();
         let metadata = MetadataPDU {

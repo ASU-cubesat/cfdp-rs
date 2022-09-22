@@ -762,7 +762,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                         )
                     }
                 }
-                thread::sleep(Duration::from_millis(1));
+                thread::sleep(Duration::from_micros(1));
             }
             Ok(transaction.id())
         });
@@ -790,7 +790,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
         let mut cleanup = Instant::now();
 
         while !self.terminate.load(Ordering::Relaxed) {
-            match selector.select_timeout(Duration::from_millis(500)) {
+            match selector.select_timeout(Duration::from_micros(500)) {
                 Ok(oper) if oper.index() == 0 => {
                     // this is a message to user
                     match oper.recv(&self.message_rx) {

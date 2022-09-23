@@ -10,7 +10,9 @@ use camino::Utf8PathBuf;
 use cfdp_core::{
     daemon::PutRequest,
     filestore::{FileStore, NativeFileStore},
-    pdu::{EntityID, TransmissionMode},
+    pdu::{
+        EntityID, MessageToUser, ProxyOperation, ProxyPutRequest, TransmissionMode, UserOperation,
+    },
     transport::{PDUTransport, UdpTransport},
     user::User,
 };
@@ -421,6 +423,94 @@ fn f1s6(fixture_f1s6: &'static (String, JoD<()>, JoD<()>, Arc<Mutex<NativeFileSt
         message_to_user: vec![],
     })
     .expect("unable to send put request.");
+
+    while !path_to_out.exists() {
+        thread::sleep(Duration::from_millis(1))
+    }
+
+    assert!(path_to_out.exists())
+}
+
+#[rstest]
+#[timeout(Duration::from_secs(10))]
+// Series F1
+// Sequence 7 Test
+// Test goal:
+//  - Check User application messaging
+// Configuration:
+//  - Acknowledged
+//  - File Size: Zero
+//  - Have proxy put request send Entity 0 data,
+//  -   then have a proxy put request in THAT message send data back to entity 1
+fn f1s7(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
+    let (local_path, filestore) = get_filestore;
+
+    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let out_file: Utf8PathBuf = "/remote/medium_f1s7.txt".into();
+    let interim_file: Utf8PathBuf = "/local/medium_f1s7.txt".into();
+    let path_to_out = filestore.lock().unwrap().get_native_path(&out_file);
+    let path_interim = filestore.lock().unwrap().get_native_path(&interim_file);
+
+    user.put(PutRequest {
+        source_filename: "".into(),
+        destination_filename: "".into(),
+        destination_entity_id: EntityID::from(1_u16),
+        transmission_mode: TransmissionMode::Acknowledged,
+        filestore_requests: vec![],
+        message_to_user: vec![
+            MessageToUser::from(UserOperation::ProxyOperation(
+                ProxyOperation::ProxyPutRequest(ProxyPutRequest {
+                    destination_entity_id: EntityID::from(0_u16),
+                    source_filename: "/local/medium.txt".into(),
+                    destination_filename: interim_file.clone(),
+                }),
+            )),
+            MessageToUser::from(UserOperation::ProxyOperation(
+                ProxyOperation::ProxyTransmissionMode(TransmissionMode::Acknowledged),
+            )),
+        ],
+    })
+    .expect("unable to send put request.");
+    while !path_interim.exists() {
+        thread::sleep(Duration::from_millis(1))
+    }
+    assert!(path_interim.exists());
+
+    user.put(PutRequest {
+        source_filename: "".into(),
+        destination_filename: "".into(),
+        destination_entity_id: EntityID::from(1_u16),
+        transmission_mode: TransmissionMode::Acknowledged,
+        filestore_requests: vec![],
+        message_to_user: vec![
+            MessageToUser::from(UserOperation::ProxyOperation(
+                ProxyOperation::ProxyPutRequest(ProxyPutRequest {
+                    destination_entity_id: EntityID::from(0_u16),
+                    source_filename: "".into(),
+                    destination_filename: "".into(),
+                }),
+            )),
+            MessageToUser::from(UserOperation::ProxyOperation(
+                ProxyOperation::ProxyMessageToUser(MessageToUser::from(
+                    UserOperation::ProxyOperation(ProxyOperation::ProxyPutRequest(
+                        ProxyPutRequest {
+                            destination_entity_id: EntityID::from(1_u16),
+                            source_filename: interim_file,
+                            destination_filename: out_file,
+                        },
+                    )),
+                )),
+            )),
+            MessageToUser::from(UserOperation::ProxyOperation(
+                ProxyOperation::ProxyMessageToUser(MessageToUser::from(
+                    UserOperation::ProxyOperation(ProxyOperation::ProxyTransmissionMode(
+                        TransmissionMode::Acknowledged,
+                    )),
+                )),
+            )),
+        ],
+    })
+    .expect("Unable to send put request.");
 
     while !path_to_out.exists() {
         thread::sleep(Duration::from_millis(1))

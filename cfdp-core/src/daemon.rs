@@ -697,8 +697,6 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
             let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
             transaction.put(metadata)?;
 
-            let mut do_once: bool = true;
-
             while transaction.get_state() != &TransactionState::Terminated {
                 // this function handles any timeouts and resends
                 transaction.monitor_timeout()?;
@@ -708,13 +706,6 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                 match transaction.all_data_sent()? {
                     false => transaction.send_file_segment(None, None)?,
                     true => {
-                        // if all data has been sent (for the first time)
-                        // send eof
-                        if do_once {
-                            transaction.send_eof(None)?;
-                            do_once = false;
-                        }
-
                         match transaction.get_mode() {
                             // for unacknowledged transactions.
                             // this is the end

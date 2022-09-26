@@ -11,6 +11,7 @@ use std::{
 use camino::Utf8PathBuf;
 use crossbeam_channel::{SendError, Sender};
 use interprocess::local_socket::LocalSocketStream;
+use log::info;
 
 use crate::{
     daemon::{PutRequest, SOCKET_ADDR},
@@ -270,6 +271,8 @@ pub struct Transaction<T: FileStore> {
     // The current state of the transaction.
     // Used to determine when the thread should be killed
     state: TransactionState,
+    // a tracker for sending the first EoF
+    do_once: bool,
 }
 impl<T: FileStore> Transaction<T> {
     /// Start a new Transaction with the given [configuration](TransactionConfig)
@@ -314,6 +317,7 @@ impl<T: FileStore> Transaction<T> {
             checksum: None,
             waiting_on: WaitingOn::None,
             state: TransactionState::Active,
+            do_once: true,
         };
         transaction.inactivity_timer.restart();
         transaction
@@ -560,11 +564,21 @@ impl<T: FileStore> Transaction<T> {
 
     pub fn all_data_sent(&mut self) -> TransactionResult<bool> {
         match self.is_file_transfer() {
-            true => {
-                let handle = self.get_handle()?;
-                Ok(handle.stream_position().map_err(FileStoreError::IO)?
-                    == handle.metadata().map_err(FileStoreError::IO)?.len())
-            }
+            true => match self.condition == Condition::NoError {
+                true => {
+                    let handle = self.get_handle()?;
+                    let eof = handle.stream_position().map_err(FileStoreError::IO)?
+                        == handle.metadata().map_err(FileStoreError::IO)?.len();
+                    if eof && self.do_once {
+                        self.send_eof(None)?;
+                        self.do_once = false;
+                    }
+                    Ok(eof)
+                }
+                // if we have been canceled or another error happened just say
+                // end of file reached
+                false => Ok(true),
+            },
             false => Ok(true),
         }
     }

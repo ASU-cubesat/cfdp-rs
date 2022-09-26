@@ -1405,10 +1405,10 @@ impl<T: FileStore + Send + 'static> Drop for Daemon<T> {
     fn drop(&mut self) {
         for ind in 0..self.transaction_handles.len() {
             let handle = self.transaction_handles.remove(ind);
-            handle
-                .join()
-                .expect("Unable to join thread.")
-                .expect("Error during threaded transaction handle.");
+            match handle.join().expect("Unable to join thread.") {
+                Ok(_) => {}
+                Err(err) => println!("Error during threaded transaction. {err:}"),
+            }
         }
     }
 }

@@ -119,26 +119,7 @@ impl PDUEncode for VariableID {
         let length: u8 = u8_buff[0] + 1;
         let mut id = vec![0u8; length as usize];
         buffer.read_exact(id.as_mut_slice())?;
-
-        match length {
-            1 => Ok(Self::from(u8::from_be_bytes(
-                id.try_into()
-                    .expect("Unable to coerce vec into same sized array."),
-            ))),
-            2 => Ok(Self::from(u16::from_be_bytes(
-                id.try_into()
-                    .expect("Unable to coerce vec into same sized array."),
-            ))),
-            4 => Ok(Self::from(u32::from_be_bytes(
-                id.try_into()
-                    .expect("Unable to coerce vec into same sized array."),
-            ))),
-            8 => Ok(Self::from(u64::from_be_bytes(
-                id.try_into()
-                    .expect("Unable to coerce vec into same sized array."),
-            ))),
-            other => Err(PDUError::UnkownIDLength(other)),
-        }
+        Self::try_from(id)
     }
 }
 
@@ -921,6 +902,23 @@ mod test {
         let id2 = id.get_and_increment();
         assert_eq!(VariableID::from(123_u8), id2);
         assert_eq!(VariableID::from(124_u8), id);
+    }
+
+    #[rstest]
+    fn variableid_encode(
+        #[values(
+            VariableID::from(1_u8),
+            VariableID::from(300_u16),
+            VariableID::from(867381_u32),
+            VariableID::from(857198297_u64)
+        )]
+        id: VariableID,
+    ) {
+        let buff = id.clone().encode();
+        let recovered =
+            VariableID::decode(&mut buff.as_slice()).expect("Unable to decode VariableID");
+
+        assert_eq!(id, recovered)
     }
 
     #[rstest]

@@ -1238,7 +1238,6 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                         .entity_configs
                                         .get(&key.0)
                                         .unwrap_or(&self.default_config);
-                                    println!("Command {msg:?}");
                                     let (_id, new_channel, handle) =
                                         Self::spawn_receive_transaction(
                                             &pdu.header,
@@ -1284,9 +1283,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
 
             match self.listener.accept() {
                 Ok(mut conn) => {
-                    let mut buffer = Vec::<u8>::new();
-                    let _nread = conn.read_to_end(&mut buffer)?;
-                    let primitive = UserPrimitive::decode(&mut &buffer[..])?;
+                    let primitive = UserPrimitive::decode(&mut conn)?;
                     match primitive {
                         UserPrimitive::Put(request) => {
                             let sequence_number = sequence_num.get_and_increment();
@@ -1311,22 +1308,30 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                 self.message_tx.clone(),
                                 false,
                             )?;
+
                             self.transaction_handles.push(handle);
-                            transaction_channels.insert(id, sender);
+                            transaction_channels.insert(id.clone(), sender);
+                            let response = {
+                                let mut buff = vec![];
+                                buff.extend(id.0.encode());
+                                buff.extend(id.1.encode());
+                                buff
+                            };
+                            conn.write_all(response.as_slice())?;
                         }
                         UserPrimitive::Cancel(id, seq) => {
                             if let Some(channel) = transaction_channels.get(&(id, seq)) {
-                                channel.send(Command::Cancel)?
+                                channel.send(Command::Cancel)?;
                             }
                         }
                         UserPrimitive::Suspend(id, seq) => {
                             if let Some(channel) = transaction_channels.get(&(id, seq)) {
-                                channel.send(Command::Suspend)?
+                                channel.send(Command::Suspend)?;
                             }
                         }
                         UserPrimitive::Resume(id, seq) => {
                             if let Some(channel) = transaction_channels.get(&(id, seq)) {
-                                channel.send(Command::Resume)?
+                                channel.send(Command::Resume)?;
                             }
                         }
                         UserPrimitive::Report(id, seq) => {
@@ -1338,17 +1343,20 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                         .map(|_| rx.recv().ok())
                                         .ok()
                                         .flatten();
-                                    if let Some(data) = report {
-                                        info!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", data.0.0, data.0.1, data.1, data.2, data.3)
+                                    if let Some(data) = &report {
+                                        info!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", data.0.0, data.0.1, data.1, data.2, data.3);
+                                        println!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", data.0.0, data.0.1, data.1, data.2, data.3)
                                     }
                                 }
                                 None => {
+                                    println!("No Transaction communication channel found for ({:?}, {:?}).",
+                                    id, seq);
                                     warn!(
                                     "No Transaction communication channel found for ({:?}, {:?}).",
                                     id, seq
-                                )
+                                    );
                                 }
-                            }
+                            };
                         }
                     };
                 }
@@ -1364,7 +1372,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
             };
             // join any handles that have completed
             // maybe should only run every so often?
-            if cleanup.elapsed() >= Duration::from_secs(1) {
+            if cleanup.elapsed() >= Duration::from_secs(10) {
                 let mut ind = 0;
                 while ind < self.transaction_handles.len() {
                     if self.transaction_handles[ind].is_finished() {

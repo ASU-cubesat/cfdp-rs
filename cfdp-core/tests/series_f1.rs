@@ -24,6 +24,7 @@ use common::{create_daemons, get_filestore, tempdir_fixture, JoD, LossyTransport
 use tempfile::TempDir;
 
 #[rstest]
+#[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(2))]
 // Series F1
 // Sequence 1 Test
@@ -56,6 +57,7 @@ fn f1s1(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
 }
 
 #[rstest]
+#[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(2))]
 // Series F1
 // Sequence 2 Test
@@ -88,6 +90,7 @@ fn f1s2(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
 }
 
 #[rstest]
+#[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(2))]
 // Series F1
 // Sequence 3 Test
@@ -190,6 +193,7 @@ fn fixture_f1s4(
 }
 
 #[rstest]
+#[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(30))]
 // Series F1
 // Sequence 4 Test
@@ -293,6 +297,7 @@ fn fixture_f1s5(
 }
 
 #[rstest]
+#[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(30))]
 // Series F1
 // Sequence 5 Test
@@ -397,6 +402,7 @@ fn fixture_f1s6(
 }
 
 #[rstest]
+#[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(30))]
 // Series F1
 // Sequence 6 Test
@@ -432,6 +438,7 @@ fn f1s6(fixture_f1s6: &'static (String, JoD<()>, JoD<()>, Arc<Mutex<NativeFileSt
 }
 
 #[rstest]
+#[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(10))]
 // Series F1
 // Sequence 7 Test
@@ -520,6 +527,7 @@ fn f1s7(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
 }
 
 #[rstest]
+#[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(10))]
 // Series F1
 // Sequence 7 Test
@@ -557,6 +565,7 @@ fn f1s8(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
 }
 
 #[rstest]
+#[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(10))]
 // Series F1
 // Sequence 7 Test
@@ -603,6 +612,7 @@ fn f1s9(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
 }
 
 #[rstest]
+#[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(10))]
 // Series F1
 // Sequence 7 Test

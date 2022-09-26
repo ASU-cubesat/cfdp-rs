@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use cfdp_core::{
     daemon::PutRequest,
     filestore::{FileStore, NativeFileStore},
@@ -517,4 +517,133 @@ fn f1s7(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
     }
 
     assert!(path_to_out.exists())
+}
+
+#[rstest]
+#[timeout(Duration::from_secs(10))]
+// Series F1
+// Sequence 7 Test
+// Test goal:
+//  - Check User Cancel Functionality
+// Configuration:
+//  - Cancel initiated from Sender
+fn f1s8(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
+    let (local_path, filestore) = get_filestore;
+
+    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let out_file: Utf8PathBuf = "remote/medium_f1s8.txt".into();
+    let path_to_out = filestore.lock().unwrap().get_native_path(&out_file);
+
+    let id = user
+        .put(PutRequest {
+            source_filename: "local/medium.txt".into(),
+            destination_filename: out_file,
+            destination_entity_id: EntityID::from(1_u16),
+            transmission_mode: TransmissionMode::Acknowledged,
+            filestore_requests: vec![],
+            message_to_user: vec![],
+        })
+        .expect("unable to send put request.");
+
+    thread::sleep(Duration::from_millis(2));
+
+    user.cancel(id.clone())
+        .expect("Unable to Cancel transaction.");
+    thread::sleep(Duration::from_millis(1));
+    user.report(id).expect("Unable to send Report Request.");
+    thread::sleep(Duration::from_millis(3));
+
+    assert!(!path_to_out.exists())
+}
+
+#[rstest]
+#[timeout(Duration::from_secs(10))]
+// Series F1
+// Sequence 7 Test
+// Test goal:
+//  - Check User Cancel Functionality
+// Configuration:
+//  - Cancel initiated from Sender
+fn f1s9(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
+    let (local_path, filestore) = get_filestore;
+
+    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let mut user_remote = User::new(Some(
+        Utf8Path::new(local_path)
+            .parent()
+            .unwrap()
+            .join("cfdp_remote.socket")
+            .as_str(),
+    ))
+    .expect("User Cannot connect to Daemon.");
+    let out_file: Utf8PathBuf = "remote/medium_f1s9.txt".into();
+    let path_to_out = filestore.lock().unwrap().get_native_path(&out_file);
+
+    let id = user
+        .put(PutRequest {
+            source_filename: "local/medium.txt".into(),
+            destination_filename: out_file,
+            destination_entity_id: EntityID::from(1_u16),
+            transmission_mode: TransmissionMode::Acknowledged,
+            filestore_requests: vec![],
+            message_to_user: vec![],
+        })
+        .expect("unable to send put request.");
+
+    thread::sleep(Duration::from_millis(2));
+
+    user_remote
+        .cancel(id.clone())
+        .expect("Unable to Cancel transaction.");
+    thread::sleep(Duration::from_millis(25));
+    user.report(id).expect("Unable to send Report Request.");
+    thread::sleep(Duration::from_millis(50));
+
+    assert!(!path_to_out.exists())
+}
+
+#[rstest]
+#[timeout(Duration::from_secs(10))]
+// Series F1
+// Sequence 7 Test
+// Test goal:
+//  - Check User Cancel Functionality
+// Configuration:
+//  - Cancel initiated from Sender
+fn f1s10(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
+    let (local_path, filestore) = get_filestore;
+
+    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let mut user_remote = User::new(Some(
+        Utf8Path::new(local_path)
+            .parent()
+            .unwrap()
+            .join("cfdp_remote.socket")
+            .as_str(),
+    ))
+    .expect("User Cannot connect to Daemon.");
+    let out_file: Utf8PathBuf = "remote/medium_f1s10.txt".into();
+    let path_to_out = filestore.lock().unwrap().get_native_path(&out_file);
+
+    let id = user
+        .put(PutRequest {
+            source_filename: "local/medium.txt".into(),
+            destination_filename: out_file,
+            destination_entity_id: EntityID::from(1_u16),
+            transmission_mode: TransmissionMode::Unacknowledged,
+            filestore_requests: vec![],
+            message_to_user: vec![],
+        })
+        .expect("unable to send put request.");
+
+    thread::sleep(Duration::from_millis(2));
+
+    user_remote
+        .cancel(id.clone())
+        .expect("Unable to Cancel transaction.");
+    thread::sleep(Duration::from_millis(25));
+    user.report(id).expect("Unable to send Report Request.");
+    thread::sleep(Duration::from_millis(50));
+
+    assert!(!path_to_out.exists())
 }

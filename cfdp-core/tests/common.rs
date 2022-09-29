@@ -259,6 +259,7 @@ pub(crate) enum TransportIssue {
     // This PDU type is dropped every time,
     All(PDUDirective),
     // Every singel PDU should be dropped once.
+    // except for EoF
     Every,
 }
 pub(crate) struct LossyTransport {
@@ -376,7 +377,34 @@ impl PDUTransport for LossyTransport {
                             .send_to(pdu.encode().as_slice(), addr)
                             .map(|_n| ()),
                     },
-                    TransportIssue::Every => todo!(),
+                    // only drop the PDUs if we have not yet send EoF.
+                    // Flip the counter on EoF to signify we can send again.
+                    TransportIssue::Every => match &pdu.payload {
+                        PDUPayload::Directive(operation) => {
+                            match (self.counter, operation.get_directive()) {
+                                (0, PDUDirective::EoF) => {
+                                    self.counter += 1;
+                                    self.socket
+                                        .send_to(pdu.encode().as_slice(), addr)
+                                        .map(|_n| ())
+                                }
+                                (0, _) => Ok(()),
+                                (_, _) => self
+                                    .socket
+                                    .send_to(pdu.encode().as_slice(), addr)
+                                    .map(|_n| ()),
+                            }
+                        }
+                        PDUPayload::FileData(_data) => {
+                            if self.counter == 0 {
+                                Ok(())
+                            } else {
+                                self.socket
+                                    .send_to(pdu.encode().as_slice(), addr)
+                                    .map(|_n| ())
+                            }
+                        }
+                    },
                 }
             })
     }

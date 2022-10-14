@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    net::ToSocketAddrs,
+    net::UdpSocket,
     sync::{Arc, Mutex},
     thread,
     time::Duration,
@@ -135,43 +135,35 @@ fn fixture_f1s4(
     Arc<Mutex<NativeFileStore>>,
 ) {
     let (_, filestore) = get_filestore;
+    let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
+    let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
+
+    let local_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind local UDP.");
+    let local_addr = local_udp.local_addr().expect("Cannot find local address.");
+
     let entity_map = {
         let mut temp = HashMap::new();
-        temp.insert(
-            EntityID::from(0_u16),
-            "127.0.0.1:55347"
-                .to_socket_addrs()
-                .expect("Improperly Formatted socket Address.")
-                .next()
-                .unwrap(),
-        );
-        temp.insert(
-            EntityID::from(1_u16),
-            "127.0.0.1:55348"
-                .to_socket_addrs()
-                .expect("Improperly Formatted socket Address.")
-                .next()
-                .unwrap(),
-        );
+        temp.insert(EntityID::from(0_u16), local_addr);
+        temp.insert(EntityID::from(1_u16), remote_addr);
         temp
     };
+
+    let local_transport =
+        LossyTransport::try_from((local_udp, entity_map.clone(), TransportIssue::Rate(13)))
+            .expect("Unable to make Lossy Transport.");
+    let remote_transport =
+        UdpTransport::try_from((remote_udp, entity_map)).expect("Unable to make UdpTransport.");
 
     let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
         HashMap::from([(
             vec![EntityID::from(0_u16)],
-            Box::new(
-                UdpTransport::new("127.0.0.1:55348", entity_map.clone())
-                    .expect("Unable to make UdpTransport."),
-            ) as Box<dyn PDUTransport + Send>,
+            Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
         )]);
 
     let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
         HashMap::from([(
             vec![EntityID::from(1_u16)],
-            Box::new(
-                LossyTransport::new("127.0.0.1:55347", entity_map, TransportIssue::Rate(13))
-                    .expect("Unable to make Lossy Transport."),
-            ) as Box<dyn PDUTransport + Send>,
+            Box::new(local_transport) as Box<dyn PDUTransport + Send>,
         )]);
 
     let path = Utf8PathBuf::from(
@@ -239,43 +231,35 @@ fn fixture_f1s5(
     Arc<Mutex<NativeFileStore>>,
 ) {
     let (_, filestore) = get_filestore;
+    let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
+    let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
+
+    let local_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind local UDP.");
+    let local_addr = local_udp.local_addr().expect("Cannot find local address.");
+
     let entity_map = {
         let mut temp = HashMap::new();
-        temp.insert(
-            EntityID::from(0_u16),
-            "127.0.0.1:55349"
-                .to_socket_addrs()
-                .expect("Improperly Formatted socket Address.")
-                .next()
-                .unwrap(),
-        );
-        temp.insert(
-            EntityID::from(1_u16),
-            "127.0.0.1:55350"
-                .to_socket_addrs()
-                .expect("Improperly Formatted socket Address.")
-                .next()
-                .unwrap(),
-        );
+        temp.insert(EntityID::from(0_u16), local_addr);
+        temp.insert(EntityID::from(1_u16), remote_addr);
         temp
     };
+
+    let local_transport =
+        LossyTransport::try_from((local_udp, entity_map.clone(), TransportIssue::Duplicate(13)))
+            .expect("Unable to make Lossy Transport.");
+    let remote_transport =
+        UdpTransport::try_from((remote_udp, entity_map)).expect("Unable to make UdpTransport.");
 
     let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
         HashMap::from([(
             vec![EntityID::from(0_u16)],
-            Box::new(
-                UdpTransport::new("127.0.0.1:55350", entity_map.clone())
-                    .expect("Unable to make UdpTransport."),
-            ) as Box<dyn PDUTransport + Send>,
+            Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
         )]);
 
     let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
         HashMap::from([(
             vec![EntityID::from(1_u16)],
-            Box::new(
-                LossyTransport::new("127.0.0.1:55349", entity_map, TransportIssue::Duplicate(13))
-                    .expect("Unable to make Lossy Transport."),
-            ) as Box<dyn PDUTransport + Send>,
+            Box::new(local_transport) as Box<dyn PDUTransport + Send>,
         )]);
 
     let path = Utf8PathBuf::from(
@@ -344,43 +328,35 @@ fn fixture_f1s6(
     Arc<Mutex<NativeFileStore>>,
 ) {
     let (_, filestore) = get_filestore;
+    let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
+    let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
+
+    let local_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind local UDP.");
+    let local_addr = local_udp.local_addr().expect("Cannot find local address.");
+
     let entity_map = {
         let mut temp = HashMap::new();
-        temp.insert(
-            EntityID::from(0_u16),
-            "127.0.0.1:55351"
-                .to_socket_addrs()
-                .expect("Improperly Formatted socket Address.")
-                .next()
-                .unwrap(),
-        );
-        temp.insert(
-            EntityID::from(1_u16),
-            "127.0.0.1:55352"
-                .to_socket_addrs()
-                .expect("Improperly Formatted socket Address.")
-                .next()
-                .unwrap(),
-        );
+        temp.insert(EntityID::from(0_u16), local_addr);
+        temp.insert(EntityID::from(1_u16), remote_addr);
         temp
     };
+
+    let local_transport =
+        LossyTransport::try_from((local_udp, entity_map.clone(), TransportIssue::Reorder(13)))
+            .expect("Unable to make Lossy Transport.");
+    let remote_transport =
+        UdpTransport::try_from((remote_udp, entity_map)).expect("Unable to make UdpTransport.");
 
     let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
         HashMap::from([(
             vec![EntityID::from(0_u16)],
-            Box::new(
-                UdpTransport::new("127.0.0.1:55352", entity_map.clone())
-                    .expect("Unable to make UdpTransport."),
-            ) as Box<dyn PDUTransport + Send>,
+            Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
         )]);
 
     let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
         HashMap::from([(
             vec![EntityID::from(1_u16)],
-            Box::new(
-                LossyTransport::new("127.0.0.1:55351", entity_map, TransportIssue::Duplicate(13))
-                    .expect("Unable to make Lossy Transport."),
-            ) as Box<dyn PDUTransport + Send>,
+            Box::new(local_transport) as Box<dyn PDUTransport + Send>,
         )]);
 
     let path = Utf8PathBuf::from(

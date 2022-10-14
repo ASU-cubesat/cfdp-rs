@@ -18,7 +18,8 @@ use cfdp_core::{
     daemon::{Daemon, EntityConfig},
     filestore::{ChecksumType, FileStore, NativeFileStore},
     pdu::{
-        CRCFlag, EntityID, PDUDirective, PDUEncode, PDUPayload, TransactionSeqNum, VariableID, PDU,
+        CRCFlag, Condition, EntityID, FaultHandlerAction, PDUDirective, PDUEncode, PDUPayload,
+        TransactionSeqNum, VariableID, PDU,
     },
     transport::{PDUTransport, UdpTransport},
 };
@@ -61,10 +62,13 @@ pub(crate) fn create_daemons<T: FileStore + Send + 'static>(
     remote_socket: &str,
 ) -> (String, JoD<'static, ()>, JoD<'static, ()>) {
     let config = EntityConfig {
-        fault_handler_override: HashMap::from([]),
+        fault_handler_override: HashMap::from([(
+            Condition::PositiveLimitReached,
+            FaultHandlerAction::Abandon,
+        )]),
         file_size_segment: 1024,
-        default_transaction_max_count: 150,
-        default_inactivity_timeout: 30,
+        default_transaction_max_count: 2,
+        default_inactivity_timeout: 1,
         crc_flag: CRCFlag::NotPresent,
         closure_requested: false,
         checksum_type: ChecksumType::Modular,
@@ -158,44 +162,36 @@ fn make_entities(
     JoD<'static, ()>,
     JoD<'static, ()>,
 ) {
+    let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
+    let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
+
+    let local_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind local UDP.");
+    let local_addr = local_udp.local_addr().expect("Cannot find local address.");
+
     let entity_map = {
         let mut temp = HashMap::new();
-        temp.insert(
-            EntityID::from(0_u16),
-            "127.0.0.1:55345"
-                .to_socket_addrs()
-                .expect("Improperly Formatted socket Address.")
-                .next()
-                .unwrap(),
-        );
-        temp.insert(
-            EntityID::from(1_u16),
-            "127.0.0.1:55346"
-                .to_socket_addrs()
-                .expect("Improperly Formatted socket Address.")
-                .next()
-                .unwrap(),
-        );
+        temp.insert(EntityID::from(0_u16), local_addr);
+        temp.insert(EntityID::from(1_u16), remote_addr);
         temp
     };
+
+    let local_transport = UdpTransport::try_from((local_udp, entity_map.clone()))
+        .expect("Unable to make Lossy Transport.");
+    let remote_transport =
+        UdpTransport::try_from((remote_udp, entity_map)).expect("Unable to make UdpTransport.");
 
     let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
         HashMap::from([(
             vec![EntityID::from(0_u16)],
-            Box::new(
-                UdpTransport::new("127.0.0.1:55346", entity_map.clone())
-                    .expect("Unable to make UdpTransport."),
-            ) as Box<dyn PDUTransport + Send>,
+            Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
         )]);
 
     let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
         HashMap::from([(
             vec![EntityID::from(1_u16)],
-            Box::new(
-                UdpTransport::new("127.0.0.1:55345", entity_map)
-                    .expect("Unable to make UdpTransport."),
-            ) as Box<dyn PDUTransport + Send>,
+            Box::new(local_transport) as Box<dyn PDUTransport + Send>,
         )]);
+
     let utf8_path = Utf8PathBuf::from(
         tempdir_fixture
             .path()
@@ -257,13 +253,13 @@ pub(crate) enum TransportIssue {
     // This specific PDU is dropped the first time it is sent.
     Once(PDUDirective),
     // This PDU type is dropped every time,
-    All(PDUDirective),
+    All(Vec<PDUDirective>),
     // Every singel PDU should be dropped once.
     // except for EoF
     Every,
 }
 pub(crate) struct LossyTransport {
-    socket: UdpSocket,
+    pub(crate) socket: UdpSocket,
     entity_map: HashMap<VariableID, SocketAddr>,
     counter: usize,
     issue: TransportIssue,
@@ -287,6 +283,25 @@ impl LossyTransport {
             issue,
             buffer: vec![],
         })
+    }
+}
+impl TryFrom<(UdpSocket, HashMap<VariableID, SocketAddr>, TransportIssue)> for LossyTransport {
+    type Error = IoError;
+
+    fn try_from(
+        inputs: (UdpSocket, HashMap<VariableID, SocketAddr>, TransportIssue),
+    ) -> Result<Self, Self::Error> {
+        let me = Self {
+            socket: inputs.0,
+            entity_map: inputs.1,
+            counter: 1,
+            issue: inputs.2,
+            buffer: vec![],
+        };
+        me.socket.set_read_timeout(Some(Duration::from_secs(1)))?;
+        me.socket.set_write_timeout(Some(Duration::from_secs(1)))?;
+        me.socket.set_nonblocking(true)?;
+        Ok(me)
     }
 }
 impl PDUTransport for LossyTransport {
@@ -364,7 +379,7 @@ impl PDUTransport for LossyTransport {
                     },
                     TransportIssue::All(skip_directive) => match &pdu.payload {
                         PDUPayload::Directive(operation) => {
-                            if &operation.get_directive() == skip_directive {
+                            if skip_directive.contains(&operation.get_directive()) {
                                 Ok(())
                             } else {
                                 self.socket

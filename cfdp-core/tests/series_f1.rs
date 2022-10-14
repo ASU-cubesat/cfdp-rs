@@ -532,6 +532,7 @@ fn f1s8(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
 
     thread::sleep(Duration::from_millis(2));
     user.cancel(id.clone()).expect("unable to cancel.");
+    thread::sleep(Duration::from_millis(2));
 
     let mut report = user
         .report(id.clone())
@@ -588,6 +589,7 @@ fn f1s9(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
 
     thread::sleep(Duration::from_millis(2));
     user_remote.cancel(id.clone()).expect("unable to cancel.");
+    thread::sleep(Duration::from_millis(2));
 
     let mut report = user_remote
         .report(id.clone())
@@ -638,6 +640,7 @@ fn f1s10(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
     thread::sleep(Duration::from_millis(2));
 
     user.cancel(id.clone()).expect("unable to cancel.");
+    thread::sleep(Duration::from_millis(2));
 
     let mut report = user
         .report(id.clone())

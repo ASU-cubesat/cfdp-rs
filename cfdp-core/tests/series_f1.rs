@@ -11,7 +11,8 @@ use cfdp_core::{
     daemon::PutRequest,
     filestore::{FileStore, NativeFileStore},
     pdu::{
-        EntityID, MessageToUser, ProxyOperation, ProxyPutRequest, TransmissionMode, UserOperation,
+        Condition, EntityID, MessageToUser, ProxyOperation, ProxyPutRequest, TransmissionMode,
+        UserOperation,
     },
     transport::{PDUTransport, UdpTransport},
     user::User,
@@ -530,12 +531,22 @@ fn f1s8(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
         .expect("unable to send put request.");
 
     thread::sleep(Duration::from_millis(2));
+    user.cancel(id.clone()).expect("unable to cancel.");
 
-    user.cancel(id.clone())
-        .expect("Unable to Cancel transaction.");
-    thread::sleep(Duration::from_millis(1));
-    user.report(id).expect("Unable to send Report Request.");
-    thread::sleep(Duration::from_millis(3));
+    let mut report = user
+        .report(id.clone())
+        .expect("Unable to send Report Request.")
+        .unwrap();
+
+    while report.condition != Condition::CancelReceived {
+        thread::sleep(Duration::from_millis(1));
+        report = user
+            .report(id.clone())
+            .expect("Unable to send Report Request.")
+            .unwrap();
+    }
+
+    assert_eq!(report.condition, Condition::CancelReceived);
 
     assert!(!path_to_out.exists())
 }
@@ -548,7 +559,7 @@ fn f1s8(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
 // Test goal:
 //  - Check User Cancel Functionality
 // Configuration:
-//  - Cancel initiated from Sender
+//  - Cancel initiated from Receiver
 fn f1s9(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
     let (local_path, filestore) = get_filestore;
 
@@ -576,13 +587,22 @@ fn f1s9(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
         .expect("unable to send put request.");
 
     thread::sleep(Duration::from_millis(2));
+    user_remote.cancel(id.clone()).expect("unable to cancel.");
 
-    user_remote
-        .cancel(id.clone())
-        .expect("Unable to Cancel transaction.");
-    thread::sleep(Duration::from_millis(25));
-    user.report(id).expect("Unable to send Report Request.");
-    thread::sleep(Duration::from_millis(50));
+    let mut report = user_remote
+        .report(id.clone())
+        .expect("Unable to send Report Request.")
+        .unwrap();
+
+    while report.condition != Condition::CancelReceived {
+        thread::sleep(Duration::from_millis(1));
+        report = user_remote
+            .report(id.clone())
+            .expect("Unable to send Report Request.")
+            .unwrap();
+    }
+
+    assert_eq!(report.condition, Condition::CancelReceived);
 
     assert!(!path_to_out.exists())
 }
@@ -595,19 +615,12 @@ fn f1s9(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
 // Test goal:
 //  - Check User Cancel Functionality
 // Configuration:
+//  - Unacknowledged Transmission
 //  - Cancel initiated from Sender
 fn f1s10(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
     let (local_path, filestore) = get_filestore;
 
     let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
-    let mut user_remote = User::new(Some(
-        Utf8Path::new(local_path)
-            .parent()
-            .unwrap()
-            .join("cfdp_remote.socket")
-            .as_str(),
-    ))
-    .expect("User Cannot connect to Daemon.");
     let out_file: Utf8PathBuf = "remote/medium_f1s10.txt".into();
     let path_to_out = filestore.lock().unwrap().get_native_path(&out_file);
 
@@ -624,12 +637,22 @@ fn f1s10(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
 
     thread::sleep(Duration::from_millis(2));
 
-    user_remote
-        .cancel(id.clone())
-        .expect("Unable to Cancel transaction.");
-    thread::sleep(Duration::from_millis(25));
-    user.report(id).expect("Unable to send Report Request.");
-    thread::sleep(Duration::from_millis(50));
+    user.cancel(id.clone()).expect("unable to cancel.");
+
+    let mut report = user
+        .report(id.clone())
+        .expect("Unable to send Report Request.")
+        .unwrap();
+
+    while report.condition != Condition::CancelReceived {
+        thread::sleep(Duration::from_millis(1));
+        report = user
+            .report(id.clone())
+            .expect("Unable to send Report Request.")
+            .unwrap();
+    }
+
+    assert_eq!(report.condition, Condition::CancelReceived);
 
     assert!(!path_to_out.exists())
 }

@@ -1462,12 +1462,51 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                         data.clone().encode()
                                     }
                                     None => {
-                                        println!("{:?}", self.history);
-                                        println!(
+                                        {
+                                            // force a cleanup check then try again
+                                            let mut ind = 0;
+                                            while ind < self.transaction_handles.len() {
+                                                if self.transaction_handles[ind].is_finished() {
+                                                    let handle =
+                                                        self.transaction_handles.remove(ind);
+                                                    match handle.join() {
+                                                        Ok(Ok(report)) => {
+                                                            // remove the channel for this transaction if it is complete
+                                                            let _ = transaction_channels
+                                                                .remove(&report.id);
+                                                            // keep all proxy id maps where the finished transaction ID is not the entry
+                                                            self.proxy_id_map.retain(|_, value| {
+                                                                *value != report.id
+                                                            });
+                                                            self.history
+                                                                .insert(report.id.clone(), report);
+                                                        }
+                                                        Ok(Err(err)) => {
+                                                            info!("Error occured during transaction: {}", err)
+                                                        }
+                                                        Err(_) => error!("Unable to join handle!"),
+                                                    };
+                                                } else {
+                                                    ind += 1;
+                                                }
+                                            }
+
+                                            cleanup = Instant::now();
+                                        }
+                                        match self.history.get(&(id.clone(), seq.clone())) {
+                                            Some(data) => {
+                                                info!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", id, seq, data.state, data.status, data.condition);
+                                                println!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", id, seq, data.state, data.status, data.condition);
+                                                data.clone().encode()
+                                            }
+                                            None => {
+                                                println!(
                                             "Cannot find information on requested transaction."
                                         );
-                                        info!("Cannot find information on requested transaction.");
-                                        vec![]
+                                                info!("Cannot find information on requested transaction.");
+                                                vec![]
+                                            }
+                                        }
                                     }
                                 },
                             };

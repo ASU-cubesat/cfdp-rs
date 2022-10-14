@@ -653,6 +653,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
 
         let handle = thread::spawn(move || {
             while transaction.get_state() != &TransactionState::Terminated {
+                thread::sleep(Duration::from_millis(1));
                 // this function handles any timeouts and resends
                 transaction.monitor_timeout()?;
                 // if instant mode send naks
@@ -694,8 +695,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                             transaction.id()
                         )
                     }
-                }
-                thread::sleep(Duration::from_millis(1));
+                };
             }
 
             Ok(transaction.generate_report())
@@ -1463,28 +1463,36 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                     }
                                     None => {
                                         {
+                                            thread::sleep(Duration::from_millis(5));
                                             // force a cleanup check then try again
                                             let mut ind = 0;
                                             while ind < self.transaction_handles.len() {
                                                 if self.transaction_handles[ind].is_finished() {
                                                     let handle =
                                                         self.transaction_handles.remove(ind);
+                                                    println!("Cleaning up {}", ind);
                                                     match handle.join() {
-                                                        Ok(Ok(report)) => {
+                                                        Ok(Ok(inner_report)) => {
                                                             // remove the channel for this transaction if it is complete
                                                             let _ = transaction_channels
-                                                                .remove(&report.id);
+                                                                .remove(&inner_report.id);
                                                             // keep all proxy id maps where the finished transaction ID is not the entry
                                                             self.proxy_id_map.retain(|_, value| {
-                                                                *value != report.id
+                                                                *value != inner_report.id
                                                             });
-                                                            self.history
-                                                                .insert(report.id.clone(), report);
+                                                            self.history.insert(
+                                                                inner_report.id.clone(),
+                                                                inner_report,
+                                                            );
                                                         }
                                                         Ok(Err(err)) => {
-                                                            info!("Error occured during transaction: {}", err)
+                                                            info!("Error occured during transaction: {}", err);
+                                                            println!("Error occured during transaction: {}", err)
                                                         }
-                                                        Err(_) => error!("Unable to join handle!"),
+                                                        Err(_err) => {
+                                                            error!("Unable to join handle!");
+                                                            println!("Error occured during transaction: {:?}", _err)
+                                                        }
                                                     };
                                                 } else {
                                                     ind += 1;
@@ -1500,9 +1508,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                                 data.clone().encode()
                                             }
                                             None => {
-                                                println!(
-                                            "Cannot find information on requested transaction."
-                                        );
+                                                println!("Cannot find information on requested transaction.");
                                                 info!("Cannot find information on requested transaction.");
                                                 vec![]
                                             }

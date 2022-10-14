@@ -587,9 +587,9 @@ fn f1s9(get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>)) {
         })
         .expect("unable to send put request.");
 
-    thread::sleep(Duration::from_millis(2));
+    thread::sleep(Duration::from_millis(5));
     user_remote.cancel(id.clone()).expect("unable to cancel.");
-    thread::sleep(Duration::from_millis(2));
+    thread::sleep(Duration::from_millis(5));
 
     let mut report = user_remote
         .report(id.clone())

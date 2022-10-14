@@ -1,7 +1,7 @@
-use std::io::{Error as IoError, ErrorKind, Write};
+use std::io::{Error as IoError, ErrorKind, Read, Write};
 
 use crate::{
-    daemon::{PutRequest, UserPrimitive, SOCKET_ADDR},
+    daemon::{PutRequest, Report, UserPrimitive, SOCKET_ADDR},
     pdu::{EntityID, PDUEncode, TransactionSeqNum},
     transaction::TransactionID,
 };
@@ -48,7 +48,35 @@ impl User {
     pub fn cancel(&mut self, transaction: TransactionID) -> Result<(), IoError> {
         self.send(UserPrimitive::Cancel(transaction.0, transaction.1))
     }
-    pub fn report(&mut self, transaction: TransactionID) -> Result<(), IoError> {
-        self.send(UserPrimitive::Report(transaction.0, transaction.1))
+    pub fn report(&mut self, transaction: TransactionID) -> Result<Option<Report>, IoError> {
+        let primitive = UserPrimitive::Report(transaction.clone().0, transaction.clone().1);
+        let mut connection = LocalSocketStream::connect(self.socket.as_str())?;
+        connection.write_all(primitive.encode().as_slice())?;
+
+        let report = {
+            let mut u8_buff = [0_u8; 1];
+
+            connection.read_exact(&mut u8_buff)?;
+
+            match u8_buff[0] {
+                0 => None,
+                _ => Some(
+                    Report::decode(&mut connection)
+                        .map_err(|_| IoError::from(ErrorKind::InvalidData))?,
+                ),
+            }
+        };
+        match &report {
+            Some(data) => println!(
+                "Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.",
+                data.id.0, data.id.1, data.state, data.status, data.condition
+            ),
+            None => println!(
+                "No Report available for ({:?} , {:?})",
+                transaction.0, transaction.1
+            ),
+        }
+
+        Ok(report)
     }
 }

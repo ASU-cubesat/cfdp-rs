@@ -80,7 +80,7 @@ pub trait PDUTransport {
     ) -> Result<(), IoError>;
 }
 
-/// A wrapper struct around a [UdpSocketz] and a Mapping from
+/// A wrapper struct around a [UdpSocket] and a Mapping from
 /// EntityIDs to [SocketAddr] instances.
 pub struct UdpTransport {
     socket: UdpSocket,
@@ -96,6 +96,19 @@ impl UdpTransport {
         socket.set_write_timeout(Some(Duration::from_secs(1)))?;
         socket.set_nonblocking(true)?;
         Ok(Self { socket, entity_map })
+    }
+}
+impl TryFrom<(UdpSocket, HashMap<VariableID, SocketAddr>)> for UdpTransport {
+    type Error = IoError;
+    fn try_from(inputs: (UdpSocket, HashMap<VariableID, SocketAddr>)) -> Result<Self, Self::Error> {
+        let me = Self {
+            socket: inputs.0,
+            entity_map: inputs.1,
+        };
+        me.socket.set_read_timeout(Some(Duration::from_secs(1)))?;
+        me.socket.set_write_timeout(Some(Duration::from_secs(1)))?;
+        me.socket.set_nonblocking(true)?;
+        Ok(me)
     }
 }
 impl PDUTransport for UdpTransport {

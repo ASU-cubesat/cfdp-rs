@@ -19,7 +19,7 @@ use crossbeam_channel::{
 };
 use interprocess::local_socket::LocalSocketListener;
 use itertools::{Either, Itertools};
-use log::{error, info, warn};
+use log::{error, info};
 use num_traits::FromPrimitive;
 
 use crate::{
@@ -311,17 +311,67 @@ enum Command {
     Cancel,
     Suspend,
     Resume,
-    Report(
-        Sender<(
-            TransactionID,
-            TransactionState,
-            TransactionStatus,
-            Condition,
-        )>,
-    ),
+    Report(Sender<Report>),
     // may find a use for abandon in the future.
     #[allow(unused)]
     Abandon,
+}
+
+/// Simple Status Report
+#[derive(Debug, Clone)]
+pub struct Report {
+    pub id: TransactionID,
+    pub state: TransactionState,
+    pub status: TransactionStatus,
+    pub condition: Condition,
+}
+impl Report {
+    pub fn encode(self) -> Vec<u8> {
+        let mut buff = self.id.0.encode();
+        buff.extend(self.id.1.encode());
+        buff.push(self.state as u8);
+        buff.push(self.status as u8);
+        buff.push(self.condition as u8);
+
+        buff
+    }
+
+    pub fn decode<T: Read>(buffer: &mut T) -> Result<Self, Box<dyn std::error::Error>> {
+        let id = {
+            let entity_id = EntityID::decode(buffer)?;
+            let sequence_num = TransactionSeqNum::decode(buffer)?;
+
+            (entity_id, sequence_num)
+        };
+
+        let mut u8_buff = [0_u8; 1];
+
+        let state = {
+            buffer.read_exact(&mut u8_buff)?;
+            let possible = u8_buff[0];
+            TransactionState::from_u8(possible).ok_or(TransactionError::InvalidStatus(possible))?
+        };
+
+        let status = {
+            buffer.read_exact(&mut u8_buff)?;
+            let possible = u8_buff[0];
+            TransactionStatus::from_u8(possible)
+                .ok_or(PDUError::InvalidTransactionStatus(possible))?
+        };
+
+        let condition = {
+            buffer.read_exact(&mut u8_buff)?;
+            let possible = u8_buff[0];
+            Condition::from_u8(possible).ok_or(PDUError::InvalidCondition(possible))?
+        };
+
+        Ok(Self {
+            id,
+            state,
+            status,
+            condition,
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -346,7 +396,7 @@ pub struct EntityConfig {
 type SpawnerTuple = (
     (EntityID, TransactionSeqNum),
     Sender<Command>,
-    JoinHandle<Result<TransactionID, TransactionError>>,
+    JoinHandle<Result<Report, TransactionError>>,
 );
 
 fn get_proxy_request(origin_id: &TransactionID, messages: &[ProxyOperation]) -> Vec<PutRequest> {
@@ -489,7 +539,7 @@ fn categorize_user_msg(
 /// PDUs are sent from each Transaction directly to their respective PDUTransport implementations.
 pub struct Daemon<T: FileStore + Send + 'static> {
     // The collection of all current transactions
-    transaction_handles: Vec<JoinHandle<Result<TransactionID, TransactionError>>>,
+    transaction_handles: Vec<JoinHandle<Result<Report, TransactionError>>>,
     // the vector of transportation tx channel connections
     transport_tx_map: HashMap<EntityID, Sender<(VariableID, PDU)>>,
     // the vector of transportation rx channel connections
@@ -514,8 +564,10 @@ pub struct Daemon<T: FileStore + Send + 'static> {
     proxy_id_map: HashMap<TransactionID, TransactionID>,
     // termination signal sent to children threads
     terminate: Arc<AtomicBool>,
-
+    // socket listener for incoming User requests
     listener: LocalSocketListener,
+    // history of transactions this daemon has participated in
+    history: HashMap<TransactionID, Report>,
 }
 impl<T: FileStore + Send + 'static> Daemon<T> {
     #[allow(clippy::too_many_arguments)]
@@ -569,6 +621,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
             proxy_id_map: HashMap::new(),
             terminate,
             listener,
+            history: HashMap::new(),
         })
     }
     fn spawn_receive_transaction(
@@ -644,12 +697,25 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                 }
                 thread::sleep(Duration::from_millis(1));
             }
-            Ok(transaction.id())
+
+            Ok(transaction.generate_report())
         });
 
         (id, transaction_tx, handle)
     }
 
+    fn get_report(
+        id: (EntityID, TransactionSeqNum),
+        channels: &HashMap<(EntityID, TransactionSeqNum), Sender<Command>>,
+    ) -> Option<Report> {
+        channels
+            .get(&id)
+            .and_then(|chan| {
+                let (tx, rx) = bounded(1);
+                chan.send(Command::Report(tx)).map(|_| rx.recv().ok()).ok()
+            })
+            .flatten()
+    }
     #[allow(clippy::too_many_arguments)]
     fn spawn_send_transaction(
         request: PutRequest,
@@ -755,7 +821,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                 }
                 thread::sleep(Duration::from_micros(1));
             }
-            Ok(transaction.id())
+            Ok(transaction.generate_report())
         });
         Ok((id, transaction_tx, handle))
     }
@@ -814,6 +880,12 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                     true,
                                 )?;
                                 self.proxy_id_map.insert(origin_id.clone(), id.clone());
+
+                                let response = Self::get_report(id.clone(), &transaction_channels);
+                                if let Some(report) = response {
+                                    self.history.insert(id.clone(), report);
+                                }
+
                                 self.transaction_handles.push(handle);
                                 transaction_channels.insert(id, sender);
                             }
@@ -940,30 +1012,31 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                                     self.message_tx.clone(),
                                                     false,
                                                 )?;
+
+                                            let response =
+                                                Self::get_report(id.clone(), &transaction_channels);
+                                            if let Some(report) = response {
+                                                self.history.insert(id.clone(), report);
+                                            }
                                             self.transaction_handles.push(handle);
                                             transaction_channels.insert(id, sender);
                                         }
                                     }
                                     UserRequest::RemoteStatusReport(report_request) => {
-                                        // TODO currently it is not possible to get the status of the working threads
-                                        let report = transaction_channels
-                                            .get(&(
+                                        let report = Self::get_report(
+                                            (
                                                 report_request.source_entity_id.clone(),
                                                 report_request.transaction_sequence_number.clone(),
-                                            ))
-                                            .and_then(|chan| {
-                                                let (tx, rx) = bounded(1);
-                                                chan.send(Command::Report(tx))
-                                                    .map(|_| rx.recv().ok())
-                                                    .ok()
-                                            })
-                                            .flatten();
+                                            ),
+                                            &transaction_channels,
+                                        );
+
                                         let response = {
                                             match report {
                                                 Some(data) => RemoteStatusReportResponse {
-                                                    transaction_status: data.2,
-                                                    source_entity_id: data.0 .0,
-                                                    transaction_sequence_number: data.0 .1,
+                                                    transaction_status: data.status,
+                                                    source_entity_id: data.id.0,
+                                                    transaction_sequence_number: data.id.1,
                                                     response_code: true,
                                                 },
                                                 None => RemoteStatusReportResponse {
@@ -1022,6 +1095,12 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                             self.message_tx.clone(),
                                             false,
                                         )?;
+
+                                        let response =
+                                            Self::get_report(id.clone(), &transaction_channels);
+                                        if let Some(report) = response {
+                                            self.history.insert(id.clone(), report);
+                                        }
                                         self.transaction_handles.push(handle);
                                         transaction_channels.insert(id, sender);
                                     }
@@ -1090,6 +1169,12 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                             self.message_tx.clone(),
                                             false,
                                         )?;
+
+                                        let response =
+                                            Self::get_report(id.clone(), &transaction_channels);
+                                        if let Some(report) = response {
+                                            self.history.insert(id.clone(), report);
+                                        }
                                         self.transaction_handles.push(handle);
                                         transaction_channels.insert(id, sender);
                                     }
@@ -1158,6 +1243,12 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                             self.message_tx.clone(),
                                             false,
                                         )?;
+
+                                        let response =
+                                            Self::get_report(id.clone(), &transaction_channels);
+                                        if let Some(report) = response {
+                                            self.history.insert(id.clone(), report);
+                                        }
                                         self.transaction_handles.push(handle);
                                         transaction_channels.insert(id, sender);
                                     }
@@ -1208,7 +1299,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                         .entity_configs
                                         .get(&key.0)
                                         .unwrap_or(&self.default_config);
-                                    let (_id, channel, handle) = Self::spawn_receive_transaction(
+                                    let (id, channel, handle) = Self::spawn_receive_transaction(
                                         &pdu.header,
                                         // TODO! Fill in this error
                                         self.transport_tx_map
@@ -1220,6 +1311,17 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                         self.message_tx.clone(),
                                     );
 
+                                    // can't use the get_report function here due to double borrow
+                                    let (tx, rx) = bounded(1);
+                                    let response = channel
+                                        .send(Command::Report(tx))
+                                        .map(|_| rx.recv().ok())
+                                        .ok()
+                                        .flatten();
+
+                                    if let Some(report) = response {
+                                        self.history.insert(id, report);
+                                    }
                                     self.transaction_handles.push(handle);
                                     channel
                                 });
@@ -1238,18 +1340,22 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                         .entity_configs
                                         .get(&key.0)
                                         .unwrap_or(&self.default_config);
-                                    let (_id, new_channel, handle) =
-                                        Self::spawn_receive_transaction(
-                                            &pdu.header,
-                                            self.transport_tx_map
-                                                .get(&key.0)
-                                                .expect("No transport for Entity ID.")
-                                                .clone(),
-                                            entity_config,
-                                            self.filestore.clone(),
-                                            self.message_tx.clone(),
-                                        );
+                                    let (id, new_channel, handle) = Self::spawn_receive_transaction(
+                                        &pdu.header,
+                                        self.transport_tx_map
+                                            .get(&key.0)
+                                            .expect("No transport for Entity ID.")
+                                            .clone(),
+                                        entity_config,
+                                        self.filestore.clone(),
+                                        self.message_tx.clone(),
+                                    );
 
+                                    let response =
+                                        Self::get_report(id.clone(), &transaction_channels);
+                                    if let Some(report) = response {
+                                        self.history.insert(id.clone(), report);
+                                    }
                                     self.transaction_handles.push(handle);
                                     new_channel.send(msg)?;
                                     // update the dict to have the new channel
@@ -1309,6 +1415,11 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                 false,
                             )?;
 
+                            let response = Self::get_report(id.clone(), &transaction_channels);
+                            if let Some(report) = response {
+                                self.history.insert(id.clone(), report);
+                            }
+
                             self.transaction_handles.push(handle);
                             transaction_channels.insert(id.clone(), sender);
                             let response = {
@@ -1335,28 +1446,33 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                             }
                         }
                         UserPrimitive::Report(id, seq) => {
-                            match transaction_channels.get(&(id.clone(), seq.clone())) {
-                                Some(channel) => {
-                                    let (sender, rx) = bounded(1);
-                                    let report = channel
-                                        .send(Command::Report(sender))
-                                        .map(|_| rx.recv().ok())
-                                        .ok()
-                                        .flatten();
-                                    if let Some(data) = &report {
-                                        info!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", data.0.0, data.0.1, data.1, data.2, data.3);
-                                        println!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", data.0.0, data.0.1, data.1, data.2, data.3)
+                            let report =
+                                Self::get_report((id.clone(), seq.clone()), &transaction_channels);
+                            let response = match report {
+                                Some(data) => {
+                                    info!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", id, seq, data.state, data.status, data.condition);
+                                    println!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", id, seq, data.state, data.status, data.condition);
+                                    self.history.insert(data.id.clone(), data.clone());
+                                    data.clone().encode()
+                                }
+                                None => match self.history.get(&(id.clone(), seq.clone())) {
+                                    Some(data) => {
+                                        info!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", id, seq, data.state, data.status, data.condition);
+                                        println!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", id, seq, data.state, data.status, data.condition);
+                                        data.clone().encode()
                                     }
-                                }
-                                None => {
-                                    println!("No Transaction communication channel found for ({:?}, {:?}).",
-                                    id, seq);
-                                    warn!(
-                                    "No Transaction communication channel found for ({:?}, {:?}).",
-                                    id, seq
-                                    );
-                                }
+                                    None => {
+                                        println!("{:?}", self.history);
+                                        println!(
+                                            "Cannot find information on requested transaction."
+                                        );
+                                        info!("Cannot find information on requested transaction.");
+                                        vec![]
+                                    }
+                                },
                             };
+                            conn.write_all(&[response.len() as u8])?;
+                            conn.write_all(response.as_slice())?;
                         }
                     };
                 }
@@ -1372,17 +1488,18 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
             };
             // join any handles that have completed
             // maybe should only run every so often?
-            if cleanup.elapsed() >= Duration::from_secs(10) {
+            if cleanup.elapsed() >= Duration::from_secs(1) {
                 let mut ind = 0;
                 while ind < self.transaction_handles.len() {
                     if self.transaction_handles[ind].is_finished() {
                         let handle = self.transaction_handles.remove(ind);
                         match handle.join() {
-                            Ok(Ok(id)) => {
+                            Ok(Ok(report)) => {
                                 // remove the channel for this transaction if it is complete
-                                let _ = transaction_channels.remove(&id);
+                                let _ = transaction_channels.remove(&report.id);
                                 // keep all proxy id maps where the finished transaction ID is not the entry
-                                self.proxy_id_map.retain(|_, value| *value != id);
+                                self.proxy_id_map.retain(|_, value| *value != report.id);
+                                self.history.insert(report.id.clone(), report);
                             }
                             Ok(Err(err)) => {
                                 info!("Error occured during transaction: {}", err)

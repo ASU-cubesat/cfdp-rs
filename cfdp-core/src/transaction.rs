@@ -12,9 +12,10 @@ use camino::Utf8PathBuf;
 use crossbeam_channel::{SendError, Sender};
 use interprocess::local_socket::LocalSocketStream;
 use log::info;
+use num_derive::FromPrimitive;
 
 use crate::{
-    daemon::{PutRequest, SOCKET_ADDR},
+    daemon::{PutRequest, Report, SOCKET_ADDR},
     filestore::{ChecksumType, FileChecksum, FileStore, FileStoreError},
     pdu::{
         ACKSubDirective, CRCFlag, Condition, DeliveryCode, Direction, EndOfFile, EntityID,
@@ -44,14 +45,8 @@ pub enum TransactionError {
     MissingMetadata(TransactionID),
     MissingNak,
     NoChecksum,
-    Report(
-        SendError<(
-            TransactionID,
-            TransactionState,
-            TransactionStatus,
-            Condition,
-        )>,
-    ),
+    Report(SendError<Report>),
+    InvalidStatus(u8),
 }
 impl From<FileStoreError> for TransactionError {
     fn from(error: FileStoreError) -> Self {
@@ -73,24 +68,8 @@ impl From<SendError<(TransactionID, TransmissionMode, Vec<MessageToUser>)>> for 
         Self::UserMessage(error)
     }
 }
-impl
-    From<
-        SendError<(
-            TransactionID,
-            TransactionState,
-            TransactionStatus,
-            Condition,
-        )>,
-    > for TransactionError
-{
-    fn from(
-        error: SendError<(
-            TransactionID,
-            TransactionState,
-            TransactionStatus,
-            Condition,
-        )>,
-    ) -> Self {
+impl From<SendError<Report>> for TransactionError {
+    fn from(error: SendError<Report>) -> Self {
         Self::Report(error)
     }
 }
@@ -124,6 +103,7 @@ impl Display for TransactionError {
             Self::Report(report) => {
                 write!(f, "Unable to send report to Daemon process. {:?}.", report)
             }
+            Self::InvalidStatus(val) => write!(f, "No Transaction status for code {}.", val),
         }
     }
 }
@@ -142,6 +122,7 @@ impl Error for TransactionError {
             Self::MissingNak => None,
             Self::NoChecksum => None,
             Self::Report(_) => None,
+            Self::InvalidStatus(_) => None,
         }
     }
 }
@@ -157,7 +138,7 @@ enum WaitingOn {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum TransactionState {
     Active,
     Suspended,
@@ -334,20 +315,13 @@ impl<T: FileStore> Transaction<T> {
     pub fn get_mode(&self) -> TransmissionMode {
         self.config.transmission_mode.clone()
     }
-    pub fn generate_report(
-        &self,
-    ) -> (
-        TransactionID,
-        TransactionState,
-        TransactionStatus,
-        Condition,
-    ) {
-        (
-            self.id(),
-            self.get_state().clone(),
-            self.get_status().clone(),
-            self.condition.clone(),
-        )
+    pub fn generate_report(&self) -> Report {
+        Report {
+            id: self.id(),
+            state: self.get_state().clone(),
+            status: self.get_status().clone(),
+            condition: self.condition.clone(),
+        }
     }
     fn get_header(
         &mut self,

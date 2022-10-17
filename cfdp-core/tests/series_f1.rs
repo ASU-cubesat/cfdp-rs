@@ -95,7 +95,7 @@ fn f1s2(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 
 #[rstest]
 #[cfg_attr(target_os = "windows", ignore)]
-#[timeout(Duration::from_secs(2))]
+#[timeout(Duration::from_secs(10))]
 // Series F1
 // Sequence 3 Test
 // Test goal:
@@ -103,7 +103,7 @@ fn f1s2(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 // Configuration:
 //  - Acknowledged
 //  - File Size: Medium
-fn flaky_f1s3(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
+fn f1s3(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
     let (local_path, filestore) = get_filestore;
 
     let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
@@ -561,7 +561,7 @@ fn f1s8(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 //  - Check User Cancel Functionality
 // Configuration:
 //  - Cancel initiated from Receiver
-fn flaky_f1s9(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
+fn f1s9(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
     let (local_path, filestore) = get_filestore;
 
     let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
@@ -629,12 +629,12 @@ fn f1s10(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
     let (local_path, filestore) = get_filestore;
 
     let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
-    let out_file: Utf8PathBuf = "remote/medium_f1s10.txt".into();
+    let out_file: Utf8PathBuf = "remote/large_f1s10.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
     let id = user
         .put(PutRequest {
-            source_filename: "local/medium.txt".into(),
+            source_filename: "local/large.txt".into(),
             destination_filename: out_file,
             destination_entity_id: EntityID::from(1_u16),
             transmission_mode: TransmissionMode::Unacknowledged,
@@ -648,7 +648,7 @@ fn f1s10(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         .expect("cannot send report")
         .is_none()
     {
-        thread::sleep(Duration::from_micros(1));
+        thread::sleep(Duration::from_millis(1));
     }
 
     user.cancel(id.clone()).expect("unable to cancel.");

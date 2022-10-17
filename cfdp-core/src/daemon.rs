@@ -1536,6 +1536,11 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                     }
                                 },
                             };
+                            println!(
+                                "Sending report length {}, val: {:?}",
+                                response.len(),
+                                response
+                            );
                             conn.write_all(&[response.len() as u8])?;
                             conn.write_all(response.as_slice())?;
                         }

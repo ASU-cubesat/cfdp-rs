@@ -49,6 +49,7 @@ impl<'a, T> Drop for JoD<'a, T> {
     fn drop(&mut self) {
         self.signal.store(true, Ordering::Relaxed);
         let handle = self.handle.remove(0);
+
         handle.join().expect("Unable to join handle.");
     }
 }
@@ -74,13 +75,10 @@ pub(crate) fn create_daemons<T: FileStore + Send + 'static>(
         checksum_type: ChecksumType::Modular,
     };
 
-    let remote_config = {
-        let mut temp = HashMap::new();
-
-        temp.insert(EntityID::from(0_u16), config.clone());
-        temp.insert(EntityID::from(1_u16), config.clone());
-        temp
-    };
+    let remote_config = HashMap::from([
+        (EntityID::from(0_u16), config.clone()),
+        (EntityID::from(1_u16), config.clone()),
+    ]);
     // Boolean to track if a kill signal is received
     let terminate = Arc::new(AtomicBool::new(false));
 
@@ -168,12 +166,10 @@ fn make_entities(
     let local_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind local UDP.");
     let local_addr = local_udp.local_addr().expect("Cannot find local address.");
 
-    let entity_map = {
-        let mut temp = HashMap::new();
-        temp.insert(EntityID::from(0_u16), local_addr);
-        temp.insert(EntityID::from(1_u16), remote_addr);
-        temp
-    };
+    let entity_map = HashMap::from([
+        (EntityID::from(0_u16), local_addr),
+        (EntityID::from(1_u16), remote_addr),
+    ]);
 
     let local_transport = UdpTransport::try_from((local_udp, entity_map.clone()))
         .expect("Unable to make Lossy Transport.");
@@ -237,7 +233,12 @@ fn make_entities(
 #[fixture]
 #[once]
 pub(crate) fn get_filestore(
-    make_entities: &'static (String, Arc<Mutex<NativeFileStore>>, JoD<()>, JoD<()>),
+    make_entities: &'static (
+        String,
+        Arc<Mutex<NativeFileStore>>,
+        JoD<'static, ()>,
+        JoD<'static, ()>,
+    ),
 ) -> (&'static String, Arc<Mutex<NativeFileStore>>) {
     (&make_entities.0, make_entities.1.clone())
 }

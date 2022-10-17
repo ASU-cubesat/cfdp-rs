@@ -590,7 +590,7 @@ fn fixture_f2s6(
 // Series F2
 // Sequence 6 Test
 // Test goal:
-//  - Recover from noisey environment
+//  - Recover from noisy environment
 // Configuration:
 //  - Acknowledged
 //  - File Size: Medium

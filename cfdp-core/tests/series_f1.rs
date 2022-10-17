@@ -532,7 +532,7 @@ fn f1s8(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         thread::sleep(Duration::from_millis(1));
     }
     user.cancel(id.clone()).expect("unable to cancel.");
-    thread::sleep(Duration::from_millis(2));
+    thread::sleep(Duration::from_millis(5));
 
     let mut report = user
         .report(id.clone())
@@ -540,7 +540,7 @@ fn f1s8(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         .unwrap();
 
     while report.condition != Condition::CancelReceived {
-        thread::sleep(Duration::from_millis(1));
+        thread::sleep(Duration::from_millis(5));
         report = user
             .report(id.clone())
             .expect("Unable to send Report Request.")
@@ -603,7 +603,7 @@ fn f1s9(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         .unwrap();
 
     while report.condition != Condition::CancelReceived {
-        thread::sleep(Duration::from_millis(1));
+        thread::sleep(Duration::from_millis(5));
         report = user_remote
             .report(id.clone())
             .expect("Unable to send Report Request.")
@@ -652,6 +652,7 @@ fn f1s10(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
     }
 
     user.cancel(id.clone()).expect("unable to cancel.");
+    thread::sleep(Duration::from_millis(5));
 
     let mut report = user
         .report(id.clone())
@@ -659,7 +660,7 @@ fn f1s10(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         .unwrap();
 
     while report.condition != Condition::CancelReceived {
-        thread::sleep(Duration::from_millis(1));
+        thread::sleep(Duration::from_millis(5));
         report = user
             .report(id.clone())
             .expect("Unable to send Report Request.")

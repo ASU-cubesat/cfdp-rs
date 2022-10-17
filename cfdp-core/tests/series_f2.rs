@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     net::UdpSocket,
-    sync::{Arc, Mutex},
+    sync::{atomic::AtomicBool, Arc},
     thread,
     time::Duration,
 };
@@ -18,19 +18,18 @@ use rstest::{fixture, rstest};
 use tempfile::TempDir;
 
 mod common;
-use common::{create_daemons, get_filestore, tempdir_fixture, JoD, LossyTransport, TransportIssue};
+use common::{
+    create_daemons, get_filestore, tempdir_fixture, terminate, EntityConstructorReturn,
+    LossyTransport, TransportIssue,
+};
 
 #[fixture]
 #[once]
 fn fixture_f2s1(
     tempdir_fixture: &TempDir,
-    get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>),
-) -> (
-    String,
-    JoD<'static, ()>,
-    JoD<'static, ()>,
-    Arc<Mutex<NativeFileStore>>,
-) {
+    get_filestore: &(&'static String, Arc<NativeFileStore>),
+    terminate: &Arc<AtomicBool>,
+) -> EntityConstructorReturn {
     let (_, filestore) = get_filestore;
 
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
@@ -81,8 +80,9 @@ fn fixture_f2s1(
         remote_transport_map,
         "f2s1_local.socket",
         "f2s1_remote.socket",
+        terminate.clone(),
     );
-    (path, local, remote, filestore.clone())
+    (path, filestore.clone(), local, remote)
 }
 
 #[rstest]
@@ -96,13 +96,13 @@ fn fixture_f2s1(
 //  - Acknowledged
 //  - File Size: Medium
 //  - Drop first instance of Metadata PDU
-fn f2s1(fixture_f2s1: &'static (String, JoD<()>, JoD<()>, Arc<Mutex<NativeFileStore>>)) {
+fn f2s1(fixture_f2s1: &'static EntityConstructorReturn) {
     // let mut user = User::new(Some(_local_path))
-    let (local_path, _local, _remote, filestore) = fixture_f2s1;
+    let (local_path, filestore, _local, _remote) = fixture_f2s1;
     let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
 
     let out_file: Utf8PathBuf = "remote/medium_f2s1.txt".into();
-    let path_to_out = filestore.lock().unwrap().get_native_path(&out_file);
+    let path_to_out = filestore.get_native_path(&out_file);
 
     user.put(PutRequest {
         source_filename: "local/medium.txt".into(),
@@ -125,13 +125,9 @@ fn f2s1(fixture_f2s1: &'static (String, JoD<()>, JoD<()>, Arc<Mutex<NativeFileSt
 #[once]
 fn fixture_f2s2(
     tempdir_fixture: &TempDir,
-    get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>),
-) -> (
-    String,
-    JoD<'static, ()>,
-    JoD<'static, ()>,
-    Arc<Mutex<NativeFileStore>>,
-) {
+    get_filestore: &(&'static String, Arc<NativeFileStore>),
+    terminate: &Arc<AtomicBool>,
+) -> EntityConstructorReturn {
     let (_, filestore) = get_filestore;
 
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
@@ -182,8 +178,9 @@ fn fixture_f2s2(
         remote_transport_map,
         "f2s2_local.socket",
         "f2s2_remote.socket",
+        terminate.clone(),
     );
-    (path, local, remote, filestore.clone())
+    (path, filestore.clone(), local, remote)
 }
 
 #[rstest]
@@ -197,13 +194,13 @@ fn fixture_f2s2(
 //  - Acknowledged
 //  - File Size: Medium
 //  - Drop first instance of EoF PDU
-fn f2s2(fixture_f2s2: &'static (String, JoD<()>, JoD<()>, Arc<Mutex<NativeFileStore>>)) {
+fn f2s2(fixture_f2s2: &'static EntityConstructorReturn) {
     // let mut user = User::new(Some(_local_path))
-    let (local_path, _local, _remote, filestore) = fixture_f2s2;
+    let (local_path, filestore, _local, _remote) = fixture_f2s2;
     let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
 
     let out_file: Utf8PathBuf = "remote/medium_f2s2.txt".into();
-    let path_to_out = filestore.lock().unwrap().get_native_path(&out_file);
+    let path_to_out = filestore.get_native_path(&out_file);
 
     user.put(PutRequest {
         source_filename: "local/medium.txt".into(),
@@ -226,13 +223,9 @@ fn f2s2(fixture_f2s2: &'static (String, JoD<()>, JoD<()>, Arc<Mutex<NativeFileSt
 #[once]
 fn fixture_f2s3(
     tempdir_fixture: &TempDir,
-    get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>),
-) -> (
-    String,
-    JoD<'static, ()>,
-    JoD<'static, ()>,
-    Arc<Mutex<NativeFileStore>>,
-) {
+    get_filestore: &(&'static String, Arc<NativeFileStore>),
+    terminate: &Arc<AtomicBool>,
+) -> EntityConstructorReturn {
     let (_, filestore) = get_filestore;
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
     let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
@@ -282,8 +275,9 @@ fn fixture_f2s3(
         remote_transport_map,
         "f2s3_local.socket",
         "f2s3_remote.socket",
+        terminate.clone(),
     );
-    (path, local, remote, filestore.clone())
+    (path, filestore.clone(), local, remote)
 }
 
 #[rstest]
@@ -297,13 +291,13 @@ fn fixture_f2s3(
 //  - Acknowledged
 //  - File Size: Medium
 //  - Drop first instance of Finished PDU
-fn f2s3(fixture_f2s3: &'static (String, JoD<()>, JoD<()>, Arc<Mutex<NativeFileStore>>)) {
+fn f2s3(fixture_f2s3: &'static EntityConstructorReturn) {
     // let mut user = User::new(Some(_local_path))
-    let (local_path, _local, _remote, filestore) = fixture_f2s3;
+    let (local_path, filestore, _local, _remote) = fixture_f2s3;
     let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
 
     let out_file: Utf8PathBuf = "remote/medium_f2s3.txt".into();
-    let path_to_out = filestore.lock().unwrap().get_native_path(&out_file);
+    let path_to_out = filestore.get_native_path(&out_file);
 
     user.put(PutRequest {
         source_filename: "local/medium.txt".into(),
@@ -326,13 +320,9 @@ fn f2s3(fixture_f2s3: &'static (String, JoD<()>, JoD<()>, Arc<Mutex<NativeFileSt
 #[once]
 fn fixture_f2s4(
     tempdir_fixture: &TempDir,
-    get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>),
-) -> (
-    String,
-    JoD<'static, ()>,
-    JoD<'static, ()>,
-    Arc<Mutex<NativeFileStore>>,
-) {
+    get_filestore: &(&'static String, Arc<NativeFileStore>),
+    terminate: &Arc<AtomicBool>,
+) -> EntityConstructorReturn {
     let (_, filestore) = get_filestore;
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
     let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
@@ -382,8 +372,9 @@ fn fixture_f2s4(
         remote_transport_map,
         "f2s4_local.socket",
         "f2s4_remote.socket",
+        terminate.clone(),
     );
-    (path, local, remote, filestore.clone())
+    (path, filestore.clone(), local, remote)
 }
 
 #[rstest]
@@ -397,13 +388,13 @@ fn fixture_f2s4(
 //  - Acknowledged
 //  - File Size: Medium
 //  - Drop first instance of ACK(EOF) PDU
-fn f2s4(fixture_f2s4: &'static (String, JoD<()>, JoD<()>, Arc<Mutex<NativeFileStore>>)) {
+fn f2s4(fixture_f2s4: &'static EntityConstructorReturn) {
     // let mut user = User::new(Some(_local_path))
-    let (local_path, _local, _remote, filestore) = fixture_f2s4;
+    let (local_path, filestore, _local, _remote) = fixture_f2s4;
     let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
 
     let out_file: Utf8PathBuf = "remote/medium_f2s4.txt".into();
-    let path_to_out = filestore.lock().unwrap().get_native_path(&out_file);
+    let path_to_out = filestore.get_native_path(&out_file);
 
     user.put(PutRequest {
         source_filename: "local/medium.txt".into(),
@@ -426,13 +417,9 @@ fn f2s4(fixture_f2s4: &'static (String, JoD<()>, JoD<()>, Arc<Mutex<NativeFileSt
 #[once]
 fn fixture_f2s5(
     tempdir_fixture: &TempDir,
-    get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>),
-) -> (
-    String,
-    JoD<'static, ()>,
-    JoD<'static, ()>,
-    Arc<Mutex<NativeFileStore>>,
-) {
+    get_filestore: &(&'static String, Arc<NativeFileStore>),
+    terminate: &Arc<AtomicBool>,
+) -> EntityConstructorReturn {
     let (_, filestore) = get_filestore;
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
     let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
@@ -482,8 +469,9 @@ fn fixture_f2s5(
         remote_transport_map,
         "f2s5_local.socket",
         "f2s5_remote.socket",
+        terminate.clone(),
     );
-    (path, local, remote, filestore.clone())
+    (path, filestore.clone(), local, remote)
 }
 
 #[rstest]
@@ -497,13 +485,13 @@ fn fixture_f2s5(
 //  - Acknowledged
 //  - File Size: Medium
 //  - Drop first instance of ACK(Fin) PDU
-fn f2s5(fixture_f2s5: &'static (String, JoD<()>, JoD<()>, Arc<Mutex<NativeFileStore>>)) {
+fn f2s5(fixture_f2s5: &'static EntityConstructorReturn) {
     // let mut user = User::new(Some(_local_path))
-    let (local_path, _local, _remote, filestore) = fixture_f2s5;
+    let (local_path, filestore, _local, _remote) = fixture_f2s5;
     let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
 
     let out_file: Utf8PathBuf = "remote/medium_f2s5.txt".into();
-    let path_to_out = filestore.lock().unwrap().get_native_path(&out_file);
+    let path_to_out = filestore.get_native_path(&out_file);
 
     user.put(PutRequest {
         source_filename: "local/medium.txt".into(),
@@ -526,13 +514,9 @@ fn f2s5(fixture_f2s5: &'static (String, JoD<()>, JoD<()>, Arc<Mutex<NativeFileSt
 #[once]
 fn fixture_f2s6(
     tempdir_fixture: &TempDir,
-    get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>),
-) -> (
-    String,
-    JoD<'static, ()>,
-    JoD<'static, ()>,
-    Arc<Mutex<NativeFileStore>>,
-) {
+    get_filestore: &(&'static String, Arc<NativeFileStore>),
+    terminate: &Arc<AtomicBool>,
+) -> EntityConstructorReturn {
     let (_, filestore) = get_filestore;
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
     let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
@@ -580,8 +564,9 @@ fn fixture_f2s6(
         remote_transport_map,
         "f2s6_local.socket",
         "f2s6_remote.socket",
+        terminate.clone(),
     );
-    (path, local, remote, filestore.clone())
+    (path, filestore.clone(), local, remote)
 }
 
 #[rstest]
@@ -595,13 +580,13 @@ fn fixture_f2s6(
 //  - Acknowledged
 //  - File Size: Medium
 //  - Drop first instance of Every non-EOF pdu in both directions
-fn f2s6(fixture_f2s6: &'static (String, JoD<()>, JoD<()>, Arc<Mutex<NativeFileStore>>)) {
+fn f2s6(fixture_f2s6: &'static EntityConstructorReturn) {
     // let mut user = User::new(Some(_local_path))
-    let (local_path, _local, _remote, filestore) = fixture_f2s6;
+    let (local_path, filestore, _local, _remote) = fixture_f2s6;
     let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
 
     let out_file: Utf8PathBuf = "remote/medium_f2s6.txt".into();
-    let path_to_out = filestore.lock().unwrap().get_native_path(&out_file);
+    let path_to_out = filestore.get_native_path(&out_file);
 
     user.put(PutRequest {
         source_filename: "local/medium.txt".into(),
@@ -624,13 +609,9 @@ fn f2s6(fixture_f2s6: &'static (String, JoD<()>, JoD<()>, Arc<Mutex<NativeFileSt
 #[once]
 fn fixture_f2s7(
     tempdir_fixture: &TempDir,
-    get_filestore: &(&'static String, Arc<Mutex<NativeFileStore>>),
-) -> (
-    String,
-    JoD<'static, ()>,
-    JoD<'static, ()>,
-    Arc<Mutex<NativeFileStore>>,
-) {
+    get_filestore: &(&'static String, Arc<NativeFileStore>),
+    terminate: &Arc<AtomicBool>,
+) -> EntityConstructorReturn {
     let (_, filestore) = get_filestore;
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
     let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
@@ -680,8 +661,9 @@ fn fixture_f2s7(
         remote_transport_map,
         "f2s7_local.socket",
         "f2s7_remote.socket",
+        terminate.clone(),
     );
-    (path, local, remote, filestore.clone())
+    (path, filestore.clone(), local, remote)
 }
 
 #[rstest]
@@ -695,13 +677,13 @@ fn fixture_f2s7(
 //  - Acknowledged
 //  - File Size: Medium
 //  - Drop all ACK and Finished PDUs
-fn f2s7(fixture_f2s7: &'static (String, JoD<()>, JoD<()>, Arc<Mutex<NativeFileStore>>)) {
+fn f2s7(fixture_f2s7: &'static EntityConstructorReturn) {
     // let mut user = User::new(Some(_local_path))
-    let (local_path, _local, _remote, filestore) = fixture_f2s7;
+    let (local_path, filestore, _local, _remote) = fixture_f2s7;
     let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
 
     let out_file: Utf8PathBuf = "remote/medium_f2s7.txt".into();
-    let path_to_out = filestore.lock().unwrap().get_native_path(&out_file);
+    let path_to_out = filestore.get_native_path(&out_file);
 
     let id = user
         .put(PutRequest {

@@ -7,16 +7,14 @@ use std::{
     string::FromUtf8Error,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        Arc,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
 use camino::Utf8PathBuf;
-use crossbeam_channel::{
-    bounded, unbounded, Receiver, Select, SendTimeoutError, Sender, TryRecvError,
-};
+use crossbeam_channel::{bounded, unbounded, Receiver, Select, Sender, TryRecvError};
 use interprocess::local_socket::LocalSocketListener;
 use itertools::{Either, Itertools};
 use log::{error, info};
@@ -25,7 +23,7 @@ use num_traits::FromPrimitive;
 use crate::{
     filestore::{ChecksumType, FileStore},
     pdu::{
-        error::PDUError, CRCFlag, Condition, DirectoryListingResponse, EntityID,
+        error::PDUError, CRCFlag, Condition, Direction, DirectoryListingResponse, EntityID,
         FaultHandlerAction, FileSizeFlag, FileSizeSensitive, FileStoreRequest, ListingResponseCode,
         MessageToUser, OriginatingTransactionIDMessage, PDUEncode, PDUHeader, ProxyOperation,
         ProxyPutRequest, RemoteStatusReportResponse, RemoteSuspendResponse, SegmentedData,
@@ -547,7 +545,7 @@ pub struct Daemon<T: FileStore + Send + 'static> {
     // // mapping of unique transaction ids to channels used to talk to each transaction
     // transaction_channels: HashMap<(EntityID, Vec<u8>), Sender<Command>>,
     // the underlying filestore used by this Daemon
-    filestore: Arc<Mutex<T>>,
+    filestore: Arc<T>,
     // message reciept channel used to execute User Operations
     message_rx: Receiver<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
     // message sender channel used to execute User Operations by Transactions
@@ -569,13 +567,13 @@ pub struct Daemon<T: FileStore + Send + 'static> {
     // history of transactions this daemon has participated in
     history: HashMap<TransactionID, Report>,
 }
-impl<T: FileStore + Send + 'static> Daemon<T> {
+impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         entity_id: EntityID,
         sequence_num: TransactionSeqNum,
         transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>>,
-        filestore: Arc<Mutex<T>>,
+        filestore: Arc<T>,
         entity_configs: HashMap<VariableID, EntityConfig>,
         default_config: EntityConfig,
         terminate: Arc<AtomicBool>,
@@ -628,9 +626,9 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
         header: &PDUHeader,
         transport_tx: Sender<(VariableID, PDU)>,
         entity_config: EntityConfig,
-        filestore: Arc<Mutex<T>>,
+        filestore: Arc<T>,
         message_tx: Sender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
-    ) -> SpawnerTuple {
+    ) -> Result<SpawnerTuple, Box<dyn std::error::Error>> {
         let (transaction_tx, transaction_rx) = unbounded();
 
         let config = TransactionConfig {
@@ -648,10 +646,14 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
             inactivity_timeout: entity_config.default_inactivity_timeout,
             send_proxy_response: false,
         };
+        let name = format!(
+            "({:?}, {:?})",
+            &config.source_entity_id, &config.sequence_number
+        );
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
         let id = transaction.id();
 
-        let handle = thread::spawn(move || {
+        let handle = thread::Builder::new().name(name).spawn(move || {
             while transaction.get_state() != &TransactionState::Terminated {
                 thread::sleep(Duration::from_millis(1));
                 // this function handles any timeouts and resends
@@ -699,9 +701,9 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
             }
 
             Ok(transaction.generate_report())
-        });
+        })?;
 
-        (id, transaction_tx, handle)
+        Ok((id, transaction_tx, handle))
     }
 
     fn get_report(
@@ -723,7 +725,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
         source_entity_id: EntityID,
         transport_tx: Sender<(EntityID, PDU)>,
         entity_config: EntityConfig,
-        filestore: Arc<Mutex<T>>,
+        filestore: Arc<T>,
         message_tx: Sender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
         send_proxy_response: bool,
     ) -> Result<SpawnerTuple, Box<dyn std::error::Error>> {
@@ -749,80 +751,87 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
         };
         let mut metadata = construct_metadata(request, entity_config, FileSizeSensitive::Small(0));
 
-        let handle = thread::spawn(move || {
-            let file_size = match filestore.lock()?.get_size(&metadata.source_filename)? {
-                val if val <= u32::MAX as u64 => FileSizeSensitive::Small(val as u32),
-                val => FileSizeSensitive::Large(val),
-            };
-            metadata.file_size = file_size;
-            config.file_size_flag = match &metadata.file_size {
-                FileSizeSensitive::Small(_) => FileSizeFlag::Small,
-                FileSizeSensitive::Large(_) => FileSizeFlag::Large,
-            };
-
-            let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
-            transaction.put(metadata)?;
-
-            while transaction.get_state() != &TransactionState::Terminated {
-                // this function handles any timeouts and resends
-                transaction.monitor_timeout()?;
-                // if we have recieved a NAK send the missing data
-                transaction.send_missing_data()?;
-                // send the next data segment for the first time
-                match transaction.all_data_sent()? {
-                    false => transaction.send_file_segment(None, None)?,
-                    true => {
-                        match transaction.get_mode() {
-                            // for unacknowledged transactions.
-                            // this is the end
-                            TransmissionMode::Unacknowledged => transaction.shutdown(),
-                            TransmissionMode::Acknowledged => {}
-                        }
-                    }
+        let handle = thread::Builder::new()
+            .name(format!(
+                "({:?}, {:?})",
+                config.source_entity_id, config.sequence_number
+            ))
+            .spawn(move || {
+                let file_size = match filestore.get_size(&metadata.source_filename)? {
+                    val if val <= u32::MAX as u64 => FileSizeSensitive::Small(val as u32),
+                    val => FileSizeSensitive::Large(val),
                 };
-                // Handle any messages that are waiting to be processed
-                match transaction_rx.try_recv() {
-                    Ok(command) => {
-                        match command {
-                            Command::Pdu(pdu) => {
-                                match transaction.process_pdu(pdu) {
-                                    Ok(()) => {}
-                                    Err(crate::transaction::TransactionError::UnexpectedPDU(
-                                        _info,
-                                    )) => {
-                                        // log some info on the unexpected PDU?
-                                        println!("Unexpected PDU {_info:?}");
-                                    }
-                                    Err(err) => {
-                                        return Err(err);
+                metadata.file_size = file_size;
+                config.file_size_flag = match &metadata.file_size {
+                    FileSizeSensitive::Small(_) => FileSizeFlag::Small,
+                    FileSizeSensitive::Large(_) => FileSizeFlag::Large,
+                };
+
+                let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
+                transaction.put(metadata)?;
+
+                while transaction.get_state() != &TransactionState::Terminated {
+                    // this function handles any timeouts and resends
+                    transaction.monitor_timeout()?;
+                    // if we have recieved a NAK send the missing data
+                    transaction.send_missing_data()?;
+                    // send the next data segment for the first time
+                    match transaction.all_data_sent()? {
+                        false => transaction.send_file_segment(None, None)?,
+                        true => {
+                            match transaction.get_mode() {
+                                // for unacknowledged transactions.
+                                // this is the end
+                                TransmissionMode::Unacknowledged => transaction.shutdown(),
+                                TransmissionMode::Acknowledged => {}
+                            }
+                        }
+                    };
+                    // Handle any messages that are waiting to be processed
+                    match transaction_rx.try_recv() {
+                        Ok(command) => {
+                            match command {
+                                Command::Pdu(pdu) => {
+                                    match transaction.process_pdu(pdu) {
+                                        Ok(()) => {}
+                                        Err(
+                                            crate::transaction::TransactionError::UnexpectedPDU(
+                                                _info,
+                                            ),
+                                        ) => {
+                                            // log some info on the unexpected PDU?
+                                            println!("Unexpected PDU {_info:?}");
+                                        }
+                                        Err(err) => {
+                                            return Err(err);
+                                        }
                                     }
                                 }
-                            }
-                            Command::Resume => transaction.resume(),
-                            Command::Cancel => transaction.cancel()?,
-                            Command::Suspend => transaction.suspend(),
-                            Command::Abandon => transaction.shutdown(),
-                            Command::Report(sender) => {
-                                sender.send(transaction.generate_report())?
+                                Command::Resume => transaction.resume(),
+                                Command::Cancel => transaction.cancel()?,
+                                Command::Suspend => transaction.suspend(),
+                                Command::Abandon => transaction.shutdown(),
+                                Command::Report(sender) => {
+                                    sender.send(transaction.generate_report())?
+                                }
                             }
                         }
+                        Err(TryRecvError::Empty) => {
+                            // nothing for us at this time just sleep
+                        }
+                        Err(TryRecvError::Disconnected) => {
+                            // Really do not expect to be in this situation
+                            // probably the thread should exit
+                            panic!(
+                                "Connection to Daemon Severed for Transaction {:?}",
+                                transaction.id()
+                            )
+                        }
                     }
-                    Err(TryRecvError::Empty) => {
-                        // nothing for us at this time just sleep
-                    }
-                    Err(TryRecvError::Disconnected) => {
-                        // Really do not expect to be in this situation
-                        // probably the thread should exit
-                        panic!(
-                            "Connection to Daemon Severed for Transaction {:?}",
-                            transaction.id()
-                        )
-                    }
+                    thread::sleep(Duration::from_micros(1));
                 }
-                thread::sleep(Duration::from_micros(1));
-            }
-            Ok(transaction.generate_report())
-        });
+                Ok(transaction.generate_report())
+            })?;
         Ok((id, transaction_tx, handle))
     }
 
@@ -903,18 +912,16 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                             for req in user_reqs.into_iter() {
                                 match req {
                                     UserRequest::DirectoryListing(directory_request) => {
-                                        let request = match self.filestore.lock().map(|fs| {
-                                            fs.list_directory(&directory_request.directory_name)
-                                        }) {
-                                            Ok(Ok(listing)) => {
+                                        let request = match self.filestore.list_directory(&directory_request.directory_name)
+                                    {
+                                            Ok(listing) => {
                                                 let outfile = directory_request
                                                     .directory_name
                                                     .as_path()
                                                     .with_extension(".listing");
 
                                                 let response_code =match
-                                                    self.filestore.lock().map(|fs| {
-                                                        fs
+                                                    self.filestore
                                                             .open(
                                                                 &outfile,
                                                                 OpenOptions::new()
@@ -927,8 +934,8 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                                                     listing.as_bytes(),
                                                                 )
                                                             })
-                                                    }){
-                                                        Ok(Ok(Ok(()))) => ListingResponseCode::Successful,
+                                                        {
+                                                        Ok(Ok(())) => ListingResponseCode::Successful,
                                                         _ => ListingResponseCode::Unsuccessful,
                                                     };
                                                 PutRequest {
@@ -958,7 +965,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                                 ],
                                             }
                                             }
-                                            Err(_) | Ok(Err(_)) => {
+                                            Err(_) => {
 
                                                 PutRequest {
                                                 source_filename: "".into(),
@@ -1290,6 +1297,14 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                     let rx = &self.transport_rx_vec[val - 1];
                     match oper.recv(rx) {
                         Ok(pdu) => {
+                            // find the entity this entity will be sending too.
+                            // If this PDU is to the sender, we send to the destination
+                            // if this PDU is to the receiver, we send to the source
+                            let transport_entity = match &pdu.header.direction {
+                                Direction::ToSender => pdu.header.destination_entity_id.clone(),
+                                Direction::ToReceiver => pdu.header.source_entity_id.clone(),
+                            };
+
                             let key = (
                                 pdu.header.source_entity_id.clone(),
                                 pdu.header.transaction_sequence_number.clone(),
@@ -1305,17 +1320,19 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                         .get(&key.0)
                                         .unwrap_or(&self.default_config)
                                         .clone();
+
                                     let (id, channel, handle) = Self::spawn_receive_transaction(
                                         &pdu.header,
                                         // TODO! Fill in this error
                                         self.transport_tx_map
-                                            .get(&key.0)
+                                            .get(&transport_entity)
                                             .expect("No transport for Entity ID.")
                                             .clone(),
                                         entity_config,
                                         self.filestore.clone(),
                                         self.message_tx.clone(),
-                                    );
+                                    )
+                                    .expect("Cannot spawn new Transaction.");
 
                                     // can't use the get_report function here due to double borrow
                                     let (tx, rx) = bounded(1);
@@ -1332,12 +1349,9 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                     channel
                                 });
 
-                            match channel
-                                .send_timeout(Command::Pdu(pdu.clone()), Duration::from_millis(500))
-                            {
+                            match channel.send(Command::Pdu(pdu.clone())) {
                                 Ok(()) => {}
-                                Err(SendTimeoutError::Timeout(msg))
-                                | Err(SendTimeoutError::Disconnected(msg)) => {
+                                Err(_) => {
                                     // the transaction is completed.
                                     // spawn a new one
                                     // this is very unlikely and only results
@@ -1347,16 +1361,18 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                         .get(&key.0)
                                         .unwrap_or(&self.default_config)
                                         .clone();
-                                    let (id, new_channel, handle) = Self::spawn_receive_transaction(
-                                        &pdu.header,
-                                        self.transport_tx_map
-                                            .get(&key.0)
-                                            .expect("No transport for Entity ID.")
-                                            .clone(),
-                                        entity_config,
-                                        self.filestore.clone(),
-                                        self.message_tx.clone(),
-                                    );
+
+                                    let (id, new_channel, handle) =
+                                        Self::spawn_receive_transaction(
+                                            &pdu.header,
+                                            self.transport_tx_map
+                                                .get(&transport_entity)
+                                                .expect("No transport for Entity ID.")
+                                                .clone(),
+                                            entity_config,
+                                            self.filestore.clone(),
+                                            self.message_tx.clone(),
+                                        )?;
 
                                     let response =
                                         Self::get_report(id.clone(), &transaction_channels);
@@ -1364,7 +1380,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                         self.history.insert(id.clone(), report);
                                     }
                                     self.transaction_handles.push(handle);
-                                    new_channel.send(msg)?;
+                                    new_channel.send(Command::Pdu(pdu.clone()))?;
                                     // update the dict to have the new channel
                                     transaction_channels.insert(key, new_channel);
                                 }
@@ -1459,14 +1475,12 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                             let response = match report {
                                 Some(data) => {
                                     info!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", id, seq, data.state, data.status, data.condition);
-                                    println!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", id, seq, data.state, data.status, data.condition);
                                     self.history.insert(data.id.clone(), data.clone());
                                     data.clone().encode()
                                 }
                                 None => match self.history.get(&(id.clone(), seq.clone())) {
                                     Some(data) => {
                                         info!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", id, seq, data.state, data.status, data.condition);
-                                        println!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", id, seq, data.state, data.status, data.condition);
                                         data.clone().encode()
                                     }
                                     None => {
@@ -1511,7 +1525,6 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                         match self.history.get(&(id.clone(), seq.clone())) {
                                             Some(data) => {
                                                 info!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", id, seq, data.state, data.status, data.condition);
-                                                println!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", id, seq, data.state, data.status, data.condition);
                                                 data.clone().encode()
                                             }
                                             None => {
@@ -1566,21 +1579,38 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                 cleanup = Instant::now();
             }
         }
+
+        // a final cleanup
+        while let Some(handle) = self.transaction_handles.pop() {
+            match handle.join() {
+                Ok(Ok(report)) => {
+                    // remove the channel for this transaction if it is complete
+                    let _ = transaction_channels.remove(&report.id);
+                    // keep all proxy id maps where the finished transaction ID is not the entry
+                    self.proxy_id_map.retain(|_, value| *value != report.id);
+                    self.history.insert(report.id.clone(), report);
+                }
+                Ok(Err(err)) => {
+                    info!("Error occured during transaction: {}", err)
+                }
+                Err(_) => error!("Unable to join handle!"),
+            };
+        }
         Ok(())
     }
 }
 
-impl<T: FileStore + Send + 'static> Drop for Daemon<T> {
-    fn drop(&mut self) {
-        for ind in 0..self.transaction_handles.len() {
-            let handle = self.transaction_handles.remove(ind);
-            match handle.join().expect("Unable to join thread.") {
-                Ok(_) => {}
-                Err(err) => println!("Error during threaded transaction. {err:}"),
-            }
-        }
-    }
-}
+// impl<T: FileStore + Send + 'static> Drop for Daemon<T> {
+//     fn drop(&mut self) {
+//         for ind in 0..self.transaction_handles.len() {
+//             let handle = self.transaction_handles.remove(ind);
+//             match handle.join().expect("Unable to join thread.") {
+//                 Ok(_) => {}
+//                 Err(err) => println!("Error during threaded transaction. {err:}"),
+//             }
+//         }
+//     }
+// }
 
 #[cfg(test)]
 mod test {

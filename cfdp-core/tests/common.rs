@@ -7,7 +7,7 @@ use std::{
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        Arc,
     },
     thread::{self, JoinHandle},
     time::Duration,
@@ -54,14 +54,21 @@ impl<'a, T> Drop for JoD<'a, T> {
     }
 }
 
-pub(crate) fn create_daemons<T: FileStore + Send + 'static>(
+type DaemonType = (
+    String,
+    JoD<'static, Result<(), String>>,
+    JoD<'static, Result<(), String>>,
+);
+
+pub(crate) fn create_daemons<T: FileStore + Sync + Send + 'static>(
     utf8_path: &Utf8Path,
-    filestore: Arc<Mutex<T>>,
+    filestore: Arc<T>,
     local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>>,
     remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>>,
     local_socket: &str,
     remote_socket: &str,
-) -> (String, JoD<'static, ()>, JoD<'static, ()>) {
+    signal: Arc<AtomicBool>,
+) -> DaemonType {
     let config = EntityConfig {
         fault_handler_override: HashMap::from([(
             Condition::PositiveLimitReached,
@@ -79,6 +86,71 @@ pub(crate) fn create_daemons<T: FileStore + Send + 'static>(
         (EntityID::from(0_u16), config.clone()),
         (EntityID::from(1_u16), config.clone()),
     ]);
+
+    let local_path = utf8_path.join(local_socket).as_str().to_owned();
+    let local_filestore = filestore.clone();
+
+    let mut local_daemon = Daemon::new(
+        EntityID::from(0_u16),
+        TransactionSeqNum::from(0_u16),
+        local_transport_map,
+        local_filestore,
+        remote_config.clone(),
+        config.clone(),
+        signal.clone(),
+        Some(&local_path),
+    )
+    .expect("Cannot create daemon listener.");
+
+    let local_handle = thread::Builder::new()
+        .name("Local Daemon".to_string())
+        .spawn(move || {
+            local_daemon
+                .manage_transactions()
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+        .expect("Unable to spwan local.");
+    let remote_path = utf8_path.join(remote_socket).as_str().to_owned();
+
+    let remote_filestore = filestore;
+    let mut remote_daemon = Daemon::new(
+        EntityID::from(1_u16),
+        TransactionSeqNum::from(0_u16),
+        remote_transport_map,
+        remote_filestore,
+        remote_config,
+        config,
+        signal.clone(),
+        Some(&remote_path),
+    )
+    .expect("Cannot create daemon listener.");
+
+    let remote_handle = thread::Builder::new()
+        .name("Remote Daemon".to_string())
+        .spawn(move || {
+            remote_daemon
+                .manage_transactions()
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+        .expect("Unable to spawn remote.");
+
+    let _local_h = JoD::from((local_handle, signal.clone()));
+    let _remote_h: JoD<_> = JoD::from((remote_handle, signal));
+
+    (local_path, _local_h, _remote_h)
+}
+
+#[fixture]
+#[once]
+pub(crate) fn tempdir_fixture() -> TempDir {
+    TempDir::new().unwrap()
+}
+
+#[fixture]
+#[once]
+pub(crate) fn terminate() -> Arc<AtomicBool> {
     // Boolean to track if a kill signal is received
     let terminate = Arc::new(AtomicBool::new(false));
 
@@ -93,73 +165,22 @@ pub(crate) fn create_daemons<T: FileStore + Send + 'static>(
         flag::register(*sig, Arc::clone(&terminate))
             .expect("Unable to register termination signals.");
     }
-    let local_signal = terminate.clone();
-    let local_path = utf8_path.join(local_socket).as_str().to_owned();
-    let local_filestore = filestore.clone();
-
-    let mut local_daemon = Daemon::new(
-        EntityID::from(0_u16),
-        TransactionSeqNum::from(0_u16),
-        local_transport_map,
-        local_filestore,
-        remote_config.clone(),
-        config.clone(),
-        local_signal,
-        Some(&local_path),
-    )
-    .expect("Cannot create daemon listener.");
-
-    let local_handle = thread::Builder::new()
-        .name("Local Daemon".to_string())
-        .spawn(move || {
-            local_daemon.manage_transactions().unwrap();
-        })
-        .expect("Unable to spwan local.");
-    let remote_path = utf8_path.join(remote_socket).as_str().to_owned();
-
-    let remote_signal = terminate.clone();
-    let remote_filestore = filestore;
-    let mut remote_daemon = Daemon::new(
-        EntityID::from(1_u16),
-        TransactionSeqNum::from(0_u16),
-        remote_transport_map,
-        remote_filestore,
-        remote_config,
-        config,
-        remote_signal,
-        Some(&remote_path),
-    )
-    .expect("Cannot create daemon listener.");
-
-    let remote_handle = thread::Builder::new()
-        .name("Remote Daemon".to_string())
-        .spawn(move || {
-            remote_daemon.manage_transactions().unwrap();
-        })
-        .expect("Unable to spawn remote.");
-
-    let _local_h = JoD::from((local_handle, terminate.clone()));
-    let _remote_h: JoD<_> = JoD::from((remote_handle, terminate));
-
-    (local_path, _local_h, _remote_h)
+    terminate
 }
 
-#[fixture]
-#[once]
-pub(crate) fn tempdir_fixture() -> TempDir {
-    TempDir::new().unwrap()
-}
+pub(crate) type EntityConstructorReturn = (
+    String,
+    Arc<NativeFileStore>,
+    JoD<'static, Result<(), String>>,
+    JoD<'static, Result<(), String>>,
+);
 
 #[fixture]
 #[once]
 fn make_entities(
     tempdir_fixture: &TempDir,
-) -> (
-    String,
-    Arc<Mutex<NativeFileStore>>,
-    JoD<'static, ()>,
-    JoD<'static, ()>,
-) {
+    terminate: &Arc<AtomicBool>,
+) -> EntityConstructorReturn {
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
     let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
 
@@ -196,15 +217,11 @@ fn make_entities(
             .expect("Unable to coerce tmp path to String."),
     );
 
-    let filestore = Arc::new(Mutex::new(NativeFileStore::new(&utf8_path)));
+    let filestore = Arc::new(NativeFileStore::new(&utf8_path));
     filestore
-        .lock()
-        .unwrap()
         .create_directory("local")
         .expect("Unable to create local directory.");
     filestore
-        .lock()
-        .unwrap()
         .create_directory("remote")
         .expect("Unable to create local directory.");
 
@@ -226,6 +243,7 @@ fn make_entities(
         remote_transport_map,
         "cfdp_local.socket",
         "cfdp_remote.socket",
+        terminate.clone(),
     );
     (path, filestore, local, remote)
 }
@@ -233,13 +251,8 @@ fn make_entities(
 #[fixture]
 #[once]
 pub(crate) fn get_filestore(
-    make_entities: &'static (
-        String,
-        Arc<Mutex<NativeFileStore>>,
-        JoD<'static, ()>,
-        JoD<'static, ()>,
-    ),
-) -> (&'static String, Arc<Mutex<NativeFileStore>>) {
+    make_entities: &'static EntityConstructorReturn,
+) -> (&'static String, Arc<NativeFileStore>) {
     (&make_entities.0, make_entities.1.clone())
 }
 

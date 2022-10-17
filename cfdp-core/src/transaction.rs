@@ -5,7 +5,7 @@ use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     num::TryFromIntError,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Arc, PoisonError},
 };
 
 use camino::Utf8PathBuf;
@@ -211,7 +211,7 @@ pub struct Transaction<T: FileStore> {
     /// Configuration Information for this Transaction. See [TransactionConfig]
     config: TransactionConfig,
     /// The [FileStore] implementation used to interact with files on disk.
-    filestore: Arc<Mutex<T>>,
+    filestore: Arc<T>,
     /// Channel used to send outgoing PDUs through the Transport layer.
     transport_tx: Sender<(VariableID, PDU)>,
     /// Channel for message to users to propagate back up
@@ -262,7 +262,7 @@ impl<T: FileStore> Transaction<T> {
         // Configuation of this Transaction.
         config: TransactionConfig,
         // Connection to the local FileStore implementation.
-        filestore: Arc<Mutex<T>>,
+        filestore: Arc<T>,
         // Sender channel connected to the Transport thread to send PDUs.
         transport_tx: Sender<(VariableID, PDU)>,
         // Sender channel used to propagate Message To User back up to the Daemon Thread.
@@ -386,7 +386,7 @@ impl<T: FileStore> Transaction<T> {
     }
 
     fn initialize_tempfile(&mut self) -> TransactionResult<()> {
-        self.file_handle = Some(self.filestore.lock()?.open_tempfile()?);
+        self.file_handle = Some(self.filestore.open_tempfile()?);
         Ok(())
     }
 
@@ -400,11 +400,7 @@ impl<T: FileStore> Transaction<T> {
                 .ok_or(TransactionError::MissingMetadata(id))?
                 .source_filename;
 
-            Some(
-                self.filestore
-                    .lock()?
-                    .open(fname, OpenOptions::new().read(true))?,
-            )
+            Some(self.filestore.open(fname, OpenOptions::new().read(true))?)
         };
         Ok(())
     }
@@ -640,7 +636,7 @@ impl<T: FileStore> Transaction<T> {
     fn finalize_file(&mut self) -> TransactionResult<FileStatusCode> {
         let id = self.id();
         {
-            let mut outfile = self.filestore.lock()?.open(
+            let mut outfile = self.filestore.open(
                 self.metadata
                     .as_ref()
                     .map(|meta| meta.destination_filename.clone())
@@ -988,7 +984,7 @@ impl<T: FileStore> Transaction<T> {
                 for request in &meta.filestore_requests {
                     let response = match fail_rest {
                         false => {
-                            let rep = self.filestore.lock()?.process_request(request);
+                            let rep = self.filestore.process_request(request);
                             fail_rest = rep.action_and_status.is_fail();
                             rep
                         }
@@ -1747,9 +1743,9 @@ mod test {
         let (transport_tx, _) = unbounded();
         let (message_tx, _) = unbounded();
         let config = default_config.clone();
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
 
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
         assert_eq!(
@@ -1777,9 +1773,9 @@ mod test {
         let (transport_tx, _) = unbounded();
         let (message_tx, _) = unbounded();
         let config = default_config.clone();
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
 
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
         let payload_len = 12;
@@ -1814,9 +1810,9 @@ mod test {
         let (message_tx, _) = unbounded();
         let mut config = default_config.clone();
         config.action_type = Action::Receive;
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
 
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
 
@@ -1846,9 +1842,9 @@ mod test {
         let (message_tx, _) = unbounded();
         let mut config = default_config.clone();
         config.action_type = Action::Receive;
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
 
         let input = "This is test data\n!";
         let output_file = {
@@ -1887,8 +1883,6 @@ mod test {
         let mut out_string = String::new();
         let contents = {
             filestore
-                .lock()
-                .unwrap()
                 .open(output_file, OpenOptions::new().read(true))
                 .expect("Cannot open finalized file.")
                 .read_to_string(&mut out_string)
@@ -1903,9 +1897,9 @@ mod test {
         let (transport_tx, transport_rx) = unbounded();
         let (message_tx, _) = unbounded();
         let config = default_config.clone();
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
         let mut transaction = Transaction::new(config, filestore.clone(), transport_tx, message_tx);
 
         let path = {
@@ -1951,8 +1945,6 @@ mod test {
             {
                 let mut handle = transaction
                     .filestore
-                    .lock()
-                    .unwrap()
                     .open(fname, OpenOptions::new().create_new(true).write(true))
                     .unwrap();
                 handle
@@ -1975,11 +1967,7 @@ mod test {
         let expected_id = default_config.destination_entity_id.clone();
         assert_eq!(expected_id, destination_id);
         assert_eq!(pdu, received_pdu);
-        filestore
-            .lock()
-            .unwrap()
-            .delete_file(path)
-            .expect("cannot remove file");
+        filestore.delete_file(path).expect("cannot remove file");
     }
 
     #[rstest]
@@ -1993,9 +1981,9 @@ mod test {
         let (transport_tx, transport_rx) = unbounded();
         let (message_tx, _) = unbounded();
         let config = default_config.clone();
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
 
         let mut path = Utf8PathBuf::new();
@@ -2063,8 +2051,6 @@ mod test {
             {
                 let mut handle = transaction
                     .filestore
-                    .lock()
-                    .unwrap()
                     .open(
                         fname,
                         OpenOptions::new().create(true).truncate(true).write(true),
@@ -2084,8 +2070,6 @@ mod test {
 
             transaction
                 .filestore
-                .lock()
-                .unwrap()
                 .delete_file(path.clone())
                 .expect("cannot remove file");
         });
@@ -2111,9 +2095,9 @@ mod test {
             FileSizeFlag::Large => FileSizeSensitive::Large(20),
         };
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
 
         let input = vec![0, 5, 255, 99];
@@ -2194,9 +2178,9 @@ mod test {
         let (transport_tx, transport_rx) = unbounded();
         let (message_tx, _) = unbounded();
         let config = default_config.clone();
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
         let mut transaction = Transaction::new(config, filestore.clone(), transport_tx, message_tx);
 
         let path = {
@@ -2256,8 +2240,6 @@ mod test {
             {
                 let mut handle = transaction
                     .filestore
-                    .lock()
-                    .unwrap()
                     .open(fname, OpenOptions::new().create_new(true).write(true))
                     .unwrap();
                 handle
@@ -2274,11 +2256,7 @@ mod test {
         assert_eq!(expected_id, destination_id);
         assert_eq!(pdu, received_pdu);
 
-        filestore
-            .lock()
-            .unwrap()
-            .delete_file(path)
-            .expect("cannot remove file");
+        filestore.delete_file(path).expect("cannot remove file");
     }
 
     #[rstest]
@@ -2293,9 +2271,9 @@ mod test {
         let mut config = default_config.clone();
         config.transmission_mode = transmission_mode;
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
         let mut transaction =
             Transaction::new(config.clone(), filestore.clone(), transport_tx, message_tx);
 
@@ -2356,8 +2334,6 @@ mod test {
             {
                 let mut handle = transaction
                     .filestore
-                    .lock()
-                    .unwrap()
                     .open(
                         fname,
                         OpenOptions::new().create(true).truncate(true).write(true),
@@ -2381,11 +2357,7 @@ mod test {
         assert_eq!(expected_id, destination_id);
         assert_eq!(pdu, received_pdu);
 
-        filestore
-            .lock()
-            .unwrap()
-            .delete_file(path)
-            .expect("cannot remove file");
+        filestore.delete_file(path).expect("cannot remove file");
     }
 
     #[rstest]
@@ -2401,9 +2373,9 @@ mod test {
         config.transmission_mode = transmission_mode;
         config.action_type = Action::Receive;
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
         let mut transaction = Transaction::new(config.clone(), filestore, transport_tx, message_tx);
 
         let path = {
@@ -2464,9 +2436,9 @@ mod test {
         let (message_tx, _) = unbounded();
         let config = default_config.clone();
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
 
         transaction.ack_timer.restart();
@@ -2500,9 +2472,9 @@ mod test {
         let (message_tx, _) = unbounded();
         let config = default_config.clone();
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
         let mut transaction = Transaction::new(config.clone(), filestore, transport_tx, message_tx);
 
         let path = {
@@ -2557,9 +2529,9 @@ mod test {
         let (message_tx, _) = unbounded();
         let config = default_config.clone();
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
         let mut transaction = Transaction::new(config.clone(), filestore, transport_tx, message_tx);
 
         let path = {
@@ -2615,9 +2587,9 @@ mod test {
         let mut config = default_config.clone();
         config.action_type = Action::Receive;
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
         let mut transaction = Transaction::new(config, filestore.clone(), transport_tx, message_tx);
 
         let path = {
@@ -2661,7 +2633,7 @@ mod test {
         transaction.store_file_data(pdu).unwrap();
         transaction.finalize_receive().unwrap();
 
-        assert!(!filestore.lock().unwrap().get_native_path(path).exists());
+        assert!(!filestore.get_native_path(path).exists());
     }
 
     #[rstest]
@@ -2716,9 +2688,9 @@ mod test {
         config.action_type = Action::Receive;
         config.transmission_mode = TransmissionMode::Unacknowledged;
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
 
         let path = {
@@ -2803,9 +2775,9 @@ mod test {
         config.action_type = Action::Receive;
         config.transmission_mode = TransmissionMode::Acknowledged;
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
 
         let path = {
@@ -2907,9 +2879,9 @@ mod test {
         config.action_type = Action::Send;
         config.transmission_mode = TransmissionMode::Unacknowledged;
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
 
         let path = {
@@ -2988,9 +2960,9 @@ mod test {
         config.action_type = Action::Send;
         config.transmission_mode = TransmissionMode::Acknowledged;
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
 
         let path = {
@@ -3045,9 +3017,9 @@ mod test {
         config.action_type = Action::Send;
         config.transmission_mode = transmission_mode;
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
 
         let path = {
@@ -3100,9 +3072,9 @@ mod test {
         config.action_type = Action::Receive;
         config.transmission_mode = transmission_mode;
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
 
         let path = {
@@ -3163,9 +3135,9 @@ mod test {
         config.action_type = Action::Receive;
         config.transmission_mode = transmission_mode;
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
 
         let path = {
@@ -3238,9 +3210,9 @@ mod test {
 
         let expected_id = config.source_entity_id.clone();
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
 
         let path = {
@@ -3405,9 +3377,9 @@ mod test {
 
         let expected_id = config.source_entity_id.clone();
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
         let path = {
             let mut buf = Utf8PathBuf::new();
@@ -3496,9 +3468,9 @@ mod test {
 
         let expected_id = config.destination_entity_id.clone();
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
         let path = {
             let mut buf = Utf8PathBuf::new();
@@ -3576,9 +3548,9 @@ mod test {
         config.transmission_mode = TransmissionMode::Acknowledged;
         config.file_size_flag = file_size_flag;
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
         let path = {
             let mut buf = Utf8PathBuf::new();
@@ -3687,9 +3659,9 @@ mod test {
 
         let expected_id = config.destination_entity_id.clone();
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
         let path = {
             let mut buf = Utf8PathBuf::new();
@@ -3765,9 +3737,9 @@ mod test {
         config.action_type = Action::Send;
         config.transmission_mode = TransmissionMode::Acknowledged;
 
-        let filestore = Arc::new(Mutex::new(NativeFileStore::new(
+        let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
-        )));
+        ));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
         let path = {
             let mut buf = Utf8PathBuf::new();

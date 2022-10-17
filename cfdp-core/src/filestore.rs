@@ -343,10 +343,8 @@ impl FileStore for NativeFileStore {
 
     /// This is a wrapper around [File::create]
     fn create_file<P: AsRef<Utf8Path>>(&self, path: P) -> FileStoreResult<()> {
-        {
-            File::create(self.get_native_path(path))?;
-        }
-        Ok(())
+        let f = File::create(self.get_native_path(path))?;
+        f.sync_all().map_err(FileStoreError::IO)
     }
 
     /// This is a wrapper around [fs::remove_file]

@@ -205,7 +205,7 @@ impl PutRequest {
 
 fn construct_metadata(
     req: PutRequest,
-    config: &EntityConfig,
+    config: EntityConfig,
     file_size: FileSizeSensitive,
 ) -> Metadata {
     Metadata {
@@ -215,7 +215,7 @@ fn construct_metadata(
         filestore_requests: req.filestore_requests,
         message_to_user: req.message_to_user,
         closure_requested: config.closure_requested,
-        checksum_type: config.checksum_type.clone(),
+        checksum_type: config.checksum_type,
     }
 }
 
@@ -627,7 +627,7 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
     fn spawn_receive_transaction(
         header: &PDUHeader,
         transport_tx: Sender<(VariableID, PDU)>,
-        entity_config: &EntityConfig,
+        entity_config: EntityConfig,
         filestore: Arc<Mutex<T>>,
         message_tx: Sender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
     ) -> SpawnerTuple {
@@ -722,11 +722,11 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
         sequence_number: TransactionSeqNum,
         source_entity_id: EntityID,
         transport_tx: Sender<(EntityID, PDU)>,
-        entity_config: &EntityConfig,
+        entity_config: EntityConfig,
         filestore: Arc<Mutex<T>>,
         message_tx: Sender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
         send_proxy_response: bool,
-    ) -> Result<SpawnerTuple, Box<dyn std::error::Error + '_>> {
+    ) -> Result<SpawnerTuple, Box<dyn std::error::Error>> {
         let (transaction_tx, transaction_rx) = unbounded();
         let id = (source_entity_id.clone(), sequence_number.clone());
 
@@ -861,7 +861,8 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                 let entity_config = self
                                     .entity_configs
                                     .get(&request.destination_entity_id)
-                                    .unwrap_or(&self.default_config);
+                                    .unwrap_or(&self.default_config)
+                                    .clone();
 
                                 let transport_tx = self
                                     .transport_tx_map
@@ -993,7 +994,8 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                             let entity_config = self
                                                 .entity_configs
                                                 .get(&request.destination_entity_id)
-                                                .unwrap_or(&self.default_config);
+                                                .unwrap_or(&self.default_config)
+                                                .clone();
 
                                             let transport_tx = self
                                                 .transport_tx_map
@@ -1077,7 +1079,8 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                         let entity_config = self
                                             .entity_configs
                                             .get(&request.destination_entity_id)
-                                            .unwrap_or(&self.default_config);
+                                            .unwrap_or(&self.default_config)
+                                            .clone();
 
                                         let transport_tx = self
                                             .transport_tx_map
@@ -1151,7 +1154,8 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                         let entity_config = self
                                             .entity_configs
                                             .get(&request.destination_entity_id)
-                                            .unwrap_or(&self.default_config);
+                                            .unwrap_or(&self.default_config)
+                                            .clone();
 
                                         let transport_tx = self
                                             .transport_tx_map
@@ -1225,7 +1229,8 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                         let entity_config = self
                                             .entity_configs
                                             .get(&request.destination_entity_id)
-                                            .unwrap_or(&self.default_config);
+                                            .unwrap_or(&self.default_config)
+                                            .clone();
 
                                         let transport_tx = self
                                             .transport_tx_map
@@ -1298,7 +1303,8 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                     let entity_config = self
                                         .entity_configs
                                         .get(&key.0)
-                                        .unwrap_or(&self.default_config);
+                                        .unwrap_or(&self.default_config)
+                                        .clone();
                                     let (id, channel, handle) = Self::spawn_receive_transaction(
                                         &pdu.header,
                                         // TODO! Fill in this error
@@ -1339,7 +1345,8 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                     let entity_config = self
                                         .entity_configs
                                         .get(&key.0)
-                                        .unwrap_or(&self.default_config);
+                                        .unwrap_or(&self.default_config)
+                                        .clone();
                                     let (id, new_channel, handle) = Self::spawn_receive_transaction(
                                         &pdu.header,
                                         self.transport_tx_map
@@ -1397,7 +1404,8 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                             let entity_config = self
                                 .entity_configs
                                 .get(&request.destination_entity_id)
-                                .unwrap_or(&self.default_config);
+                                .unwrap_or(&self.default_config)
+                                .clone();
 
                             let transport_tx = self
                                 .transport_tx_map
@@ -1470,7 +1478,6 @@ impl<T: FileStore + Send + 'static> Daemon<T> {
                                                 if self.transaction_handles[ind].is_finished() {
                                                     let handle =
                                                         self.transaction_handles.remove(ind);
-                                                    println!("Cleaning up {}", ind);
                                                     match handle.join() {
                                                         Ok(Ok(inner_report)) => {
                                                             // remove the channel for this transaction if it is complete

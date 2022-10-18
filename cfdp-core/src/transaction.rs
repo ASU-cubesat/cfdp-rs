@@ -935,6 +935,7 @@ impl<T: FileStore> Transaction<T> {
             end_of_scope: self.received_file_size.clone(),
             segment_requests: self.naks.clone().into(),
         };
+
         let payload = PDUPayload::Directive(Operations::Nak(nak));
         let payload_len = payload.clone().encode().len();
 
@@ -1153,61 +1154,82 @@ impl<T: FileStore> Transaction<T> {
                                         SegmentRequestForm {
                                             start_offset: FileSizeSensitive::Small(s),
                                             end_offset: FileSizeSensitive::Small(e),
-                                        } => (s..e)
-                                            .step_by(self.config.file_size_segment.into())
-                                            .map(|num| {
-                                                if num
-                                                    < e.saturating_sub(
-                                                        self.config.file_size_segment.into(),
-                                                    )
-                                                {
-                                                    SegmentRequestForm {
-                                                        start_offset: FileSizeSensitive::Small(num),
-                                                        end_offset: FileSizeSensitive::Small(
-                                                            num + self.config.file_size_segment
-                                                                as u32,
-                                                        ),
+                                        } => match s == e {
+                                            true => vec![SegmentRequestForm {
+                                                start_offset: FileSizeSensitive::Small(s),
+                                                end_offset: FileSizeSensitive::Small(e),
+                                            }],
+                                            false => (s..e)
+                                                .step_by(self.config.file_size_segment.into())
+                                                .map(|num| {
+                                                    if num
+                                                        < e.saturating_sub(
+                                                            self.config.file_size_segment.into(),
+                                                        )
+                                                    {
+                                                        SegmentRequestForm {
+                                                            start_offset: FileSizeSensitive::Small(
+                                                                num,
+                                                            ),
+                                                            end_offset: FileSizeSensitive::Small(
+                                                                num + self.config.file_size_segment
+                                                                    as u32,
+                                                            ),
+                                                        }
+                                                    } else {
+                                                        SegmentRequestForm {
+                                                            start_offset: FileSizeSensitive::Small(
+                                                                num,
+                                                            ),
+                                                            end_offset: FileSizeSensitive::Small(e),
+                                                        }
                                                     }
-                                                } else {
-                                                    SegmentRequestForm {
-                                                        start_offset: FileSizeSensitive::Small(num),
-                                                        end_offset: FileSizeSensitive::Small(e),
-                                                    }
-                                                }
-                                            })
-                                            .collect::<Vec<SegmentRequestForm>>(),
+                                                })
+                                                .collect::<Vec<SegmentRequestForm>>(),
+                                        },
                                         SegmentRequestForm {
                                             start_offset: FileSizeSensitive::Large(s),
                                             end_offset: FileSizeSensitive::Large(e),
-                                        } => (s..e)
-                                            .step_by(self.config.file_size_segment.into())
-                                            .map(|num| {
-                                                if num
-                                                    < e.saturating_sub(
-                                                        self.config.file_size_segment.into(),
-                                                    )
-                                                {
-                                                    SegmentRequestForm {
-                                                        start_offset: FileSizeSensitive::Large(num),
-                                                        end_offset: FileSizeSensitive::Large(
-                                                            num + self.config.file_size_segment
-                                                                as u64,
-                                                        ),
+                                        } => match s == e {
+                                            true => vec![SegmentRequestForm {
+                                                start_offset: FileSizeSensitive::Large(s),
+                                                end_offset: FileSizeSensitive::Large(e),
+                                            }],
+                                            false => (s..e)
+                                                .step_by(self.config.file_size_segment.into())
+                                                .map(|num| {
+                                                    if num
+                                                        < e.saturating_sub(
+                                                            self.config.file_size_segment.into(),
+                                                        )
+                                                    {
+                                                        SegmentRequestForm {
+                                                            start_offset: FileSizeSensitive::Large(
+                                                                num,
+                                                            ),
+                                                            end_offset: FileSizeSensitive::Large(
+                                                                num + self.config.file_size_segment
+                                                                    as u64,
+                                                            ),
+                                                        }
+                                                    } else {
+                                                        SegmentRequestForm {
+                                                            start_offset: FileSizeSensitive::Large(
+                                                                num,
+                                                            ),
+                                                            end_offset: FileSizeSensitive::Large(e),
+                                                        }
                                                     }
-                                                } else {
-                                                    SegmentRequestForm {
-                                                        start_offset: FileSizeSensitive::Large(num),
-                                                        end_offset: FileSizeSensitive::Large(e),
-                                                    }
-                                                }
-                                            })
-                                            .collect::<Vec<SegmentRequestForm>>(),
+                                                })
+                                                .collect::<Vec<SegmentRequestForm>>(),
+                                        },
                                         _ => unreachable!(),
                                     });
                             self.naks.extend(formatted_segments);
                             // filter out any duplicated NAKS
                             let mut uniques = HashSet::new();
                             self.naks.retain(|element| uniques.insert(element.clone()));
+
                             Ok(())
                         }
                         Operations::Ack(ack) => {
@@ -1434,7 +1456,7 @@ impl<T: FileStore> Transaction<T> {
                                         )
                                         .map_err(FileStoreError::UTF8)?
                                         .into(),
-                                        file_size: metadata.file_size,
+                                        file_size: metadata.file_size.clone(),
                                         checksum_type: metadata.checksum_type,
                                         closure_requested: metadata.closure_requested,
                                         filestore_requests: metadata
@@ -1449,6 +1471,31 @@ impl<T: FileStore> Transaction<T> {
                                             .collect(),
                                         message_to_user: message_to_user.collect(),
                                     });
+                                    self.update_naks(Some(metadata.file_size));
+                                    // need a block here for if we have sent naks
+                                    // in deferred mode. a second EoF is not sent
+                                    // so we should check if we have the whole thing?
+                                    if self.waiting_on == WaitingOn::Nak {
+                                        match self.naks.is_empty() {
+                                            false => self.send_naks()?,
+                                            true => {
+                                                self.finalize_receive()?;
+                                                self.timer.nak.pause();
+                                                self.waiting_on = WaitingOn::None;
+                                                return self.send_finished(
+                                                    if self.condition == Condition::NoError {
+                                                        None
+                                                    } else {
+                                                        Some(
+                                                            self.config
+                                                                .destination_entity_id
+                                                                .clone(),
+                                                        )
+                                                    },
+                                                );
+                                            }
+                                        };
+                                    }
                                 }
                                 Ok(())
                             }

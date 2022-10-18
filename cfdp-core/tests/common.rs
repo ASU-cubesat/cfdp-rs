@@ -279,6 +279,8 @@ pub(crate) enum TransportIssue {
     // Every singel PDU should be dropped once.
     // except for EoF
     Every,
+    // Recreates inactivity at sender
+    Inactivity,
 }
 pub(crate) struct LossyTransport {
     pub(crate) socket: UdpSocket,
@@ -385,10 +387,11 @@ impl PDUTransport for LossyTransport {
                     }
                     TransportIssue::Once(skip_directive) => match &pdu.payload {
                         PDUPayload::Directive(operation) => {
-                            if self.counter == 0 && &operation.get_directive() == skip_directive {
+                            if self.counter == 1 && operation.get_directive() == *skip_directive {
                                 self.counter += 1;
                                 Ok(())
                             } else {
+                                if operation.get_directive() == *skip_directive {}
                                 self.socket
                                     .send_to(pdu.encode().as_slice(), addr)
                                     .map(|_n| ())
@@ -402,7 +405,6 @@ impl PDUTransport for LossyTransport {
                     TransportIssue::All(skip_directive) => match &pdu.payload {
                         PDUPayload::Directive(operation) => {
                             if skip_directive.contains(&operation.get_directive()) {
-                                println!("Skipping {operation:?}");
                                 Ok(())
                             } else {
                                 self.socket
@@ -420,13 +422,18 @@ impl PDUTransport for LossyTransport {
                     TransportIssue::Every => match &pdu.payload {
                         PDUPayload::Directive(operation) => {
                             match (self.counter, operation.get_directive()) {
-                                (0, PDUDirective::EoF) => {
+                                (1, PDUDirective::EoF) => {
                                     self.counter += 1;
                                     self.socket
                                         .send_to(pdu.encode().as_slice(), addr)
                                         .map(|_n| ())
                                 }
-                                (0, _) => Ok(()),
+                                (1, PDUDirective::Ack) => {
+                                    self.counter += 1;
+                                    // increment counter but still don't send it
+                                    Ok(())
+                                }
+                                (1, _) => Ok(()),
                                 (_, _) => self
                                     .socket
                                     .send_to(pdu.encode().as_slice(), addr)
@@ -434,7 +441,7 @@ impl PDUTransport for LossyTransport {
                             }
                         }
                         PDUPayload::FileData(_data) => {
-                            if self.counter == 0 {
+                            if self.counter == 1 {
                                 Ok(())
                             } else {
                                 self.socket
@@ -443,6 +450,17 @@ impl PDUTransport for LossyTransport {
                             }
                         }
                     },
+                    TransportIssue::Inactivity => {
+                        // Send the Metadata PDU only, and nothing else.
+                        if self.counter == 1 {
+                            self.counter += 1;
+                            self.socket
+                                .send_to(pdu.encode().as_slice(), addr)
+                                .map(|_n| ())
+                        } else {
+                            Ok(())
+                        }
+                    }
                 }
             })
     }

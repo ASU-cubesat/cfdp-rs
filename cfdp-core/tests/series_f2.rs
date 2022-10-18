@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use cfdp_core::{
     daemon::PutRequest,
     filestore::{FileStore, NativeFileStore},
@@ -577,7 +577,7 @@ fn fixture_f2s6(
 
 #[rstest]
 #[cfg_attr(target_os = "windows", ignore)]
-#[timeout(Duration::from_secs(5))]
+#[timeout(Duration::from_secs(10))]
 // Series F2
 // Sequence 6 Test
 // Test goal:
@@ -946,6 +946,131 @@ fn f2s9(fixture_f2s9: &'static EntityConstructorReturn) {
 
     // file is still successfully sent
     assert!(path_to_out.exists());
+
+    assert_eq!(report.condition, Condition::InactivityDetected)
+}
+
+#[fixture]
+#[once]
+fn fixture_f2s10(
+    tempdir_fixture: &TempDir,
+    get_filestore: &(&'static String, Arc<NativeFileStore>),
+    terminate: &Arc<AtomicBool>,
+) -> EntityConstructorReturn {
+    let (_, filestore) = get_filestore;
+    let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
+    let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
+
+    let local_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind local UDP.");
+    let local_addr = local_udp.local_addr().expect("Cannot find local address.");
+
+    let entity_map = {
+        let mut temp = HashMap::new();
+        temp.insert(EntityID::from(0_u16), local_addr);
+        temp.insert(EntityID::from(1_u16), remote_addr);
+        temp
+    };
+
+    let local_transport =
+        LossyTransport::try_from((local_udp, entity_map.clone(), TransportIssue::Inactivity))
+            .expect("Unable to Lossy Transport.");
+    let remote_transport =
+        UdpTransport::try_from((remote_udp, entity_map)).expect("Unable to make UdpTransport.");
+
+    let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+        HashMap::from([(
+            vec![EntityID::from(0_u16)],
+            Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
+        )]);
+
+    let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+        HashMap::from([(
+            vec![EntityID::from(1_u16)],
+            Box::new(local_transport) as Box<dyn PDUTransport + Send>,
+        )]);
+
+    let path = Utf8PathBuf::from(
+        tempdir_fixture
+            .path()
+            .as_os_str()
+            .to_str()
+            .expect("Unable to coerce tmp path to String."),
+    );
+    let (path, local, remote) = create_daemons(
+        path.as_path(),
+        filestore.clone(),
+        local_transport_map,
+        remote_transport_map,
+        "f2s10_local.socket",
+        "f2s10_remote.socket",
+        terminate.clone(),
+        [Some(1), Some(10), Some(10)],
+    );
+    (path, filestore.clone(), local, remote)
+}
+
+#[rstest]
+#[cfg_attr(target_os = "windows", ignore)]
+#[timeout(Duration::from_secs(5))]
+// Series F2
+// Sequence 9 Test
+// Test goal:
+//  - check Inactivity at Receiver
+// Configuration:
+//  - Acknowledged
+//  - File Size: Medium
+//  - Drop every PDU but the first from the sender
+fn f2s10(fixture_f2s10: &'static EntityConstructorReturn) {
+    let (local_path, filestore, _local, _remote) = fixture_f2s10;
+
+    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let mut user_remote = User::new(Some(
+        Utf8Path::new(local_path)
+            .parent()
+            .unwrap()
+            .join("f2s10_remote.socket")
+            .as_str(),
+    ))
+    .expect("Cannot connect to remote user.");
+
+    let out_file: Utf8PathBuf = "remote/medium_f2s10.txt".into();
+    let path_to_out = filestore.get_native_path(&out_file);
+
+    let id = user
+        .put(PutRequest {
+            source_filename: "local/medium.txt".into(),
+            destination_filename: out_file,
+            destination_entity_id: EntityID::from(1_u16),
+            transmission_mode: TransmissionMode::Acknowledged,
+            filestore_requests: vec![],
+            message_to_user: vec![],
+        })
+        .expect("unable to send put request.");
+
+    // wait long enough for the nak limit to be reached
+    while user_remote
+        .report(id.clone())
+        .expect("Unable to send Report Request.")
+        .is_none()
+    {
+        thread::sleep(Duration::from_millis(5))
+    }
+
+    let mut report = user_remote
+        .report(id.clone())
+        .expect("Unable to send Report Request.")
+        .unwrap();
+
+    while report.condition != Condition::InactivityDetected {
+        thread::sleep(Duration::from_millis(100));
+        report = user_remote
+            .report(id.clone())
+            .expect("Unable to send Report Request.")
+            .unwrap();
+    }
+
+    // file is still successfully sent
+    assert!(!path_to_out.exists());
 
     assert_eq!(report.condition, Condition::InactivityDetected)
 }

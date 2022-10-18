@@ -50,15 +50,14 @@ impl User {
     }
     pub fn report(&mut self, transaction: TransactionID) -> Result<Option<Report>, IoError> {
         let primitive = UserPrimitive::Report(transaction.clone().0, transaction.clone().1);
-        let id = (transaction.clone().0, transaction.clone().1);
+        // let id = (transaction.clone().0, transaction.clone().1);
         let mut connection = LocalSocketStream::connect(self.socket.as_str())?;
-        println!("{:?} Sending Request", id);
+
         connection.write_all(primitive.encode().as_slice())?;
+
         let report = {
             let mut u8_buff = [0_u8; 1];
-            println!("{:?} Reading size", id);
             connection.read_exact(&mut u8_buff)?;
-            println!("{:?} Getting Report size {}", id, u8_buff[0]);
 
             match u8_buff[0] {
                 0 => None,

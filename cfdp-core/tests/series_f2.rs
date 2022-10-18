@@ -724,3 +724,117 @@ fn f2s7(fixture_f2s7: &'static EntityConstructorReturn) {
 
     assert_eq!(report.condition, Condition::PositiveLimitReached)
 }
+
+#[fixture]
+#[once]
+fn fixture_f2s8(
+    tempdir_fixture: &TempDir,
+    get_filestore: &(&'static String, Arc<NativeFileStore>),
+    terminate: &Arc<AtomicBool>,
+) -> EntityConstructorReturn {
+    let (_, filestore) = get_filestore;
+    let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
+    let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
+
+    let local_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind local UDP.");
+    let local_addr = local_udp.local_addr().expect("Cannot find local address.");
+
+    let entity_map = {
+        let mut temp = HashMap::new();
+        temp.insert(EntityID::from(0_u16), local_addr);
+        temp.insert(EntityID::from(1_u16), remote_addr);
+        temp
+    };
+
+    let local_transport = LossyTransport::try_from((
+        local_udp,
+        entity_map.clone(),
+        TransportIssue::All(vec![PDUDirective::Metadata]),
+    ))
+    .expect("Unable to Lossy Transport.");
+    let remote_transport = LossyTransport::try_from((
+        remote_udp,
+        entity_map,
+        TransportIssue::All(vec![PDUDirective::Nak]),
+    ))
+    .expect("Unable to make Lossy Transport.");
+
+    let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+        HashMap::from([(
+            vec![EntityID::from(0_u16)],
+            Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
+        )]);
+
+    let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+        HashMap::from([(
+            vec![EntityID::from(1_u16)],
+            Box::new(local_transport) as Box<dyn PDUTransport + Send>,
+        )]);
+
+    let path = Utf8PathBuf::from(
+        tempdir_fixture
+            .path()
+            .as_os_str()
+            .to_str()
+            .expect("Unable to coerce tmp path to String."),
+    );
+    let (path, local, remote) = create_daemons(
+        path.as_path(),
+        filestore.clone(),
+        local_transport_map,
+        remote_transport_map,
+        "f2s8_local.socket",
+        "f2s8_remote.socket",
+        terminate.clone(),
+        [Some(10), Some(1), Some(1)],
+    );
+    (path, filestore.clone(), local, remote)
+}
+
+#[rstest]
+#[cfg_attr(target_os = "windows", ignore)]
+#[timeout(Duration::from_secs(5))]
+// Series F2
+// Sequence 8 Test
+// Test goal:
+//  - check NAK limit reached at Receiver
+// Configuration:
+//  - Acknowledged
+//  - File Size: Medium
+//  - Drop all NAK from receiver.
+fn f2s8(fixture_f2s8: &'static EntityConstructorReturn) {
+    let (local_path, filestore, _local, _remote) = fixture_f2s8;
+    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+
+    let out_file: Utf8PathBuf = "remote/medium_f2s8.txt".into();
+    let path_to_out = filestore.get_native_path(&out_file);
+
+    let id = user
+        .put(PutRequest {
+            source_filename: "local/medium.txt".into(),
+            destination_filename: out_file,
+            destination_entity_id: EntityID::from(1_u16),
+            transmission_mode: TransmissionMode::Acknowledged,
+            filestore_requests: vec![],
+            message_to_user: vec![],
+        })
+        .expect("unable to send put request.");
+
+    // wait long enough for the nak limit to be reached
+    let mut report = user
+        .report(id.clone())
+        .expect("Unable to send Report Request.")
+        .unwrap();
+
+    while report.condition != Condition::NakLimitReached {
+        thread::sleep(Duration::from_millis(100));
+        report = user
+            .report(id.clone())
+            .expect("Unable to send Report Request.")
+            .unwrap();
+    }
+
+    assert!(!path_to_out.exists());
+
+    assert_eq!(report.condition, Condition::NakLimitReached)
+}

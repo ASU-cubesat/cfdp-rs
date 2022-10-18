@@ -717,6 +717,10 @@ impl<T: FileStore> Transaction<T> {
 
     pub fn cancel(&mut self) -> TransactionResult<()> {
         self.condition = Condition::CancelReceived;
+        self._cancel()
+    }
+
+    fn _cancel(&mut self) -> TransactionResult<()> {
         match (&self.config.action_type, &self.config.transmission_mode) {
             (Action::Send, TransmissionMode::Acknowledged) => {
                 self.send_eof(Some(self.config.source_entity_id.clone()))
@@ -779,7 +783,7 @@ impl<T: FileStore> Transaction<T> {
                 Ok(true)
             }
             FaultHandlerAction::Cancel => {
-                self.cancel()?;
+                self._cancel()?;
                 Ok(false)
             }
 
@@ -1368,7 +1372,7 @@ impl<T: FileStore> Transaction<T> {
                                 } else {
                                     // Any other condition is essentially a
                                     // CANCEL operation
-                                    self.cancel()
+                                    self._cancel()
                                     // issue finished log
                                     // shutdown?
                                 }
@@ -1553,7 +1557,7 @@ impl<T: FileStore> Transaction<T> {
                         } else {
                             // Any other condition is essentially a
                             // CANCEL operation
-                            self.cancel()
+                            self._cancel()
                             // issue finished log
                             // shutdown?
                         }

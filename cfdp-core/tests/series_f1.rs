@@ -554,7 +554,7 @@ fn f1s8(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 
 #[rstest]
 #[cfg_attr(target_os = "windows", ignore)]
-#[timeout(Duration::from_secs(10))]
+#[timeout(Duration::from_secs(30))]
 // Series F1
 // Sequence 7 Test
 // Test goal:

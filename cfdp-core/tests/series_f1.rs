@@ -377,7 +377,7 @@ fn fixture_f1s6(
 
 #[rstest]
 #[cfg_attr(target_os = "windows", ignore)]
-#[timeout(Duration::from_secs(30))]
+#[timeout(Duration::from_secs(5))]
 // Series F1
 // Sequence 6 Test
 // Test goal:

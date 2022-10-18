@@ -59,10 +59,12 @@ impl PDUEncode for PDU {
         let crc_flag = self.header.crc_flag.clone();
         let mut buffer = self.header.encode();
         buffer.extend(self.payload.encode());
+        println!("Buffer start {:?}", buffer.len());
         match crc_flag {
             CRCFlag::Present => buffer.extend(crc16_ibm_3740(buffer.as_slice()).to_be_bytes()),
             CRCFlag::NotPresent => {}
         }
+        println!("Buffer end {:?}", buffer.len());
         buffer
     }
 
@@ -98,7 +100,10 @@ impl PDUEncode for PDU {
                 buffer.read_exact(&mut u16_buffer)?;
                 let crc16 = u16::from_be_bytes(u16_buffer);
                 let tmp_buffer = {
-                    let mut temp = received_pdu.clone().encode();
+                    let mut input_pdu = received_pdu.clone();
+
+                    input_pdu.header.pdu_data_field_length -= 2;
+                    let mut temp = input_pdu.encode();
                     // remove the crc from the temporary buffer
                     temp.truncate(temp.len() - 2);
                     temp
@@ -106,7 +111,15 @@ impl PDUEncode for PDU {
                 let crc = crc16_ibm_3740(tmp_buffer.as_slice());
                 match crc == crc16 {
                     true => {}
-                    false => return Err(PDUError::CRCFailure(crc16, crc)),
+                    false => {
+                        println!(
+                            "CRC FAILURE, {}, {}, {}",
+                            crc,
+                            crc16,
+                            crc.overflowing_add(crc16).0
+                        );
+                        return Err(PDUError::CRCFailure(crc16, crc));
+                    }
                 }
             }
         }
@@ -173,14 +186,12 @@ mod test {
         #[case] payload: PDUPayload,
         #[values(CRCFlag::NotPresent, CRCFlag::Present)] crc_flag: CRCFlag,
     ) -> PDUResult<()> {
-        let pdu_data_field_length = match &crc_flag {
-            CRCFlag::NotPresent => payload.clone().encode().len() as u16,
-            CRCFlag::Present => payload.clone().encode().len() as u16 + 2_u16,
-        };
+        let pdu_data_field_length = payload.clone().encode().len() as u16;
         let pdu_type = match &payload {
             PDUPayload::Directive(_) => PDUType::FileDirective,
             PDUPayload::FileData(_) => PDUType::FileData,
         };
+
         let expected: PDU = PDU {
             header: PDUHeader {
                 version: U3::One,
@@ -199,7 +210,18 @@ mod test {
             payload,
         };
         let buffer = expected.clone().encode();
-        let recovered = PDU::decode(&mut buffer.as_slice())?;
+        let mut recovered = PDU::decode(&mut buffer.as_slice())?;
+
+        match &recovered.header.crc_flag {
+            CRCFlag::Present => {
+                assert_eq!(
+                    expected.header.pdu_data_field_length + 2,
+                    recovered.header.pdu_data_field_length
+                );
+                recovered.header.pdu_data_field_length -= 2;
+            }
+            CRCFlag::NotPresent => {}
+        };
         assert_eq!(expected, recovered);
         Ok(())
     }

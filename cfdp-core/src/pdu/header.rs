@@ -271,7 +271,11 @@ impl PDUEncode for PDUHeader {
             | ((self.crc_flag as u8) << 1)
             | self.large_file_flag as u8;
         let mut buffer = vec![first_byte];
-        buffer.extend(self.pdu_data_field_length.to_be_bytes());
+        // if the CRC is expected add 2 to the length of the "data" field
+        buffer.extend(match self.crc_flag {
+            CRCFlag::NotPresent => self.pdu_data_field_length.to_be_bytes(),
+            CRCFlag::Present => (self.pdu_data_field_length + 2).to_be_bytes(),
+        });
         buffer.push(
             ((self.segmentation_control as u8) << 7)
                 | ((self.source_entity_id.get_len() as u8 - 1) << 4)
@@ -311,7 +315,7 @@ impl PDUEncode for PDUHeader {
 
         let crc_flag = {
             let possible = (u8_buff[0] & 0x2) >> 1;
-            CRCFlag::from_u8(possible).ok_or(PDUError::InvalidTransmissionMode(possible))?
+            CRCFlag::from_u8(possible).ok_or(PDUError::InvalidCRCFlag(possible))?
         };
 
         let large_file_flag = {
@@ -504,9 +508,19 @@ mod test {
             destination_entity_id,
         };
         let buffer = expected.clone().encode();
-        let recovered = PDUHeader::decode(&mut buffer.as_slice())?;
-
+        let mut recovered = PDUHeader::decode(&mut buffer.as_slice())?;
+        match expected.crc_flag {
+            CRCFlag::Present => {
+                assert_eq!(
+                    expected.pdu_data_field_length,
+                    recovered.pdu_data_field_length - 2
+                );
+                recovered.pdu_data_field_length = expected.pdu_data_field_length;
+            }
+            CRCFlag::NotPresent => {}
+        }
         assert_eq!(expected, recovered);
+
         Ok(())
     }
 }

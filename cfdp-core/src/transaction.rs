@@ -505,6 +505,7 @@ impl<T: FileStore> Transaction<T> {
         offset: Option<u64>,
         length: Option<u16>,
     ) -> TransactionResult<()> {
+        self.timer.restart_inactivity();
         let (offset, file_data) = self.get_file_segment(offset, length)?;
 
         let offset = match &self.config.file_size_flag {
@@ -559,9 +560,10 @@ impl<T: FileStore> Transaction<T> {
     }
 
     pub fn send_missing_data(&mut self) -> TransactionResult<()> {
-        self.timer.restart_inactivity();
         match self.naks.pop_front() {
             Some(request) => {
+                // only restart inactivity if we have something to do.
+                self.timer.restart_inactivity();
                 let (offset, length) = match (request.start_offset, request.end_offset) {
                     (FileSizeSensitive::Small(s), FileSizeSensitive::Small(e)) => {
                         (s.into(), (e - s).try_into()?)

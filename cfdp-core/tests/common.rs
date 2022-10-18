@@ -402,6 +402,7 @@ impl PDUTransport for LossyTransport {
                     TransportIssue::All(skip_directive) => match &pdu.payload {
                         PDUPayload::Directive(operation) => {
                             if skip_directive.contains(&operation.get_directive()) {
+                                println!("Skipping {operation:?}");
                                 Ok(())
                             } else {
                                 self.socket

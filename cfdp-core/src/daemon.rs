@@ -1412,9 +1412,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
 
             match self.listener.accept() {
                 Ok(mut conn) => {
-                    print!("Conncetion Established: ");
                     let primitive = UserPrimitive::decode(&mut conn)?;
-                    println!("Primitive received: {primitive:?}");
                     match primitive {
                         UserPrimitive::Put(request) => {
                             let sequence_number = sequence_num.get_and_increment();
@@ -1538,15 +1536,11 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                     }
                                 },
                             };
-                            println!(
-                                "Sending report length {}, val: {:?}",
-                                response.len(),
-                                response
-                            );
-                            conn.write_all(&[response.len() as u8])?;
-                            conn.write_all(response.as_slice())?;
+                            let full_response = [vec![response.len() as u8], response].concat();
+                            conn.write_all(full_response.as_slice())?;
                         }
                     };
+                    conn.flush()?;
                 }
                 Err(ref e)
                     if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut =>

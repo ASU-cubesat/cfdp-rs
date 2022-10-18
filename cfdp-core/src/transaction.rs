@@ -239,11 +239,9 @@ pub struct Transaction<T: FileStore> {
     // the responses of any filestore actions
     filestore_response: Vec<FileStoreResponse>,
     // Timer used to track if the Nak limit has been reached
-    nak_timer: Timer,
-    // Timer used to track if the Inactivity limit
-    inactivity_timer: Timer,
-    // Timer used to track ACK receipt
-    ack_timer: Timer,
+    // inactivity has occured
+    // or the ACK limit is reached
+    timer: Timer,
     // checksum cache to reduce I/0
     // doubles as stored checksum in received mode
     checksum: Option<u32>,
@@ -272,9 +270,14 @@ impl<T: FileStore> Transaction<T> {
             FileSizeFlag::Small => FileSizeSensitive::Small(0),
             FileSizeFlag::Large => FileSizeSensitive::Large(0),
         };
-        let nak_timer = Timer::new(config.inactivity_timeout, config.max_count);
-        let inactivity_timer = Timer::new(config.inactivity_timeout, config.max_count);
-        let ack_timer = Timer::new(config.inactivity_timeout, config.max_count);
+        let timer = Timer::new(
+            config.inactivity_timeout,
+            config.max_count,
+            config.inactivity_timeout,
+            config.max_count,
+            config.inactivity_timeout,
+            config.max_count,
+        );
 
         let mut transaction = Self {
             status: TransactionStatus::Undefined,
@@ -292,15 +295,13 @@ impl<T: FileStore> Transaction<T> {
             delivery_code: DeliveryCode::Incomplete,
             file_status: FileStatusCode::Unreported,
             filestore_response: Vec::new(),
-            nak_timer,
-            inactivity_timer,
-            ack_timer,
+            timer,
             checksum: None,
             waiting_on: WaitingOn::None,
             state: TransactionState::Active,
             do_once: true,
         };
-        transaction.inactivity_timer.restart();
+        transaction.timer.restart_inactivity();
         transaction
     }
 
@@ -554,7 +555,7 @@ impl<T: FileStore> Transaction<T> {
     }
 
     pub fn send_missing_data(&mut self) -> TransactionResult<()> {
-        self.inactivity_timer.restart();
+        self.timer.restart_inactivity();
         match self.naks.pop_front() {
             Some(request) => {
                 let (offset, length) = match (request.start_offset, request.end_offset) {
@@ -657,10 +658,10 @@ impl<T: FileStore> Transaction<T> {
     }
 
     pub fn send_eof(&mut self, fault_location: Option<VariableID>) -> TransactionResult<()> {
-        self.ack_timer.restart();
+        self.timer.restart_ack();
         self.waiting_on = WaitingOn::AckEof;
         //  if is lazily evaluated so the fault is only handled if the limit is reached
-        if self.ack_timer.limit_reached()
+        if self.timer.ack.limit_reached()
             && !self.proceed_despite_fault(Condition::PositiveLimitReached)?
         {
             return Ok(());
@@ -705,9 +706,9 @@ impl<T: FileStore> Transaction<T> {
 
     pub fn shutdown(&mut self) {
         self.state = TransactionState::Terminated;
-        self.ack_timer.pause();
-        self.nak_timer.pause();
-        self.inactivity_timer.pause();
+        self.timer.ack.pause();
+        self.timer.nak.pause();
+        self.timer.inactivity.pause();
     }
 
     pub fn cancel(&mut self) -> TransactionResult<()> {
@@ -740,17 +741,17 @@ impl<T: FileStore> Transaction<T> {
     }
 
     pub fn suspend(&mut self) {
-        self.ack_timer.pause();
-        self.nak_timer.pause();
-        self.inactivity_timer.pause();
+        self.timer.ack.pause();
+        self.timer.nak.pause();
+        self.timer.inactivity.pause();
         self.state = TransactionState::Suspended;
     }
 
     pub fn resume(&mut self) {
-        self.inactivity_timer.restart();
+        self.timer.restart_inactivity();
         match self.waiting_on {
-            WaitingOn::AckEof | WaitingOn::AckFin => self.ack_timer.restart(),
-            WaitingOn::Nak => self.nak_timer.restart(),
+            WaitingOn::AckEof | WaitingOn::AckFin => self.timer.restart_ack(),
+            WaitingOn::Nak => self.timer.restart_nak(),
             _ => {}
         }
         self.state = TransactionState::Active;
@@ -872,10 +873,10 @@ impl<T: FileStore> Transaction<T> {
     }
 
     fn send_finished(&mut self, fault_location: Option<VariableID>) -> TransactionResult<()> {
-        self.ack_timer.restart();
+        self.timer.restart_ack();
         self.waiting_on = WaitingOn::AckFin;
         //  if is lazily evaluated so the fault is only handled if the limit is reached
-        if self.ack_timer.limit_reached()
+        if self.timer.ack.limit_reached()
             && !self.proceed_despite_fault(Condition::PositiveLimitReached)?
         {
             return Ok(());
@@ -907,10 +908,10 @@ impl<T: FileStore> Transaction<T> {
     }
 
     pub fn send_naks(&mut self) -> TransactionResult<()> {
-        self.nak_timer.restart();
+        self.timer.restart_nak();
         self.waiting_on = WaitingOn::Nak;
         //  if is lazily evaluated so the fault is only handled if the limit is reached
-        if self.nak_timer.limit_reached()
+        if self.timer.nak.limit_reached()
             && !self.proceed_despite_fault(Condition::NakLimitReached)?
         {
             return Ok(());
@@ -1008,16 +1009,16 @@ impl<T: FileStore> Transaction<T> {
     }
 
     pub fn monitor_timeout(&mut self) -> TransactionResult<()> {
-        if self.inactivity_timer.timeout_occured()
-            && self.inactivity_timer.limit_reached()
+        if self.timer.inactivity.timeout_occured()
+            && self.timer.inactivity.limit_reached()
             && !self.proceed_despite_fault(Condition::InactivityDetected)?
         {
             return Ok(());
         }
-        if self.nak_timer.timeout_occured() && self.waiting_on == WaitingOn::Nak {
+        if self.timer.nak.timeout_occured() && self.waiting_on == WaitingOn::Nak {
             return self.send_naks();
         }
-        if self.ack_timer.timeout_occured() {
+        if self.timer.ack.timeout_occured() {
             match self.waiting_on {
                 WaitingOn::AckEof => return self.send_eof(None),
                 WaitingOn::AckFin => return self.send_finished(None),
@@ -1028,7 +1029,7 @@ impl<T: FileStore> Transaction<T> {
     }
 
     pub fn process_pdu(&mut self, pdu: PDU) -> TransactionResult<()> {
-        self.inactivity_timer.restart();
+        self.timer.restart_inactivity();
         let PDU {
             header: _header,
             payload,
@@ -1201,7 +1202,7 @@ impl<T: FileStore> Transaction<T> {
                         }
                         Operations::Ack(ack) => {
                             if ack.directive == PDUDirective::EoF {
-                                self.ack_timer.pause();
+                                self.timer.ack.pause();
                                 self.waiting_on = WaitingOn::None;
                                 // all good
                                 Ok(())
@@ -1301,7 +1302,7 @@ impl<T: FileStore> Transaction<T> {
                         // if we're getting data but have sent a nak
                         // restart the timer.
                         if self.waiting_on == WaitingOn::Nak {
-                            self.nak_timer.restart();
+                            self.timer.restart_nak();
                         }
                         // Issue notice of recieved? Log it.
                         let (offset, length) = self.store_file_data(filedata)?;
@@ -1320,7 +1321,7 @@ impl<T: FileStore> Transaction<T> {
                                 false => self.send_naks()?,
                                 true => {
                                     self.finalize_receive()?;
-                                    self.nak_timer.pause();
+                                    self.timer.nak.pause();
                                     self.waiting_on = WaitingOn::None;
                                     self.send_finished(if self.condition == Condition::NoError {
                                         None
@@ -1348,7 +1349,7 @@ impl<T: FileStore> Transaction<T> {
                                     match self.naks.is_empty() {
                                         true => {
                                             self.finalize_receive()?;
-                                            self.nak_timer.pause();
+                                            self.timer.nak.pause();
                                             self.waiting_on = WaitingOn::None;
                                             self.send_finished(
                                                 if self.condition == Condition::NoError {
@@ -1381,7 +1382,7 @@ impl<T: FileStore> Transaction<T> {
                                     && ack.directive_subtype_code == ACKSubDirective::Finished
                                     && ack.condition == Condition::NoError
                                 {
-                                    self.ack_timer.pause();
+                                    self.timer.ack.pause();
                                     self.waiting_on = WaitingOn::None;
                                     self.shutdown();
                                     Ok(())
@@ -1625,7 +1626,7 @@ impl<T: FileStore> Transaction<T> {
     }
 
     fn send_metadata(&mut self) -> TransactionResult<()> {
-        self.inactivity_timer.restart();
+        self.timer.restart_inactivity();
         let id = self.id();
         let destination = self.config.destination_entity_id.clone();
         let metadata = MetadataPDU {
@@ -2441,15 +2442,15 @@ mod test {
         ));
         let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
 
-        transaction.ack_timer.restart();
-        transaction.inactivity_timer.restart();
-        transaction.nak_timer.restart();
+        transaction.timer.restart_ack();
+        transaction.timer.restart_inactivity();
+        transaction.timer.restart_nak();
 
         {
             let timers = [
-                &transaction.ack_timer,
-                &transaction.inactivity_timer,
-                &transaction.nak_timer,
+                &transaction.timer.nak,
+                &transaction.timer.inactivity,
+                &transaction.timer.nak,
             ];
             timers.iter().for_each(|timer| {
                 assert!(timer.is_ticking());
@@ -2459,9 +2460,9 @@ mod test {
         transaction.suspend();
 
         let timers = [
-            &transaction.ack_timer,
-            &transaction.inactivity_timer,
-            &transaction.nak_timer,
+            &transaction.timer.ack,
+            &transaction.timer.inactivity,
+            &transaction.timer.nak,
         ];
         timers.iter().for_each(|timer| assert!(!timer.is_ticking()));
     }
@@ -3305,7 +3306,7 @@ mod test {
             transaction.process_pdu(input_pdu).unwrap();
 
             if transaction.config.transmission_mode == TransmissionMode::Acknowledged {
-                assert!(transaction.ack_timer.is_ticking());
+                assert!(transaction.timer.ack.is_ticking());
 
                 let ack_fin = {
                     let payload = PDUPayload::Directive(Operations::Ack(PositiveAcknowledgePDU {
@@ -3327,7 +3328,7 @@ mod test {
                 };
                 transaction.process_pdu(ack_fin).unwrap();
 
-                assert!(!transaction.ack_timer.is_ticking());
+                assert!(!transaction.timer.ack.is_ticking());
             }
         });
 
@@ -3718,10 +3719,10 @@ mod test {
         };
         thread::spawn(move || {
             transaction.send_eof(None).unwrap();
-            assert!(transaction.ack_timer.is_ticking());
+            assert!(transaction.timer.ack.is_ticking());
 
             transaction.process_pdu(ack_pdu).unwrap();
-            assert!(!transaction.ack_timer.is_ticking());
+            assert!(!transaction.timer.ack.is_ticking());
         });
 
         let (destination_id, received_pdu) = transport_rx.recv().unwrap();

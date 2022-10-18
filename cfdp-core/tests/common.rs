@@ -60,6 +60,10 @@ type DaemonType = (
     JoD<'static, Result<(), String>>,
 );
 
+// Inactivity, ACK, NAK
+type Timeouts = [Option<i64>; 3];
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn create_daemons<T: FileStore + Sync + Send + 'static>(
     utf8_path: &Utf8Path,
     filestore: Arc<T>,
@@ -68,6 +72,7 @@ pub(crate) fn create_daemons<T: FileStore + Sync + Send + 'static>(
     local_socket: &str,
     remote_socket: &str,
     signal: Arc<AtomicBool>,
+    timeouts: Timeouts,
 ) -> DaemonType {
     let config = EntityConfig {
         fault_handler_override: HashMap::from([(
@@ -76,7 +81,9 @@ pub(crate) fn create_daemons<T: FileStore + Sync + Send + 'static>(
         )]),
         file_size_segment: 1024,
         default_transaction_max_count: 2,
-        default_inactivity_timeout: 1,
+        inactivity_timeout: timeouts[0].unwrap_or(1),
+        ack_timeout: timeouts[1].unwrap_or(1),
+        nak_timeout: timeouts[2].unwrap_or(1),
         crc_flag: CRCFlag::NotPresent,
         closure_requested: false,
         checksum_type: ChecksumType::Modular,
@@ -244,6 +251,7 @@ fn make_entities(
         "cfdp_local.socket",
         "cfdp_remote.socket",
         terminate.clone(),
+        [None, None, None],
     );
     (path, filestore, local, remote)
 }

@@ -199,8 +199,12 @@ pub struct TransactionConfig {
     pub segment_metadata_flag: SegmentedData,
     /// Maximum count of timeouts on a [Timer] before a fault is generated.
     pub max_count: u32,
-    /// Maximum amount timeof without activity before a [Timer] increments its count.
+    /// Maximum amount timeof without activity before the inactivity [Timer] increments its count.
     pub inactivity_timeout: i64,
+    /// Maximum amount timeof without activity before the NAK [Timer] increments its count.
+    pub nak_timeout: i64,
+    /// Maximum amount timeof without activity before the ACK [Timer] increments its count.
+    pub ack_timeout: i64,
     // used when a proxy put request is received to originate a transaction
     pub send_proxy_response: bool,
 }
@@ -273,9 +277,9 @@ impl<T: FileStore> Transaction<T> {
         let timer = Timer::new(
             config.inactivity_timeout,
             config.max_count,
-            config.inactivity_timeout,
+            config.ack_timeout,
             config.max_count,
-            config.inactivity_timeout,
+            config.nak_timeout,
             config.max_count,
         );
 
@@ -1735,6 +1739,8 @@ mod test {
             segment_metadata_flag: SegmentedData::NotPresent,
             max_count: 5_u32,
             inactivity_timeout: 300_i64,
+            ack_timeout: 300_i64,
+            nak_timeout: 300_i64,
             send_proxy_response: false,
         }
     }

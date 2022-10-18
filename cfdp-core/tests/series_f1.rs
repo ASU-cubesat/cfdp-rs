@@ -181,6 +181,7 @@ fn fixture_f1s4(
         "f1s4_local.socket",
         "f1s4_remote.socket",
         terminate.clone(),
+        [None; 3],
     );
     (path, filestore.clone(), local, remote)
 }
@@ -274,6 +275,7 @@ fn fixture_f1s5(
         "f1s5_local.socket",
         "f1s5_remote.socket",
         terminate.clone(),
+        [None; 3],
     );
     (path, filestore.clone(), local, remote)
 }
@@ -368,6 +370,7 @@ fn fixture_f1s6(
         "f1s6_local.socket",
         "f1s6_remote.socket",
         terminate.clone(),
+        [None; 3],
     );
     (path, filestore.clone(), local, remote)
 }

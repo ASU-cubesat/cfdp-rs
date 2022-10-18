@@ -381,8 +381,12 @@ pub struct EntityConfig {
     pub file_size_segment: u16,
     // The number of timeouts before a fault is issued on a transaction
     pub default_transaction_max_count: u32,
-    // default number of seconds for transaction timers to wait
-    pub default_inactivity_timeout: i64,
+    // number of seconds for inactivity timers to wait
+    pub inactivity_timeout: i64,
+    // number of seconds for ACK timers to wait
+    pub ack_timeout: i64,
+    // number of seconds for NAK timers to wait
+    pub nak_timeout: i64,
     /// Flag to determine if the CRC protocol should be used
     pub crc_flag: CRCFlag,
     /// Whether closure whould be requested on Unacknowledged transactions.
@@ -643,7 +647,9 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             crc_flag: header.crc_flag.clone(),
             segment_metadata_flag: header.segment_metadata_flag.clone(),
             max_count: entity_config.default_transaction_max_count,
-            inactivity_timeout: entity_config.default_inactivity_timeout,
+            inactivity_timeout: entity_config.inactivity_timeout,
+            ack_timeout: entity_config.ack_timeout,
+            nak_timeout: entity_config.nak_timeout,
             send_proxy_response: false,
         };
         let name = format!(
@@ -746,7 +752,9 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             crc_flag: entity_config.crc_flag.clone(),
             segment_metadata_flag: SegmentedData::NotPresent,
             max_count: entity_config.default_transaction_max_count,
-            inactivity_timeout: entity_config.default_inactivity_timeout,
+            inactivity_timeout: entity_config.inactivity_timeout,
+            ack_timeout: entity_config.ack_timeout,
+            nak_timeout: entity_config.nak_timeout,
             send_proxy_response,
         };
         let mut metadata = construct_metadata(request, entity_config, FileSizeSensitive::Small(0));

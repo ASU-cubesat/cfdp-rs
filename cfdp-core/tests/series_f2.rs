@@ -81,6 +81,7 @@ fn fixture_f2s1(
         "f2s1_local.socket",
         "f2s1_remote.socket",
         terminate.clone(),
+        [None; 3],
     );
     (path, filestore.clone(), local, remote)
 }
@@ -179,6 +180,7 @@ fn fixture_f2s2(
         "f2s2_local.socket",
         "f2s2_remote.socket",
         terminate.clone(),
+        [None; 3],
     );
     (path, filestore.clone(), local, remote)
 }
@@ -276,6 +278,7 @@ fn fixture_f2s3(
         "f2s3_local.socket",
         "f2s3_remote.socket",
         terminate.clone(),
+        [None; 3],
     );
     (path, filestore.clone(), local, remote)
 }
@@ -373,6 +376,7 @@ fn fixture_f2s4(
         "f2s4_local.socket",
         "f2s4_remote.socket",
         terminate.clone(),
+        [None; 3],
     );
     (path, filestore.clone(), local, remote)
 }
@@ -470,6 +474,7 @@ fn fixture_f2s5(
         "f2s5_local.socket",
         "f2s5_remote.socket",
         terminate.clone(),
+        [None; 3],
     );
     (path, filestore.clone(), local, remote)
 }
@@ -565,6 +570,7 @@ fn fixture_f2s6(
         "f2s6_local.socket",
         "f2s6_remote.socket",
         terminate.clone(),
+        [None; 3],
     );
     (path, filestore.clone(), local, remote)
 }
@@ -662,6 +668,7 @@ fn fixture_f2s7(
         "f2s7_local.socket",
         "f2s7_remote.socket",
         terminate.clone(),
+        [None; 3],
     );
     (path, filestore.clone(), local, remote)
 }

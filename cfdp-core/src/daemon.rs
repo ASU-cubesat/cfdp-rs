@@ -1412,7 +1412,9 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
 
             match self.listener.accept() {
                 Ok(mut conn) => {
+                    print!("Conncetion Established: ");
                     let primitive = UserPrimitive::decode(&mut conn)?;
+                    println!("Primitive received: {primitive:?}");
                     match primitive {
                         UserPrimitive::Put(request) => {
                             let sequence_number = sequence_num.get_and_increment();

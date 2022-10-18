@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use time::Duration;
+use chrono::Duration;
 use timer::{Guard, Timer as Counter};
 
 pub struct Timer {

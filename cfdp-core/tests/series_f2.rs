@@ -708,7 +708,7 @@ fn f2s7(fixture_f2s7: &'static EntityConstructorReturn) {
         .unwrap();
 
     while report.condition != Condition::PositiveLimitReached {
-        thread::sleep(Duration::from_millis(1));
+        thread::sleep(Duration::from_millis(100));
         report = user
             .report(id.clone())
             .expect("Unable to send Report Request.")

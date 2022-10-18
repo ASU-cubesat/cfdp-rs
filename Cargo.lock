@@ -116,6 +116,7 @@ name = "cfdp-core"
 version = "0.1.0"
 dependencies = [
  "camino",
+ "chrono",
  "crossbeam-channel",
  "dirs",
  "interprocess",
@@ -128,7 +129,6 @@ dependencies = [
  "serialport",
  "signal-hook",
  "tempfile",
- "time",
  "timer",
 ]
 

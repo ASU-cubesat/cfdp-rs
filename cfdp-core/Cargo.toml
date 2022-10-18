@@ -9,6 +9,7 @@ uart = ["serialport"]
 
 [dependencies]
 camino = {version = "~1.1", features=["serde1"]}
+chrono = {version = "~0.4", default-features=false, features=["std"]}
 crossbeam-channel = "~0.5"
 interprocess = "~1.1"
 itertools = "~0.10"
@@ -20,7 +21,6 @@ serialport = { version = "~4.2", optional = true }
 signal-hook = "~0.3"
 tempfile = "~3.3"
 timer = "~0.2"
-time  = "~0.1"
 
 [dev-dependencies]
 rstest = "0.15.0"

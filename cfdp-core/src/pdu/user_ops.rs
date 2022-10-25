@@ -1167,15 +1167,15 @@ mod test {
     #[case::proxy_filestore_request(UserOperation::ProxyOperation(ProxyOperation::ProxyFileStoreRequest(
         FileStoreRequest{
             action_code: FileStoreAction::AppendFile,
-            first_filename: "/the/first/file/to/append.dat".as_bytes().to_vec(),
-            second_filename: "/an/additional/file/to/append.txt".as_bytes().to_vec(),
+            first_filename: "/the/first/file/to/append.dat".into(),
+            second_filename: "/an/additional/file/to/append.txt".into(),
         }
     )))]
     #[case::proxy_filestore_response(UserOperation::Response(UserResponse::ProxyFileStore(
         FileStoreResponse{
             action_and_status: FileStoreStatus::DenyDirectory(DenyStatus::NotAllowed),
-            first_filename: "/this/is/a/test/directory/".as_bytes().to_vec(),
-            second_filename: vec![],
+            first_filename: "/this/is/a/test/directory/".into(),
+            second_filename: "".into(),
             filestore_message: vec![]
         }
     )))]
@@ -1294,15 +1294,15 @@ mod test {
     #[case::sfo_filestore_request(UserOperation::SFOFileStoreRequest(
         FileStoreRequest{
             action_code: FileStoreAction::RemoveDirectory,
-            first_filename: "/home/user/ops".as_bytes().to_vec(),
-            second_filename: vec![],
+            first_filename: "/home/user/ops".into(),
+            second_filename: "".into(),
         }
     ))]
     #[case::sfo_filestore_response(UserOperation::SFOFileStoreResponse(
         FileStoreResponse{
            action_and_status: FileStoreStatus::RenameFile(RenameStatus::NotPerformed),
-           first_filename: "/this/is/a/test.dat".as_bytes().to_vec(),
-           second_filename: "/another/test/file.txt".as_bytes().to_vec(),
+           first_filename: "/this/is/a/test.dat".into(),
+           second_filename: "/another/test/file.txt".into(),
            filestore_message: vec![]
         }
     ))]

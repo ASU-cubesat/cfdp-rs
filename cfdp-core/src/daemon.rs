@@ -765,10 +765,14 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                 config.source_entity_id, config.sequence_number
             ))
             .spawn(move || {
-                let file_size = match filestore.get_size(&metadata.source_filename)? {
-                    val if val <= u32::MAX as u64 => FileSizeSensitive::Small(val as u32),
-                    val => FileSizeSensitive::Large(val),
+                let file_size = match &metadata.source_filename.file_name().is_none() {
+                    true => FileSizeSensitive::Small(0_u32),
+                    false => match filestore.get_size(&metadata.source_filename)? {
+                        val if val <= u32::MAX as u64 => FileSizeSensitive::Small(val as u32),
+                        val => FileSizeSensitive::Large(val),
+                    },
                 };
+
                 metadata.file_size = file_size;
                 config.file_size_flag = match &metadata.file_size {
                     FileSizeSensitive::Small(_) => FileSizeFlag::Small,
@@ -1643,13 +1647,13 @@ mod test {
         #[values(vec![], vec![
             FileStoreRequest{
                 action_code: FileStoreAction::AppendFile,
-                first_filename: "some_name_here.txt".as_bytes().to_vec(),
-                second_filename: "another_name.txt".as_bytes().to_vec(),
+                first_filename: "some_name_here.txt".into(),
+                second_filename: "another_name.txt".into(),
             },
             FileStoreRequest{
                 action_code: FileStoreAction::RenameFile,
-                first_filename: "some_name_here.txt".as_bytes().to_vec(),
-                second_filename: "another_name.txt".as_bytes().to_vec(),
+                first_filename: "some_name_here.txt".into(),
+                second_filename: "another_name.txt".into(),
             }
         ])]
         filestore_requests: Vec<FileStoreRequest>,
@@ -1696,8 +1700,8 @@ mod test {
                     filestore_requests: vec![
                         FileStoreRequest{
                             action_code:FileStoreAction::CreateDirectory,
-                            first_filename:"/tmp/help".as_bytes().to_vec(),
-                            second_filename:vec![]}],
+                            first_filename:"/tmp/help".into(),
+                            second_filename:"".into()}],
                     message_to_user: vec![MessageToUser{message_text: "do something".as_bytes().to_vec()}],
                 }
             ),
@@ -1723,8 +1727,8 @@ mod test {
         let mut messages = vec![
             ProxyOperation::ProxyFileStoreRequest(FileStoreRequest {
                 action_code: FileStoreAction::CreateDirectory,
-                first_filename: "/tmp".as_bytes().to_vec(),
-                second_filename: vec![],
+                first_filename: "/tmp".into(),
+                second_filename: "".into(),
             }),
             ProxyOperation::ProxyPutRequest(ProxyPutRequest {
                 destination_entity_id: EntityID::from(3_u16),
@@ -1733,8 +1737,8 @@ mod test {
             }),
             ProxyOperation::ProxyFileStoreRequest(FileStoreRequest {
                 action_code: FileStoreAction::AppendFile,
-                first_filename: "first_file".as_bytes().to_vec(),
-                second_filename: "second_file".as_bytes().to_vec(),
+                first_filename: "first_file".into(),
+                second_filename: "second_file".into(),
             }),
             ProxyOperation::ProxyMessageToUser(MessageToUser {
                 message_text: "help".as_bytes().to_vec(),
@@ -1761,13 +1765,13 @@ mod test {
             filestore_requests: vec![
                 FileStoreRequest {
                     action_code: FileStoreAction::CreateDirectory,
-                    first_filename: "/tmp".as_bytes().to_vec(),
-                    second_filename: vec![],
+                    first_filename: "/tmp".into(),
+                    second_filename: "".into(),
                 },
                 FileStoreRequest {
                     action_code: FileStoreAction::AppendFile,
-                    first_filename: "first_file".as_bytes().to_vec(),
-                    second_filename: "second_file".as_bytes().to_vec(),
+                    first_filename: "first_file".into(),
+                    second_filename: "second_file".into(),
                 },
             ],
             message_to_user: vec![
@@ -1795,8 +1799,8 @@ mod test {
         let proxy_ops = vec![
             ProxyOperation::ProxyFileStoreRequest(FileStoreRequest {
                 action_code: FileStoreAction::CreateDirectory,
-                first_filename: "/tmp".as_bytes().to_vec(),
-                second_filename: vec![],
+                first_filename: "/tmp".into(),
+                second_filename: "".into(),
             }),
             ProxyOperation::ProxyPutRequest(ProxyPutRequest {
                 destination_entity_id: EntityID::from(3_u16),
@@ -1805,8 +1809,8 @@ mod test {
             }),
             ProxyOperation::ProxyFileStoreRequest(FileStoreRequest {
                 action_code: FileStoreAction::AppendFile,
-                first_filename: "first_file".as_bytes().to_vec(),
-                second_filename: "second_file".as_bytes().to_vec(),
+                first_filename: "first_file".into(),
+                second_filename: "second_file".into(),
             }),
             ProxyOperation::ProxyMessageToUser(MessageToUser {
                 message_text: "help".as_bytes().to_vec(),
@@ -1822,13 +1826,13 @@ mod test {
             filestore_requests: vec![
                 FileStoreRequest {
                     action_code: FileStoreAction::CreateDirectory,
-                    first_filename: "/tmp".as_bytes().to_vec(),
-                    second_filename: vec![],
+                    first_filename: "/tmp".into(),
+                    second_filename: "".into(),
                 },
                 FileStoreRequest {
                     action_code: FileStoreAction::AppendFile,
-                    first_filename: "first_file".as_bytes().to_vec(),
-                    second_filename: "second_file".as_bytes().to_vec(),
+                    first_filename: "first_file".into(),
+                    second_filename: "second_file".into(),
                 },
             ],
             message_to_user: vec![

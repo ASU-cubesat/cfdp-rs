@@ -59,12 +59,10 @@ impl PDUEncode for PDU {
         let crc_flag = self.header.crc_flag.clone();
         let mut buffer = self.header.encode();
         buffer.extend(self.payload.encode());
-        println!("Buffer start {:?}", buffer.len());
         match crc_flag {
             CRCFlag::Present => buffer.extend(crc16_ibm_3740(buffer.as_slice()).to_be_bytes()),
             CRCFlag::NotPresent => {}
         }
-        println!("Buffer end {:?}", buffer.len());
         buffer
     }
 

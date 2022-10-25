@@ -668,7 +668,7 @@ fn fixture_f2s7(
         "f2s7_local.socket",
         "f2s7_remote.socket",
         terminate.clone(),
-        [None; 3],
+        [Some(10), None, None],
     );
     (path, filestore.clone(), local, remote)
 }

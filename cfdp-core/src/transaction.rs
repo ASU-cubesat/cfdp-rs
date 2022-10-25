@@ -375,15 +375,22 @@ impl<T: FileStore> Transaction<T> {
         match self.checksum {
             Some(val) => Ok(val),
             None => {
-                let checksum_type = self
-                    .metadata
-                    .as_ref()
-                    .map(|meta| meta.checksum_type.clone())
-                    .ok_or_else(|| {
-                        let id = self.id();
-                        TransactionError::MissingMetadata(id)
-                    })?;
-                let checksum = self.get_handle()?.checksum(checksum_type)?;
+                let checksum = {
+                    match self.is_file_transfer() {
+                        true => {
+                            let checksum_type = self
+                                .metadata
+                                .as_ref()
+                                .map(|meta| meta.checksum_type.clone())
+                                .ok_or_else(|| {
+                                    let id = self.id();
+                                    TransactionError::MissingMetadata(id)
+                                })?;
+                            self.get_handle()?.checksum(checksum_type)?
+                        }
+                        false => 0,
+                    }
+                };
                 self.checksum = Some(checksum);
                 Ok(checksum)
             }
@@ -555,7 +562,13 @@ impl<T: FileStore> Transaction<T> {
                 // end of file reached
                 false => Ok(true),
             },
-            false => Ok(true),
+            false => {
+                if self.do_once {
+                    self.send_eof(None)?;
+                    self.do_once = false;
+                }
+                Ok(true)
+            }
         }
     }
 
@@ -962,6 +975,7 @@ impl<T: FileStore> Transaction<T> {
                 TransactionError::MissingMetadata(id)
             })?;
         let handle = self.get_handle()?;
+        handle.sync_all().map_err(FileStoreError::IO)?;
         Ok(handle.checksum(checksum_type)? == checksum)
     }
 
@@ -987,7 +1001,6 @@ impl<T: FileStore> Transaction<T> {
         {
             return Ok(());
         }
-
         // Only perform the Filestore requests if the Copy was successful
         self.filestore_response = {
             let mut fail_rest = false;
@@ -2669,8 +2682,8 @@ mod test {
             checksum_type: ChecksumType::Modular,
             filestore_requests: vec![FileStoreRequest {
                 action_code: FileStoreAction::DeleteFile,
-                first_filename: path.as_str().as_bytes().to_vec(),
-                second_filename: vec![],
+                first_filename: path.clone(),
+                second_filename: "".into(),
             }],
         });
 
@@ -2721,8 +2734,8 @@ mod test {
                     action_and_status: FileStoreStatus::RenameFile(
                         RenameStatus::NewFilenameAlreadyExists,
                     ),
-                    first_filename: "/path/to/a/file".as_bytes().to_vec(),
-                    second_filename: "/path/to/a/new/file".as_bytes().to_vec(),
+                    first_filename: "/path/to/a/file".into(),
+                    second_filename: "/path/to/a/new/file".into(),
                     filestore_message: vec![1_u8, 3, 58],
                 }],
                 fault_location: None,
@@ -2811,8 +2824,8 @@ mod test {
                     action_and_status: FileStoreStatus::RenameFile(
                         RenameStatus::NewFilenameAlreadyExists,
                     ),
-                    first_filename: "/path/to/a/file".as_bytes().to_vec(),
-                    second_filename: "/path/to/a/new/file".as_bytes().to_vec(),
+                    first_filename: "/path/to/a/file".into(),
+                    second_filename: "/path/to/a/new/file".into(),
                     filestore_message: vec![1_u8, 3, 58],
                 }],
                 fault_location: None,
@@ -2894,8 +2907,8 @@ mod test {
                 closure_requested: false,
                 checksum_type: ChecksumType::Modular,
                 file_size: FileSizeSensitive::Small(1022_u32),
-                source_filename: "test_filename".as_bytes().to_vec(),
-                destination_filename: "test_filename".as_bytes().to_vec(),
+                source_filename: "test_filename".into(),
+                destination_filename: "test_filename".into(),
                 options: vec![],
             }),
             Operations::Prompt(PromptPDU{
@@ -2918,8 +2931,8 @@ mod test {
                     action_and_status: FileStoreStatus::RenameFile(
                         RenameStatus::NewFilenameAlreadyExists,
                     ),
-                    first_filename: "/path/to/a/file".as_bytes().to_vec(),
-                    second_filename: "/path/to/a/new/file".as_bytes().to_vec(),
+                    first_filename: "/path/to/a/file".into(),
+                    second_filename: "/path/to/a/new/file".into(),
                     filestore_message: vec![1_u8, 3, 58],
                 }],
                 fault_location: None,
@@ -3211,8 +3224,8 @@ mod test {
         };
         let fs_req = FileStoreRequest {
             action_code: FileStoreAction::CreateFile,
-            first_filename: "some_name".as_bytes().to_vec(),
-            second_filename: vec![],
+            first_filename: "some_name".into(),
+            second_filename: "".into(),
         };
 
         let expected = Some(Metadata {

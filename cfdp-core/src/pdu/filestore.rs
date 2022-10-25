@@ -1,3 +1,4 @@
+use camino::Utf8PathBuf;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 
@@ -238,10 +239,10 @@ impl FileStoreStatus {
 pub struct FileStoreRequest {
     pub action_code: FileStoreAction,
     /// LV type field, omitted when length 0.
-    pub first_filename: Vec<u8>,
+    pub first_filename: Utf8PathBuf,
     /// LV type field, omitted when length 0.
     /// Only has non-zero length for rename, append, and replace actions.
-    pub second_filename: Vec<u8>,
+    pub second_filename: Utf8PathBuf,
 }
 impl PDUEncode for FileStoreRequest {
     type PDUType = Self;
@@ -249,11 +250,13 @@ impl PDUEncode for FileStoreRequest {
         let first_byte = (self.action_code as u8) << 4;
         let mut buffer = vec![first_byte];
 
-        buffer.push(self.first_filename.len() as u8);
-        buffer.extend(self.first_filename);
+        let f1_name = self.first_filename.as_str().as_bytes();
+        buffer.push(f1_name.len() as u8);
+        buffer.extend(f1_name);
 
-        buffer.push(self.second_filename.len() as u8);
-        buffer.extend(self.second_filename);
+        let f2_name = self.second_filename.as_str().as_bytes();
+        buffer.push(f2_name.len() as u8);
+        buffer.extend(f2_name);
 
         buffer
     }
@@ -266,8 +269,11 @@ impl PDUEncode for FileStoreRequest {
             FileStoreAction::from_u8(possible_action)
                 .ok_or(PDUError::InvalidFileStoreAction(possible_action))?
         };
-        let first_filename = read_length_value_pair(buffer)?;
-        let second_filename = read_length_value_pair(buffer)?;
+        let first_filename = Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer)?)?);
+
+        let second_filename =
+            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer)?)?);
+
         Ok(Self {
             action_code,
             first_filename,
@@ -280,10 +286,10 @@ impl PDUEncode for FileStoreRequest {
 pub struct FileStoreResponse {
     pub action_and_status: FileStoreStatus,
     /// LV type field, omitted when length 0
-    pub first_filename: Vec<u8>,
+    pub first_filename: Utf8PathBuf,
     /// LV type field, omitted when length 0
     /// Only has non-zero length for rename, append, and replace actions.
-    pub second_filename: Vec<u8>,
+    pub second_filename: Utf8PathBuf,
     /// LV type field, omitted when length 0
     pub filestore_message: Vec<u8>,
 }
@@ -302,11 +308,13 @@ impl PDUEncode for FileStoreResponse {
     fn encode(self) -> Vec<u8> {
         let mut buffer = vec![self.action_and_status.as_u8()];
 
-        buffer.push(self.first_filename.len() as u8);
-        buffer.extend(self.first_filename);
+        let f1_name = self.first_filename.as_str().as_bytes();
+        buffer.push(f1_name.len() as u8);
+        buffer.extend(f1_name);
 
-        buffer.push(self.second_filename.len() as u8);
-        buffer.extend(self.second_filename);
+        let f2_name = self.second_filename.as_str().as_bytes();
+        buffer.push(f2_name.len() as u8);
+        buffer.extend(f2_name);
 
         buffer.push(self.filestore_message.len() as u8);
         buffer.extend(self.filestore_message);
@@ -327,8 +335,11 @@ impl PDUEncode for FileStoreResponse {
 
         let action_and_status = FileStoreStatus::get_status(&action_code, first_byte & 0xF)?;
 
-        let first_filename = read_length_value_pair(buffer)?;
-        let second_filename = read_length_value_pair(buffer)?;
+        let first_filename = Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer)?)?);
+
+        let second_filename =
+            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer)?)?);
+
         let filestore_message = read_length_value_pair(buffer)?;
         Ok(Self {
             action_and_status,
@@ -386,8 +397,8 @@ mod test {
     #[case(
         FileStoreRequest{
             action_code: FileStoreAction::CreateFile,
-            first_filename: "a".as_bytes().to_vec(),
-            second_filename: vec![],
+            first_filename: "a".into(),
+            second_filename: "".into(),
 
         },
         FileStoreStatus::CreateFile(CreateFileStatus::NotPerformed)
@@ -395,8 +406,8 @@ mod test {
     #[case(
         FileStoreRequest{
             action_code: FileStoreAction::DeleteFile,
-            first_filename: "a".as_bytes().to_vec(),
-            second_filename: vec![],
+            first_filename: "a".into(),
+            second_filename: "".into(),
 
         },
         FileStoreStatus::DeleteFile(DeleteFileStatus::NotPerformed)
@@ -404,8 +415,8 @@ mod test {
     #[case(
         FileStoreRequest{
             action_code: FileStoreAction::AppendFile,
-            first_filename: "a".as_bytes().to_vec(),
-            second_filename: vec![],
+            first_filename: "a".into(),
+            second_filename: "".into(),
 
         },
         FileStoreStatus::AppendFile(AppendStatus::NotPerformed)
@@ -413,8 +424,8 @@ mod test {
     #[case(
         FileStoreRequest{
             action_code: FileStoreAction::RenameFile,
-            first_filename: "a".as_bytes().to_vec(),
-            second_filename: vec![],
+            first_filename: "a".into(),
+            second_filename: "".into(),
 
         },
         FileStoreStatus::RenameFile(RenameStatus::NotPerformed)
@@ -422,8 +433,8 @@ mod test {
     #[case(
         FileStoreRequest{
             action_code: FileStoreAction::ReplaceFile,
-            first_filename: "a".as_bytes().to_vec(),
-            second_filename: vec![],
+            first_filename: "a".into(),
+            second_filename: "".into(),
 
         },
         FileStoreStatus::ReplaceFile(ReplaceStatus::NotPerformed)
@@ -431,8 +442,8 @@ mod test {
     #[case(
         FileStoreRequest{
             action_code: FileStoreAction::CreateDirectory,
-            first_filename: "a".as_bytes().to_vec(),
-            second_filename: vec![],
+            first_filename: "a".into(),
+            second_filename: "".into(),
 
         },
         FileStoreStatus::CreateDirectory(CreateDirectoryStatus::NotPerformed)
@@ -440,8 +451,8 @@ mod test {
     #[case(
         FileStoreRequest{
             action_code: FileStoreAction::RemoveDirectory,
-            first_filename: "a".as_bytes().to_vec(),
-            second_filename: vec![],
+            first_filename: "a".into(),
+            second_filename: "".into(),
 
         },
         FileStoreStatus::RemoveDirectory(RemoveDirectoryStatus::NotPerformed)
@@ -449,8 +460,8 @@ mod test {
     #[case(
         FileStoreRequest{
             action_code: FileStoreAction::DenyFile,
-            first_filename: "a".as_bytes().to_vec(),
-            second_filename: vec![],
+            first_filename: "a".into(),
+            second_filename: "".into(),
 
         },
         FileStoreStatus::DenyFile(DenyStatus::NotPerformed)
@@ -458,8 +469,8 @@ mod test {
     #[case(
         FileStoreRequest{
             action_code: FileStoreAction::DenyDirectory,
-            first_filename: "a".as_bytes().to_vec(),
-            second_filename: vec![],
+            first_filename: "a".into(),
+            second_filename: "".into(),
 
         },
         FileStoreStatus::DenyDirectory(DenyStatus::NotPerformed)
@@ -495,13 +506,13 @@ mod test {
             FileStoreAction::DenyDirectory
         )]
         action_code: FileStoreAction,
-        #[case] first_filename: &str,
-        #[case] second_filename: &str,
+        #[case] first_filename: Utf8PathBuf,
+        #[case] second_filename: Utf8PathBuf,
     ) {
         let expected = FileStoreRequest {
             action_code,
-            first_filename: first_filename.as_bytes().to_vec(),
-            second_filename: second_filename.as_bytes().to_vec(),
+            first_filename,
+            second_filename,
         };
 
         let buffer = expected.clone().encode();
@@ -541,8 +552,8 @@ mod test {
     #[case("", "/b/longer/second/name", "a non trivial message")]
     #[case("", "", "a non trivial message")]
     fn filestore_response(
-        #[case] first_filename: &str,
-        #[case] second_filename: &str,
+        #[case] first_filename: Utf8PathBuf,
+        #[case] second_filename: Utf8PathBuf,
         #[case] filestore_message: &str,
         #[values(
             FileStoreStatus::CreateFile(CreateFileStatus::Successful),
@@ -585,8 +596,8 @@ mod test {
     ) {
         let expected = FileStoreResponse {
             action_and_status,
-            first_filename: first_filename.as_bytes().to_vec(),
-            second_filename: second_filename.as_bytes().to_vec(),
+            first_filename,
+             second_filename,
             filestore_message: filestore_message.as_bytes().to_vec(),
         };
 

@@ -1113,22 +1113,22 @@ mod test {
             filestore_response: vec![
                 FileStoreResponse {
                     action_and_status: FileStoreStatus::CreateFile(CreateFileStatus::Successful),
-                    first_filename: "/path/to/a/file".as_bytes().to_vec(),
-                    second_filename: vec![],
+                    first_filename: "/path/to/a/file".into(),
+                    second_filename: "".into(),
                     filestore_message: vec![],
                 },
                 FileStoreResponse {
                     action_and_status: FileStoreStatus::RenameFile(
                         RenameStatus::NewFilenameAlreadyExists,
                     ),
-                    first_filename: "/path/to/a/file".as_bytes().to_vec(),
-                    second_filename: "/path/to/a/new/file".as_bytes().to_vec(),
+                    first_filename: "/path/to/a/file".into(),
+                    second_filename: "/path/to/a/new/file".into(),
                     filestore_message: vec![1_u8, 3, 58],
                 },
                 FileStoreResponse {
                     action_and_status: FileStoreStatus::ReplaceFile(ReplaceStatus::NotAllowed),
-                    first_filename: "/the/first/file".as_bytes().to_vec(),
-                    second_filename: "/the/newest/file".as_bytes().to_vec(),
+                    first_filename: "/the/first/file".into(),
+                    second_filename: "/the/newest/file".into(),
                     filestore_message: "a use message".as_bytes().to_vec(),
                 },
             ],
@@ -1176,22 +1176,22 @@ mod test {
             filestore_response: vec![
                 FileStoreResponse {
                     action_and_status: FileStoreStatus::CreateFile(CreateFileStatus::Successful),
-                    first_filename: "/some/path/to/a/file".as_bytes().to_vec(),
-                    second_filename: vec![],
+                    first_filename: "/some/path/to/a/file".into(),
+                    second_filename: "".into(),
                     filestore_message: vec![],
                 },
                 FileStoreResponse {
                     action_and_status: FileStoreStatus::AppendFile(
                         AppendStatus::Filename2DoesNotExist,
                     ),
-                    first_filename: "/path/to/a/file".as_bytes().to_vec(),
-                    second_filename: "/path/to/a/new/file".as_bytes().to_vec(),
+                    first_filename: "/path/to/a/file".into(),
+                    second_filename: "/path/to/a/new/file".into(),
                     filestore_message: vec![1_u8, 3, 58],
                 },
                 FileStoreResponse {
                     action_and_status: FileStoreStatus::DenyDirectory(DenyStatus::NotPerformed),
-                    first_filename: "/the/first/dir/".as_bytes().to_vec(),
-                    second_filename: "".as_bytes().to_vec(),
+                    first_filename: "/the/first/dir/".into(),
+                    second_filename: "".into(),
                     filestore_message: "Error occurred it seems.".as_bytes().to_vec(),
                 },
             ],
@@ -1246,15 +1246,15 @@ mod test {
         MetadataTLV::FileStoreRequest(
             FileStoreRequest{
                 action_code: FileStoreAction::AppendFile,
-                first_filename: "/the/first/file/to/append.dat".as_bytes().to_vec(),
-                second_filename: "/an/additional/file/to/append.txt".as_bytes().to_vec(),
+                first_filename: "/the/first/file/to/append.dat".into(),
+                second_filename: "/an/additional/file/to/append.txt".into(),
             }
         ),
         MetadataTLV::FileStoreResponse(
             FileStoreResponse{
                 action_and_status: FileStoreStatus::AppendFile(AppendStatus::NotAllowed),
-                first_filename: "/this/is/a/test/directory/".as_bytes().to_vec(),
-                second_filename: "the/sescond/bad/file.txt".as_bytes().to_vec(),
+                first_filename: "/this/is/a/test/directory/".into(),
+                second_filename: "the/sescond/bad/file.txt".into(),
                 filestore_message: vec![0_u8, 1, 3, 5]
             }
         ),

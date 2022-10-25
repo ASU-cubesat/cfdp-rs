@@ -597,7 +597,7 @@ mod test {
         let expected = FileStoreResponse {
             action_and_status,
             first_filename,
-             second_filename,
+            second_filename,
             filestore_message: filestore_message.as_bytes().to_vec(),
         };
 

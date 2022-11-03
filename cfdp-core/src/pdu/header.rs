@@ -264,6 +264,11 @@ impl PDUEncode for PDUHeader {
     type PDUType = Self;
 
     fn encode(self) -> Vec<u8> {
+        let total_length = match &self.crc_flag {
+            CRCFlag::NotPresent => self.pdu_data_field_length,
+            CRCFlag::Present => self.pdu_data_field_length + 2,
+        };
+
         let first_byte = ((self.version as u8) << 5)
             | ((self.pdu_type as u8) << 4)
             | ((self.direction as u8) << 3)
@@ -272,10 +277,7 @@ impl PDUEncode for PDUHeader {
             | self.large_file_flag as u8;
         let mut buffer = vec![first_byte];
         // if the CRC is expected add 2 to the length of the "data" field
-        buffer.extend(match self.crc_flag {
-            CRCFlag::NotPresent => self.pdu_data_field_length.to_be_bytes(),
-            CRCFlag::Present => (self.pdu_data_field_length + 2).to_be_bytes(),
-        });
+        buffer.extend(total_length.to_be_bytes());
         buffer.push(
             ((self.segmentation_control as u8) << 7)
                 | ((self.source_entity_id.get_len() as u8 - 1) << 4)

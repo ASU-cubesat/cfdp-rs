@@ -238,8 +238,8 @@ fn make_entities(
         .join("data");
     for filename in ["small.txt", "medium.txt", "large.txt"] {
         fs::copy(
-            data_dir.join(&filename),
-            utf8_path.join("local").join(&filename),
+            data_dir.join(filename),
+            utf8_path.join("local").join(filename),
         )
         .expect("Unable to copy file.");
     }

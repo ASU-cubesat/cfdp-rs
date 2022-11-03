@@ -34,9 +34,9 @@ pub type TransactionID = (EntityID, TransactionSeqNum);
 pub type TransactionResult<T> = Result<T, TransactionError>;
 #[derive(Debug)]
 pub enum TransactionError {
-    FileStore(FileStoreError),
-    Transport(SendError<(VariableID, PDU)>),
-    UserMessage(SendError<(TransactionID, TransmissionMode, Vec<MessageToUser>)>),
+    FileStore(Box<FileStoreError>),
+    Transport(Box<SendError<(VariableID, PDU)>>),
+    UserMessage(Box<SendError<(TransactionID, TransmissionMode, Vec<MessageToUser>)>>),
     NoFile(TransactionID),
     Daemon(String),
     Poison,
@@ -50,7 +50,7 @@ pub enum TransactionError {
 }
 impl From<FileStoreError> for TransactionError {
     fn from(error: FileStoreError) -> Self {
-        Self::FileStore(error)
+        Self::FileStore(Box::new(error))
     }
 }
 impl From<TryFromIntError> for TransactionError {
@@ -60,12 +60,12 @@ impl From<TryFromIntError> for TransactionError {
 }
 impl From<SendError<(VariableID, PDU)>> for TransactionError {
     fn from(error: SendError<(VariableID, PDU)>) -> Self {
-        Self::Transport(error)
+        Self::Transport(Box::new(error))
     }
 }
 impl From<SendError<(TransactionID, TransmissionMode, Vec<MessageToUser>)>> for TransactionError {
     fn from(error: SendError<(TransactionID, TransmissionMode, Vec<MessageToUser>)>) -> Self {
-        Self::UserMessage(error)
+        Self::UserMessage(Box::new(error))
     }
 }
 impl From<SendError<Report>> for TransactionError {
@@ -2453,7 +2453,7 @@ mod test {
 
         let path = {
             let mut buf = Utf8PathBuf::new();
-            buf.push(format!("test_eof_{:}.dat", config.transmission_mode as u8));
+            buf.push(format!("test_eof_{:?}.dat", &config.transmission_mode));
             buf
         };
 

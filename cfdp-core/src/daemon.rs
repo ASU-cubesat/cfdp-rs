@@ -46,8 +46,8 @@ pub(crate) const SOCKET_ADDR: &str = "/var/run/cdfp.socket";
 pub enum PrimitiveError {
     IO(IOError),
     UnexpextedPrimitive,
-    Encode(PDUError),
-    Metadata(TransactionError),
+    Encode(Box<PDUError>),
+    Metadata(Box<TransactionError>),
     Utf8(FromUtf8Error),
 }
 impl From<IOError> for PrimitiveError {
@@ -57,12 +57,12 @@ impl From<IOError> for PrimitiveError {
 }
 impl From<PDUError> for PrimitiveError {
     fn from(err: PDUError) -> Self {
-        Self::Encode(err)
+        Self::Encode(Box::new(err))
     }
 }
 impl From<TransactionError> for PrimitiveError {
     fn from(err: TransactionError) -> Self {
-        Self::Metadata(err)
+        Self::Metadata(Box::new(err))
     }
 }
 

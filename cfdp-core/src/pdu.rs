@@ -69,14 +69,7 @@ impl PDUEncode for PDU {
     fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
         let header = PDUHeader::decode(buffer)?;
 
-        let mut remaining_msg = match &header.crc_flag {
-            CRCFlag::NotPresent => {
-                vec![0_u8; header.pdu_data_field_length as usize]
-            }
-            CRCFlag::Present => {
-                vec![0_u8; (header.pdu_data_field_length - 2) as usize]
-            }
-        };
+        let mut remaining_msg = vec![0_u8; header.pdu_data_field_length as usize];
 
         buffer.read_exact(remaining_msg.as_mut_slice())?;
         let remaining_buffer = &mut remaining_msg.as_slice();
@@ -98,9 +91,8 @@ impl PDUEncode for PDU {
                 buffer.read_exact(&mut u16_buffer)?;
                 let crc16 = u16::from_be_bytes(u16_buffer);
                 let tmp_buffer = {
-                    let mut input_pdu = received_pdu.clone();
+                    let input_pdu = received_pdu.clone();
 
-                    input_pdu.header.pdu_data_field_length -= 2;
                     let mut temp = input_pdu.encode();
                     // remove the crc from the temporary buffer
                     temp.truncate(temp.len() - 2);
@@ -208,18 +200,7 @@ mod test {
             payload,
         };
         let buffer = expected.clone().encode();
-        let mut recovered = PDU::decode(&mut buffer.as_slice())?;
-
-        match &recovered.header.crc_flag {
-            CRCFlag::Present => {
-                assert_eq!(
-                    expected.header.pdu_data_field_length + 2,
-                    recovered.header.pdu_data_field_length
-                );
-                recovered.header.pdu_data_field_length -= 2;
-            }
-            CRCFlag::NotPresent => {}
-        };
+        let recovered = PDU::decode(&mut buffer.as_slice())?;
         assert_eq!(expected, recovered);
         Ok(())
     }

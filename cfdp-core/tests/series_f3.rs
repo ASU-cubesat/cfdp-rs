@@ -587,7 +587,7 @@ fn f3s10(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
     let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
 
     let out_file: Utf8PathBuf = "/local/remote.listing".into();
-    let path_to_out = filestore.get_native_path(&out_file);
+    let path_to_out = filestore.get_native_path(out_file);
 
     user.put(PutRequest {
         source_filename: "".into(),

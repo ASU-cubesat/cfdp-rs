@@ -323,8 +323,8 @@ impl PDUEncode for OriginatingTransactionIDMessage {
     fn encode(self) -> Vec<u8> {
         let mut buffer: Vec<u8> = vec![];
 
-        let first_byte = (((self.source_entity_id.get_len() as u8 - 1u8) & 0x3) << 4)
-            | ((self.transaction_sequence_number.get_len() as u8 - 1u8) & 0x3);
+        let first_byte = (((self.source_entity_id.get_len() - 1u8) & 0x3) << 4)
+            | ((self.transaction_sequence_number.get_len() - 1u8) & 0x3);
         buffer.push(first_byte);
 
         buffer.extend(self.source_entity_id.to_be_bytes());
@@ -367,7 +367,7 @@ pub struct ProxyPutRequest {
 impl PDUEncode for ProxyPutRequest {
     type PDUType = Self;
     fn encode(self) -> Vec<u8> {
-        let mut buffer = vec![self.destination_entity_id.get_len() as u8];
+        let mut buffer = vec![self.destination_entity_id.get_len()];
         buffer.extend(self.destination_entity_id.to_be_bytes());
 
         let source_name = self.source_filename.as_str().as_bytes();
@@ -558,8 +558,8 @@ impl PDUEncode for RemoteStatusReportRequest {
     fn encode(self) -> Vec<u8> {
         let mut buffer: Vec<u8> = vec![];
 
-        let first_byte = (((self.source_entity_id.get_len() as u8 - 1u8) & 0x3) << 4)
-            | ((self.transaction_sequence_number.get_len() as u8 - 1u8) & 0x3);
+        let first_byte = (((self.source_entity_id.get_len() - 1u8) & 0x3) << 4)
+            | ((self.transaction_sequence_number.get_len() - 1u8) & 0x3);
         buffer.push(first_byte);
 
         buffer.extend(self.source_entity_id.to_be_bytes());
@@ -618,8 +618,8 @@ impl PDUEncode for RemoteStatusReportResponse {
         let first_byte: u8 = ((self.transaction_status as u8) << 6) | (self.response_code as u8);
         buffer.push(first_byte);
 
-        let second_byte = (((self.source_entity_id.get_len() as u8 - 1u8) & 0x3) << 4)
-            | ((self.transaction_sequence_number.get_len() as u8 - 1u8) & 0x3);
+        let second_byte = (((self.source_entity_id.get_len() - 1u8) & 0x3) << 4)
+            | ((self.transaction_sequence_number.get_len() - 1u8) & 0x3);
         buffer.push(second_byte);
 
         buffer.extend(self.source_entity_id.to_be_bytes());
@@ -678,8 +678,8 @@ impl PDUEncode for RemoteSuspendRequest {
     fn encode(self) -> Vec<u8> {
         let mut buffer: Vec<u8> = vec![];
 
-        let first_byte = (((self.source_entity_id.get_len() as u8 - 1u8) & 0x3) << 4)
-            | ((self.transaction_sequence_number.get_len() as u8 - 1u8) & 0x3);
+        let first_byte = (((self.source_entity_id.get_len() - 1u8) & 0x3) << 4)
+            | ((self.transaction_sequence_number.get_len() - 1u8) & 0x3);
         buffer.push(first_byte);
 
         buffer.extend(self.source_entity_id.to_be_bytes());
@@ -732,8 +732,8 @@ impl PDUEncode for RemoteSuspendResponse {
             ((self.suspend_indication as u8) << 7) | ((self.transaction_status as u8) << 5);
         buffer.push(first_byte);
 
-        let second_byte = (((self.source_entity_id.get_len() as u8 - 1u8) & 0x3) << 4)
-            | ((self.transaction_sequence_number.get_len() as u8 - 1u8) & 0x3);
+        let second_byte = (((self.source_entity_id.get_len() - 1u8) & 0x3) << 4)
+            | ((self.transaction_sequence_number.get_len() - 1u8) & 0x3);
         buffer.push(second_byte);
 
         buffer.extend(self.source_entity_id.to_be_bytes());
@@ -791,8 +791,8 @@ impl PDUEncode for RemoteResumeRequest {
     fn encode(self) -> Vec<u8> {
         let mut buffer: Vec<u8> = vec![];
 
-        let first_byte = (((self.source_entity_id.get_len() as u8 - 1u8) & 0x3) << 4)
-            | ((self.transaction_sequence_number.get_len() as u8 - 1u8) & 0x3);
+        let first_byte = (((self.source_entity_id.get_len() - 1u8) & 0x3) << 4)
+            | ((self.transaction_sequence_number.get_len() - 1u8) & 0x3);
         buffer.push(first_byte);
 
         buffer.extend(self.source_entity_id.to_be_bytes());
@@ -844,8 +844,8 @@ impl PDUEncode for RemoteResumeResponse {
             ((self.suspend_indication as u8) << 7) | ((self.transaction_status as u8) << 5);
         buffer.push(first_byte);
 
-        let second_byte = (((self.source_entity_id.get_len() as u8 - 1u8) & 0x3) << 4)
-            | ((self.transaction_sequence_number.get_len() as u8 - 1u8) & 0x3);
+        let second_byte = (((self.source_entity_id.get_len() - 1u8) & 0x3) << 4)
+            | ((self.transaction_sequence_number.get_len() - 1u8) & 0x3);
         buffer.push(second_byte);
 
         buffer.extend(self.source_entity_id.to_be_bytes());
@@ -913,7 +913,7 @@ impl PDUEncode for SFORequest {
             | ((self.transmission_mode as u8) << 5)
             | ((self.segment_control as u8) << 4)
             | ((self.closure_request as u8) << 3);
-        let mut buffer = vec![first_byte as u8];
+        let mut buffer = vec![first_byte];
         buffer.push(self.prior_waypoints_count);
 
         buffer.push(self.request_label.len() as u8);

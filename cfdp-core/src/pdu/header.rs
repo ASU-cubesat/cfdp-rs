@@ -275,9 +275,9 @@ impl PDUEncode for PDUHeader {
         buffer.extend(self.pdu_data_field_length.to_be_bytes());
         buffer.push(
             ((self.segmentation_control as u8) << 7)
-                | ((self.source_entity_id.get_len() as u8 - 1) << 4)
+                | ((self.source_entity_id.get_len() - 1) << 4)
                 | ((self.segment_metadata_flag as u8) << 3)
-                | (self.transaction_sequence_number.get_len() as u8 - 1),
+                | (self.transaction_sequence_number.get_len() - 1),
         );
         buffer.extend(self.source_entity_id.to_be_bytes());
         buffer.extend(self.transaction_sequence_number.to_be_bytes());

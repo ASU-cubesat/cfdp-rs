@@ -2,7 +2,7 @@ use std::{
     error::Error,
     fmt::{self, Display, Write as _Write},
     fs::{self, File, OpenOptions},
-    io::{Error as IOError, ErrorKind, Read, Seek, SeekFrom, Write},
+    io::{Error as IOError, ErrorKind, Read, Seek, Write},
     str::Utf8Error,
     time::{SystemTime, SystemTimeError},
 };
@@ -71,8 +71,7 @@ impl Display for FileStoreError {
             Self::SystemTime(source) => source.fmt(f),
             Self::PathDiff(source1, source2) => write!(
                 f,
-                "Cannot find relative path between {} and {}.",
-                source1, source2
+                "Cannot find relative path between {source1} and {source2}.",
             ),
             Self::UTF8(source) => source.fmt(f),
         }
@@ -369,10 +368,8 @@ impl FileStore for NativeFileStore {
 
     fn list_directory<P: AsRef<Utf8Path>>(&self, path: P) -> FileStoreResult<String> {
         let directory = self.get_native_path(path);
-        let mut directory_listing = format!(
-            "Listing for directory: {}\ntype,path,size,timestamp\n",
-            directory,
-        );
+        let mut directory_listing =
+            format!("Listing for directory: {directory}\ntype,path,size,timestamp\n",);
         let (mut dirs, mut files): (Vec<_>, Vec<_>) = fs::read_dir(&directory)?
             .filter_map(|entry| entry.ok())
             .partition(|entry| entry.path().is_dir());
@@ -457,7 +454,7 @@ impl FileChecksum for File {
             ChecksumType::Modular => {
                 let mut checksum = 0_u32;
                 // reset the file pointer to the beginning
-                self.seek(SeekFrom::Start(0))?;
+                self.rewind()?;
 
                 loop {
                     let mut u32_buff = Vec::with_capacity(4);
@@ -640,7 +637,7 @@ mod test {
             file.write_all("hello, world!".as_bytes())?;
             file.sync_all()?;
         }
-        file.seek(SeekFrom::Start(0))?;
+        file.rewind()?;
         let mut recovered_text = String::new();
         file.read_to_string(&mut recovered_text)?;
 

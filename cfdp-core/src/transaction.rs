@@ -86,7 +86,7 @@ impl Display for TransactionError {
             Self::Transport(error) => error.fmt(f),
             Self::UserMessage(error) => error.fmt(f),
             Self::NoFile(id) => write!(f, "No open file in transaction: {id:?}."),
-            Self::Daemon(error) => write!(f, "Error during daemon thread listening. {}", error),
+            Self::Daemon(error) => write!(f, "Error during daemon thread listening. {error}"),
             Self::Poison => write!(
                 f,
                 "Error during File manipulation. Unable to obtain File lock."
@@ -94,16 +94,15 @@ impl Display for TransactionError {
             Self::IntConverstion(error) => error.fmt(f),
             Self::UnexpectedPDU((id, transaction_type, mode, pdu_type)) => write!(
                 f,
-                "Transaction (ID: {:?},  Type: {:?}, Mode: {:?}) received unexpected PDU {:}.",
-                id, transaction_type, mode, pdu_type
+                "Transaction (ID: {id:?},  Type: {transaction_type:?}, Mode: {mode:?}) received unexpected PDU {pdu_type:}.",
             ),
             Self::MissingMetadata(id) => write!(f, "Metadata missing for transaction: {id:?}."),
             Self::MissingNak => write!(f, "No NAKs present. Cannot send missing data."),
             Self::NoChecksum => write!(f, "No Checksum received. Cannot verify file integrity."),
             Self::Report(report) => {
-                write!(f, "Unable to send report to Daemon process. {:?}.", report)
+                write!(f, "Unable to send report to Daemon process. {report:?}.")
             }
-            Self::InvalidStatus(val) => write!(f, "No Transaction status for code {}.", val),
+            Self::InvalidStatus(val) => write!(f, "No Transaction status for code {val}."),
         }
     }
 }

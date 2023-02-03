@@ -77,8 +77,8 @@ impl Display for PrimitiveError {
             Self::IO(err) => err.fmt(f),
             Self::UnexpextedPrimitive => write!(f, "Unexpected value for User Primitive."),
             Self::Encode(err) => err.fmt(f),
-            Self::Metadata(err) => write!(f, "Error (en)de-coding Metadata. {}", err),
-            Self::Utf8(error) => write!(f, "Invalid file path encoding. {}", error),
+            Self::Metadata(err) => write!(f, "Error (en)de-coding Metadata. {err}"),
+            Self::Utf8(error) => write!(f, "Invalid file path encoding. {error}"),
         }
     }
 }
@@ -1297,7 +1297,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                         //     selector.remove(oper.index());
                         // }
                         Err(err) => {
-                            println!("Error on user msg {}", err)
+                            println!("Error on user msg {err}")
                         }
                     };
                 }
@@ -1519,12 +1519,12 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                                             );
                                                         }
                                                         Ok(Err(err)) => {
-                                                            info!("Error occured during transaction: {}", err);
-                                                            println!("Error occured during transaction: {}", err)
+                                                            info!("Error occured during transaction: {err}");
+                                                            println!("Error occured during transaction: {err}")
                                                         }
                                                         Err(_err) => {
                                                             error!("Unable to join handle!");
-                                                            println!("Error occured during transaction: {:?}", _err)
+                                                            println!("Error occured during transaction: {_err:?}")
                                                         }
                                                     };
                                                 } else {

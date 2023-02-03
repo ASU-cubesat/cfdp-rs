@@ -929,7 +929,7 @@ mod test {
     #[case(MetadataTLVFieldCode::FlowLabel, "FlowLabel".to_owned() )]
     #[case(MetadataTLVFieldCode::EntityID, "EntityID".to_owned() )]
     fn metadatatlv_display(#[case] input: MetadataTLVFieldCode, #[case] expected: String) {
-        let printed = format!("{}", input);
+        let printed = format!("{input}");
         assert_eq!(expected, printed)
     }
 

@@ -36,71 +36,63 @@ pub enum PDUError {
 impl fmt::Display for PDUError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            &Self::MessageType(val) => write!(f, "Invalid Message type value: {:}.", val),
+            &Self::MessageType(val) => write!(f, "Invalid Message type value: {val:}."),
             Self::UnexpectedMessage(m1, m2) => {
-                write!(
-                    f,
-                    "Unexpected Message type. Expected {:?}, got {:?}.",
-                    m1, m2
-                )
+                write!(f, "Unexpected Message type. Expected {m1:?}, got {m2:?}.",)
             }
             Self::UnexpectedIdentifier(m1, m2) => write!(
                 f,
-                "Unexpected Message Identifier. Received ({:?}), Expected ({:?}).",
-                m1, m2
+                "Unexpected Message Identifier. Received ({m1:?}), Expected ({m2:?}).",
             ),
-            &Self::InvalidCondition(val) => write!(f, "Invalid Condition value: {:}.", val),
-            &Self::InvalidChecksumType(val) => write!(f, "Invalid ChecksumType: {:}.", val),
-            &Self::InvalidDirective(val) => write!(f, "Invalid Directive value: {:}.", val),
-            &Self::InvalidDirection(val) => write!(f, "Invalid Direction value: {:}.", val),
-            &Self::InvalidDeliveryCode(val) => write!(f, "Invalid Delivery Code: {:}.", val),
-            &Self::InvalidFileStatus(val) => write!(f, "Invalid File Status: {:}.", val),
-            &Self::InvalidTraceControl(val) => write!(f, "Inavlide Trace Control {:}.", val),
+            &Self::InvalidCondition(val) => write!(f, "Invalid Condition value: {val:}."),
+            &Self::InvalidChecksumType(val) => write!(f, "Invalid ChecksumType: {val:}."),
+            &Self::InvalidDirective(val) => write!(f, "Invalid Directive value: {val:}."),
+            &Self::InvalidDirection(val) => write!(f, "Invalid Direction value: {val:}."),
+            &Self::InvalidDeliveryCode(val) => write!(f, "Invalid Delivery Code: {val:}."),
+            &Self::InvalidFileStatus(val) => write!(f, "Invalid File Status: {val:}."),
+            &Self::InvalidTraceControl(val) => write!(f, "Inavlide Trace Control {val:}."),
             &Self::InvalidTransmissionMode(val) => {
-                write!(f, "Invalid Transmission Mode {:}.", val)
+                write!(f, "Invalid Transmission Mode {val:}.")
             }
             &Self::InvalidSegmentControl(val) => {
-                write!(f, "Invalid Segment Control Mode {:}.", val)
+                write!(f, "Invalid Segment Control Mode {val:}.")
             }
             &Self::InvalidTransactionStatus(val) => {
-                write!(f, "Invalid Transaction Status {:}.", val)
+                write!(f, "Invalid Transaction Status {val:}.")
             }
-            &Self::InvalidFileStoreAction(val) => write!(f, "Inavlide FileStore Action {:}.", val),
-            Self::InvalidFileStoreStatus(val, action) => write!(
-                f,
-                "Inavlid FileStore Status {:} for Action {:?}.",
-                val, action
-            ),
+            &Self::InvalidFileStoreAction(val) => write!(f, "Inavlide FileStore Action {val:}."),
+            Self::InvalidFileStoreStatus(val, action) => {
+                write!(f, "Inavlid FileStore Status {val:} for Action {action:?}.")
+            }
             &Self::InvalidFaultHandlerCode(val) => {
-                write!(f, "Invalid Fault Handler Code: {:}.", val)
+                write!(f, "Invalid Fault Handler Code: {val:}.")
             }
 
             Self::InvalidACKDirectiveSubType(val) => {
-                write!(f, "Invalid ACK SubDirective Code: {:}.", val)
+                write!(f, "Invalid ACK SubDirective Code: {val:}.")
             }
-            Self::InvalidPrompt(val) => write!(f, "Invalid Prompt value {:}.", val),
+            Self::InvalidPrompt(val) => write!(f, "Invalid Prompt value {val:}."),
             Self::InvalidVersion(val) => {
-                write!(f, "Invalid CCSDS Version Code: {:}.", val)
+                write!(f, "Invalid CCSDS Version Code: {val:}.")
             }
-            Self::InvalidPDUType(val) => write!(f, "Invalid PDU Type {:}.", val),
-            Self::InvalidCRCFlag(val) => write!(f, "Invalid CRC Flag {:}.", val),
-            Self::InvalidFileSizeFlag(val) => write!(f, "Invalid File Size Flag {:}.", val),
+            Self::InvalidPDUType(val) => write!(f, "Invalid PDU Type {val:}."),
+            Self::InvalidCRCFlag(val) => write!(f, "Invalid CRC Flag {val:}."),
+            Self::InvalidFileSizeFlag(val) => write!(f, "Invalid File Size Flag {val:}."),
             Self::InvalidSegmentMetadataFlag(val) => {
-                write!(f, "Invalid Segment Metadata Flag {:}.", val)
+                write!(f, "Invalid Segment Metadata Flag {val:}.")
             }
             Self::CRCFailure(expected, received) => write!(
                 f,
                 "CRC Failure on PDU. Expected 0x{expected:X} Receieved 0x{received:X}"
             ),
-            Self::ReadError(source) => write!(f, "Error Reading PDU Buffer. {:}", source),
+            Self::ReadError(source) => write!(f, "Error Reading PDU Buffer. {source:}"),
             Self::UnkownIDLength(other) => write!(
                 f,
-                "Bad length for Variable Identifier (not a power a of 2) {:}.",
-                other
+                "Bad length for Variable Identifier (not a power a of 2) {other:}."
             ),
             Self::InvalidFileName(err) => write!(f, "Unable to decode filename. {err}"),
             Self::InvalidListingCode(code) => {
-                write!(f, "Invalide Directory Listing Response Code: {}. ", code)
+                write!(f, "Invalide Directory Listing Response Code: {code}. ")
             }
         }
     }

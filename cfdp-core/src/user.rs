@@ -56,10 +56,10 @@ impl User {
         connection.write_all(primitive.encode().as_slice())?;
 
         let report = {
-            let mut u8_buff = [0_u8; 1];
-            connection.read_exact(&mut u8_buff)?;
+            let mut u64_buff = [0_u8; 8];
+            connection.read_exact(&mut u64_buff)?;
 
-            match u8_buff[0] {
+            match u64::from_be_bytes(u64_buff) {
                 0 => None,
                 _ => Some(
                     Report::decode(&mut connection)

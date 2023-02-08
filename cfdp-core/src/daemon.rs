@@ -1548,7 +1548,8 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                     }
                                 },
                             };
-                            let full_response = [vec![response.len() as u8], response].concat();
+                            let full_response =
+                                [(response.len() as u64).to_be_bytes().to_vec(), response].concat();
                             conn.write_all(full_response.as_slice())?;
                         }
                     };

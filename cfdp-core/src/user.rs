@@ -26,14 +26,17 @@ impl User {
 
     pub fn put(&mut self, request: PutRequest) -> Result<TransactionID, IoError> {
         let primitive = UserPrimitive::Put(request);
-        let mut connection = LocalSocketStream::connect(self.socket.as_str())?;
-        connection.write_all(primitive.encode().as_slice())?;
+        let id = {
+            let mut connection = LocalSocketStream::connect(self.socket.as_str())?;
+            connection.write_all(primitive.encode().as_slice())?;
 
-        let id = (
-            EntityID::decode(&mut connection).map_err(|_| IoError::from(ErrorKind::InvalidData))?,
-            TransactionSeqNum::decode(&mut connection)
-                .map_err(|_| IoError::from(ErrorKind::InvalidData))?,
-        );
+            (
+                EntityID::decode(&mut connection)
+                    .map_err(|_| IoError::from(ErrorKind::InvalidData))?,
+                TransactionSeqNum::decode(&mut connection)
+                    .map_err(|_| IoError::from(ErrorKind::InvalidData))?,
+            )
+        };
         Ok(id)
     }
 
@@ -50,21 +53,23 @@ impl User {
     }
     pub fn report(&mut self, transaction: TransactionID) -> Result<Option<Report>, IoError> {
         let primitive = UserPrimitive::Report(transaction.clone().0, transaction.clone().1);
-        // let id = (transaction.clone().0, transaction.clone().1);
-        let mut connection = LocalSocketStream::connect(self.socket.as_str())?;
-
-        connection.write_all(primitive.encode().as_slice())?;
 
         let report = {
-            let mut u64_buff = [0_u8; 8];
-            connection.read_exact(&mut u64_buff)?;
+            let mut connection = LocalSocketStream::connect(self.socket.as_str())?;
 
-            match u64::from_be_bytes(u64_buff) {
-                0 => None,
-                _ => Some(
-                    Report::decode(&mut connection)
-                        .map_err(|_| IoError::from(ErrorKind::InvalidData))?,
-                ),
+            connection.write_all(primitive.encode().as_slice())?;
+
+            {
+                let mut u64_buff = [0_u8; 8];
+                connection.read_exact(&mut u64_buff)?;
+
+                match u64::from_be_bytes(u64_buff) {
+                    0 => None,
+                    _ => Some(
+                        Report::decode(&mut connection)
+                            .map_err(|_| IoError::from(ErrorKind::InvalidData))?,
+                    ),
+                }
             }
         };
         match &report {

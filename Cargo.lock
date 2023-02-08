@@ -444,9 +444,9 @@ dependencies = [
 
 [[package]]
 name = "interprocess"
-version = "1.2.0"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5190bea45fd4570732e29ed29619a3ea71472cf53064b9a8848c94cb53971ba3"
+checksum = "81f2533f3be42fffe3b5e63b71aeca416c1c3bc33e4e27be018521e76b1f38fb"
 dependencies = [
  "blocking",
  "cfg-if",

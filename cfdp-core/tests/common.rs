@@ -480,7 +480,6 @@ impl PDUTransport for LossyTransport {
                         match sender.send(pdu) {
                             Ok(()) => {}
                             Err(error) => {
-                                println!("Transport found disconnect sending channel: {error}");
                                 error!("Transport found disconnect sending channel: {error}");
                                 return Err(IoError::from(ErrorKind::ConnectionAborted));
                             }
@@ -488,7 +487,6 @@ impl PDUTransport for LossyTransport {
                     }
                     Err(error) => {
                         error!("Error decoding PDU: {error}");
-                        println!("Error decoding PDU: {error}");
                         // might need to stop depending on the error.
                         // some are recoverable though
                     }
@@ -500,7 +498,6 @@ impl PDUTransport for LossyTransport {
                 }
                 Err(e) => {
                     error!("encountered IO error: {e}");
-                    println!("encountered IO error: {e}");
                     return Err(e);
                 }
             };
@@ -511,7 +508,6 @@ impl PDUTransport for LossyTransport {
                 }
                 Err(err @ crossbeam_channel::TryRecvError::Disconnected) => {
                     error!("Transport found disconnected channel: {err}");
-                    println!("Transport found disconnected channel: {err}");
                     return Err(IoError::from(ErrorKind::ConnectionAborted));
                 }
             };

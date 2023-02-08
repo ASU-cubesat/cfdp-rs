@@ -812,7 +812,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                             ),
                                         ) => {
                                             // log some info on the unexpected PDU?
-                                            println!("Unexpected PDU {_info:?}");
+                                            info!("Unexpected PDU {_info:?}");
                                         }
                                         Err(err) => {
                                             return Err(err);
@@ -1297,7 +1297,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                         //     selector.remove(oper.index());
                         // }
                         Err(err) => {
-                            println!("Error on user msg {err}")
+                            info!("Error on user msg {err}")
                         }
                     };
                 }
@@ -1520,11 +1520,9 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                                         }
                                                         Ok(Err(err)) => {
                                                             info!("Error occured during transaction: {err}");
-                                                            println!("Error occured during transaction: {err}")
                                                         }
                                                         Err(_err) => {
                                                             error!("Unable to join handle!");
-                                                            println!("Error occured during transaction: {_err:?}")
                                                         }
                                                     };
                                                 } else {
@@ -1540,7 +1538,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                                 data.clone().encode()
                                             }
                                             None => {
-                                                println!("Cannot find information on requested transaction.");
                                                 info!("Cannot find information on requested transaction.");
                                                 vec![]
                                             }
@@ -1613,18 +1610,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         Ok(())
     }
 }
-
-// impl<T: FileStore + Send + 'static> Drop for Daemon<T> {
-//     fn drop(&mut self) {
-//         for ind in 0..self.transaction_handles.len() {
-//             let handle = self.transaction_handles.remove(ind);
-//             match handle.join().expect("Unable to join thread.") {
-//                 Ok(_) => {}
-//                 Err(err) => println!("Error during threaded transaction. {err:}"),
-//             }
-//         }
-//     }
-// }
 
 #[cfg(test)]
 mod test {

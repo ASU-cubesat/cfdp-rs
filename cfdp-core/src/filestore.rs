@@ -172,7 +172,7 @@ pub trait FileStore {
     fn process_request(&self, request: &FileStoreRequest) -> FileStoreResponse {
         let path = self.get_native_path(&request.first_filename);
         let path2 = self.get_native_path(&request.second_filename);
-        println!("path {path:?}");
+
         let action_and_status = match request.action_code {
             FileStoreAction::CreateFile => match path.exists() {
                 false => match self.create_file(path) {
@@ -294,7 +294,6 @@ impl FileStore for NativeFileStore {
     /// This is a wrapper around [File::create]
     fn create_file<P: AsRef<Utf8Path>>(&self, path: P) -> FileStoreResult<()> {
         let path = self.get_native_path(path);
-        println!("p2 {path:?}");
         let f = File::create(path)?;
         f.sync_all().map_err(FileStoreError::IO)
     }
@@ -816,7 +815,6 @@ f,test.txt,{s5},{t5}
             second_filename: path2.into(),
         };
         let response = filestore.process_request(&request);
-        println!("{response:?}");
         assert!(!response.action_and_status.is_fail());
         dir.close()?;
         Ok(())

@@ -317,7 +317,6 @@ fn f3s05(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
             .unwrap();
     }
 
-    println!("{report:?}");
     assert!(path_to_out.exists());
     assert!(path_to_new.exists());
 

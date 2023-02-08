@@ -1,3 +1,4 @@
+use log::error;
 use std::io::Read;
 
 pub(crate) mod error;
@@ -102,7 +103,7 @@ impl PDUEncode for PDU {
                 match crc == crc16 {
                     true => {}
                     false => {
-                        println!(
+                        error!(
                             "CRC FAILURE, {}, {}, {}",
                             crc,
                             crc16,

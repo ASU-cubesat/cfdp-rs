@@ -161,12 +161,23 @@ fn f3s03(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         .expect("unable to send put request.");
     while user
         .report(id.clone())
-        .expect("Unable to obtain report.")
-        .unwrap()
-        .state
-        != TransactionState::Terminated
+        .expect("Unable to send Report Request.")
+        .is_none()
     {
         thread::sleep(Duration::from_millis(5))
+    }
+
+    let mut report = user
+        .report(id.clone())
+        .expect("Unable to send Report Request.")
+        .unwrap();
+
+    while report.state != TransactionState::Terminated {
+        thread::sleep(Duration::from_millis(5));
+        report = user
+            .report(id.clone())
+            .expect("Unable to send Report Request.")
+            .unwrap();
     }
     assert!(!path_to_out.exists());
 }
@@ -224,15 +235,28 @@ fn f3s04(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
             message_to_user: vec![],
         })
         .expect("unable to send put request.");
+
     while user
         .report(id.clone())
-        .expect("Unable to obtain report.")
-        .unwrap()
-        .state
-        != TransactionState::Terminated
+        .expect("Unable to send Report Request.")
+        .is_none()
     {
         thread::sleep(Duration::from_millis(5))
     }
+
+    let mut report = user
+        .report(id.clone())
+        .expect("Unable to send Report Request.")
+        .unwrap();
+
+    while report.state != TransactionState::Terminated {
+        thread::sleep(Duration::from_millis(5));
+        report = user
+            .report(id.clone())
+            .expect("Unable to send Report Request.")
+            .unwrap();
+    }
+
     assert!(!path_to_out.exists());
     assert!(path_to_new.exists())
 }
@@ -386,14 +410,26 @@ fn f3s06(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
             message_to_user: vec![],
         })
         .expect("unable to send put request.");
+
     while user
         .report(id.clone())
-        .expect("Unable to obtain report.")
-        .unwrap()
-        .state
-        != TransactionState::Terminated
+        .expect("Unable to send Report Request.")
+        .is_none()
     {
         thread::sleep(Duration::from_millis(5))
+    }
+
+    let mut report = user
+        .report(id.clone())
+        .expect("Unable to send Report Request.")
+        .unwrap();
+
+    while report.state != TransactionState::Terminated {
+        thread::sleep(Duration::from_millis(5));
+        report = user
+            .report(id.clone())
+            .expect("Unable to send Report Request.")
+            .unwrap();
     }
     assert!(path_to_new.exists());
 

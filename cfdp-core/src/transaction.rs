@@ -349,7 +349,7 @@ impl<T: FileStore> Transaction<T> {
                 pdu_type,
                 direction,
                 transmission_mode: self.config.transmission_mode.clone(),
-                crc_flag: self.config.crc_flag.clone(),
+                crc_flag: self.config.crc_flag,
                 large_file_flag: self.config.file_size_flag,
                 pdu_data_field_length,
                 segmentation_control,

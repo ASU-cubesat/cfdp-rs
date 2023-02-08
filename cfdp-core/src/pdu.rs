@@ -56,7 +56,7 @@ impl PDUEncode for PDU {
     type PDUType = Self;
 
     fn encode(self) -> Vec<u8> {
-        let crc_flag = self.header.crc_flag.clone();
+        let crc_flag = self.header.crc_flag;
         let mut buffer = self.header.encode();
         buffer.extend(self.payload.encode());
         match crc_flag {

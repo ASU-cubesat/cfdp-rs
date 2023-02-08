@@ -132,7 +132,7 @@ pub enum TraceControl {
 }
 
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum CRCFlag {
     NotPresent = 0,
     Present = 1,
@@ -272,7 +272,10 @@ impl PDUEncode for PDUHeader {
             | self.large_file_flag as u8;
         let mut buffer = vec![first_byte];
         // if the CRC is expected add 2 to the length of the "data" field
-        buffer.extend(self.pdu_data_field_length.to_be_bytes());
+        buffer.extend(match &self.crc_flag {
+            CRCFlag::NotPresent => self.pdu_data_field_length.to_be_bytes(),
+            CRCFlag::Present => (self.pdu_data_field_length + 2).to_be_bytes(),
+        });
         buffer.push(
             ((self.segmentation_control as u8) << 7)
                 | ((self.source_entity_id.get_len() - 1) << 4)
@@ -323,7 +326,13 @@ impl PDUEncode for PDUHeader {
         let pdu_data_field_length = {
             let mut u16_buff = [0_u8; 2];
             buffer.read_exact(&mut u16_buff)?;
-            u16::from_be_bytes(u16_buff)
+            // CRC length is _included_ in the data_field_length
+            // but it is not actually part of the message.
+            // strip the crc length to preserve the original message
+            match &crc_flag {
+                CRCFlag::NotPresent => u16::from_be_bytes(u16_buff),
+                CRCFlag::Present => u16::from_be_bytes(u16_buff) - 2,
+            }
         };
 
         buffer.read_exact(&mut u8_buff)?;

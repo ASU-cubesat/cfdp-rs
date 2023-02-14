@@ -6,6 +6,9 @@ pub mod transaction;
 pub mod transport;
 pub mod user;
 
+// Re-exported for convenience
+pub use crossbeam_channel::{Receiver, Sender};
+
 #[cfg(test)]
 mod tests {
 

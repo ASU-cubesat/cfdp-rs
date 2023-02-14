@@ -7,7 +7,7 @@ pub mod transport;
 pub mod user;
 
 // Re-exported for convenience
-pub use crossbeam_channel::{Receiver, Sender};
+pub use crossbeam_channel::{Receiver, Sender, TryRecvError};
 
 #[cfg(test)]
 mod tests {

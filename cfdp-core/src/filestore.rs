@@ -69,10 +69,12 @@ impl Display for FileStoreError {
             Self::IO(source) => source.fmt(f),
             Self::Format(source) => source.fmt(f),
             Self::SystemTime(source) => source.fmt(f),
-            Self::PathDiff(source1, source2) => write!(
-                f,
-                "Cannot find relative path between {source1} and {source2}.",
-            ),
+            Self::PathDiff(source1, source2) => {
+                write!(
+                    f,
+                    "Cannot find relative path between {source1} and {source2}.",
+                )
+            }
             Self::UTF8(source) => source.fmt(f),
         }
     }

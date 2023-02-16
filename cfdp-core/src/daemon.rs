@@ -75,10 +75,16 @@ impl Display for PrimitiveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::IO(err) => err.fmt(f),
-            Self::UnexpextedPrimitive => write!(f, "Unexpected value for User Primitive."),
+            Self::UnexpextedPrimitive => {
+                write!(f, "Unexpected value for User Primitive.")
+            }
             Self::Encode(err) => err.fmt(f),
-            Self::Metadata(err) => write!(f, "Error (en)de-coding Metadata. {err}"),
-            Self::Utf8(error) => write!(f, "Invalid file path encoding. {error}"),
+            Self::Metadata(err) => {
+                write!(f, "Error (en)de-coding Metadata. {err}")
+            }
+            Self::Utf8(error) => {
+                write!(f, "Invalid file path encoding. {error}")
+            }
         }
     }
 }
@@ -440,8 +446,8 @@ fn get_proxy_request(origin_id: &TransactionID, messages: &[ProxyOperation]) -> 
         // But if the implementation doesn't let's not worry about it too much
         message_to_user.push(MessageToUser::from(
             UserOperation::OriginatingTransactionIDMessage(OriginatingTransactionIDMessage {
-                source_entity_id: origin_id.0.clone(),
-                transaction_sequence_number: origin_id.1.clone(),
+                source_entity_id: origin_id.0,
+                transaction_sequence_number: origin_id.1,
             }),
         ));
 
@@ -490,10 +496,7 @@ fn categorize_user_msg(
         .and_then(|_| {
             user_ops.iter().find_map(|msg| {
                 if let UserOperation::OriginatingTransactionIDMessage(origin) = msg {
-                    Some((
-                        origin.source_entity_id.clone(),
-                        origin.transaction_sequence_number.clone(),
-                    ))
+                    Some((origin.source_entity_id, origin.transaction_sequence_number))
                 } else {
                     None
                 }
@@ -600,7 +603,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             let (remote_send, remote_receive) = unbounded();
 
             vec.iter().for_each(|id| {
-                transport_tx_map.insert(id.clone(), remote_send.clone());
+                transport_tx_map.insert(*id, remote_send.clone());
             });
 
             transport_rx_vec.push(pdu_receive);
@@ -637,10 +640,10 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
 
         let config = TransactionConfig {
             action_type: Action::Receive,
-            source_entity_id: header.source_entity_id.clone(),
-            destination_entity_id: header.destination_entity_id.clone(),
+            source_entity_id: header.source_entity_id,
+            destination_entity_id: header.destination_entity_id,
             transmission_mode: header.transmission_mode.clone(),
-            sequence_number: header.transaction_sequence_number.clone(),
+            sequence_number: header.transaction_sequence_number,
             file_size_flag: header.large_file_flag,
             fault_handler_override: entity_config.fault_handler_override.clone(),
             file_size_segment: entity_config.file_size_segment,
@@ -736,9 +739,9 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         send_proxy_response: bool,
     ) -> Result<SpawnerTuple, Box<dyn std::error::Error>> {
         let (transaction_tx, transaction_rx) = unbounded();
-        let id = (source_entity_id.clone(), sequence_number.clone());
+        let id = (source_entity_id, sequence_number);
 
-        let destination_entity_id = request.destination_entity_id.clone();
+        let destination_entity_id = request.destination_entity_id;
         let transmission_mode = request.transmission_mode.clone();
         let mut config = TransactionConfig {
             action_type: Action::Send,
@@ -849,7 +852,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
 
     /// This function will consist of the main logic loop in any daemon process.
     pub fn manage_transactions(&mut self) -> Result<(), Box<dyn std::error::Error + '_>> {
-        let mut sequence_num = self.sequence_num.clone();
+        let mut sequence_num = self.sequence_num;
 
         // Create the selection object to check if any messages are available.
         // the returned index will be used to determine which action to take.
@@ -894,18 +897,18 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                 let (id, sender, handle) = Self::spawn_send_transaction(
                                     request,
                                     sequence_number,
-                                    self.entity_id.clone(),
+                                    self.entity_id,
                                     transport_tx,
                                     entity_config,
                                     self.filestore.clone(),
                                     self.message_tx.clone(),
                                     true,
                                 )?;
-                                self.proxy_id_map.insert(origin_id.clone(), id.clone());
+                                self.proxy_id_map.insert(origin_id, id);
 
-                                let response = Self::get_report(id.clone(), &transaction_channels);
+                                let response = Self::get_report(id, &transaction_channels);
                                 if let Some(report) = response {
-                                    self.history.insert(id.clone(), report);
+                                    self.history.insert(id, report);
                                 }
 
                                 self.transaction_handles.push(handle);
@@ -924,88 +927,77 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                             for req in user_reqs.into_iter() {
                                 match req {
                                     UserRequest::DirectoryListing(directory_request) => {
-                                        let request = match self.filestore.list_directory(&directory_request.directory_name)
-                                    {
+                                        let request = match self
+                                            .filestore
+                                            .list_directory(&directory_request.directory_name)
+                                        {
                                             Ok(listing) => {
                                                 let outfile = directory_request
                                                     .directory_name
                                                     .as_path()
                                                     .with_extension(".listing");
 
-                                                let response_code =match
-                                                    self.filestore
-                                                            .open(
-                                                                &outfile,
-                                                                OpenOptions::new()
-                                                                    .create(true)
-                                                                    .truncate(true)
-                                                                    .write(true),
-                                                            )
-                                                            .map(|mut handle| {
-                                                                handle.write_all(
-                                                                    listing.as_bytes(),
-                                                                )
-                                                            })
-                                                        {
-                                                        Ok(Ok(())) => ListingResponseCode::Successful,
-                                                        _ => ListingResponseCode::Unsuccessful,
-                                                    };
+                                                let response_code = match self
+                                                    .filestore
+                                                    .open(
+                                                        &outfile,
+                                                        OpenOptions::new().create(true).truncate(true).write(true),
+                                                    )
+                                                    .map(|mut handle| handle.write_all(listing.as_bytes()))
+                                                {
+                                                    Ok(Ok(())) => ListingResponseCode::Successful,
+                                                    _ => ListingResponseCode::Unsuccessful,
+                                                };
                                                 PutRequest {
-                                                source_filename: outfile,
-                                                destination_filename: directory_request.directory_filename.clone(),
-                                                destination_entity_id: origin_id.0.clone(),
-                                                transmission_mode: tx_mode.clone(),
-                                                filestore_requests: vec![],
-                                                message_to_user: vec![
-                                                    MessageToUser::from(
-                                                        UserOperation::OriginatingTransactionIDMessage(
-                                                            OriginatingTransactionIDMessage{
-                                                                source_entity_id: origin_id.0.clone(),
-                                                                transaction_sequence_number: origin_id.1.clone(),
-                                                            }
-                                                        )
-                                                    ),
-                                                    MessageToUser::from(
-                                                        UserOperation::Response(UserResponse::DirectoryListing(
-                                                            DirectoryListingResponse{
+                                                    source_filename: outfile,
+                                                    destination_filename: directory_request.directory_filename.clone(),
+                                                    destination_entity_id: origin_id.0,
+                                                    transmission_mode: tx_mode.clone(),
+                                                    filestore_requests: vec![],
+                                                    message_to_user: vec![
+                                                        MessageToUser::from(
+                                                            UserOperation::OriginatingTransactionIDMessage(
+                                                                OriginatingTransactionIDMessage {
+                                                                    source_entity_id: origin_id.0,
+                                                                    transaction_sequence_number: origin_id.1,
+                                                                },
+                                                            ),
+                                                        ),
+                                                        MessageToUser::from(UserOperation::Response(
+                                                            UserResponse::DirectoryListing(DirectoryListingResponse {
                                                                 response_code,
                                                                 directory_name: directory_request.directory_name,
-                                                                directory_filename: directory_request.directory_filename,
-                                                            }
-                                                        ))
-                                                    ),
-                                                ],
+                                                                directory_filename: directory_request
+                                                                    .directory_filename,
+                                                            }),
+                                                        )),
+                                                    ],
+                                                }
                                             }
-                                            }
-                                            Err(_) => {
-
-                                                PutRequest {
+                                            Err(_) => PutRequest {
                                                 source_filename: "".into(),
                                                 destination_filename: "".into(),
-                                                destination_entity_id: origin_id.0.clone(),
+                                                destination_entity_id: origin_id.0,
                                                 transmission_mode: tx_mode.clone(),
                                                 filestore_requests: vec![],
                                                 message_to_user: vec![
                                                     MessageToUser::from(
                                                         UserOperation::OriginatingTransactionIDMessage(
-                                                            OriginatingTransactionIDMessage{
-                                                                source_entity_id: origin_id.0.clone(),
-                                                                transaction_sequence_number: origin_id.1.clone(),
-                                                            }
-                                                        )
+                                                            OriginatingTransactionIDMessage {
+                                                                source_entity_id: origin_id.0,
+                                                                transaction_sequence_number: origin_id.1,
+                                                            },
+                                                        ),
                                                     ),
-                                                    MessageToUser::from(
-                                                        UserOperation::Response(UserResponse::DirectoryListing(
-                                                            DirectoryListingResponse{
-                                                                response_code: ListingResponseCode::Unsuccessful,
-                                                                directory_name: directory_request.directory_name,
-                                                                directory_filename: directory_request.directory_filename,
-                                                            }
-                                                        ))
-                                                    ),
+                                                    MessageToUser::from(UserOperation::Response(
+                                                        UserResponse::DirectoryListing(DirectoryListingResponse {
+                                                            response_code: ListingResponseCode::Unsuccessful,
+                                                            directory_name: directory_request.directory_name,
+                                                            directory_filename: directory_request.directory_filename,
+                                                        }),
+                                                    )),
                                                 ],
-                                            }
-                                            }
+                                            },
                                         };
 
                                         {
@@ -1026,7 +1018,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                                 Self::spawn_send_transaction(
                                                     request,
                                                     sequence_number,
-                                                    self.entity_id.clone(),
+                                                    self.entity_id,
                                                     transport_tx,
                                                     entity_config,
                                                     self.filestore.clone(),
@@ -1035,9 +1027,9 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                                 )?;
 
                                             let response =
-                                                Self::get_report(id.clone(), &transaction_channels);
+                                                Self::get_report(id, &transaction_channels);
                                             if let Some(report) = response {
-                                                self.history.insert(id.clone(), report);
+                                                self.history.insert(id, report);
                                             }
                                             self.transaction_handles.push(handle);
                                             transaction_channels.insert(id, sender);
@@ -1046,8 +1038,8 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                     UserRequest::RemoteStatusReport(report_request) => {
                                         let report = Self::get_report(
                                             (
-                                                report_request.source_entity_id.clone(),
-                                                report_request.transaction_sequence_number.clone(),
+                                                report_request.source_entity_id,
+                                                report_request.transaction_sequence_number,
                                             ),
                                             &transaction_channels,
                                         );
@@ -1074,17 +1066,16 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         let request = PutRequest {
                                             source_filename: "".into(),
                                             destination_filename: "".into(),
-                                            destination_entity_id: origin_id.0.clone(),
+                                            destination_entity_id: origin_id.0,
                                             transmission_mode: tx_mode.clone(),
                                             filestore_requests: vec![],
                                             message_to_user: vec![
                                                 MessageToUser::from(
                                                     UserOperation::OriginatingTransactionIDMessage(
                                                         OriginatingTransactionIDMessage {
-                                                            source_entity_id: origin_id.0.clone(),
+                                                            source_entity_id: origin_id.0,
                                                             transaction_sequence_number: origin_id
-                                                                .1
-                                                                .clone(),
+                                                                .1,
                                                         },
                                                     ),
                                                 ),
@@ -1110,7 +1101,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         let (id, sender, handle) = Self::spawn_send_transaction(
                                             request,
                                             sequence_number,
-                                            self.entity_id.clone(),
+                                            self.entity_id,
                                             transport_tx,
                                             entity_config,
                                             self.filestore.clone(),
@@ -1118,18 +1109,17 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                             false,
                                         )?;
 
-                                        let response =
-                                            Self::get_report(id.clone(), &transaction_channels);
+                                        let response = Self::get_report(id, &transaction_channels);
                                         if let Some(report) = response {
-                                            self.history.insert(id.clone(), report);
+                                            self.history.insert(id, report);
                                         }
                                         self.transaction_handles.push(handle);
                                         transaction_channels.insert(id, sender);
                                     }
                                     UserRequest::RemoteSuspend(suspend_req) => {
                                         let suspend_indication = match transaction_channels.get(&(
-                                            suspend_req.source_entity_id.clone(),
-                                            suspend_req.transaction_sequence_number.clone(),
+                                            suspend_req.source_entity_id,
+                                            suspend_req.transaction_sequence_number,
                                         )) {
                                             Some(chan) => chan.send(Command::Suspend).is_ok(),
                                             None => false,
@@ -1138,17 +1128,16 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         let request = PutRequest {
                                             source_filename: "".into(),
                                             destination_filename: "".into(),
-                                            destination_entity_id: origin_id.0.clone(),
+                                            destination_entity_id: origin_id.0,
                                             transmission_mode: tx_mode.clone(),
                                             filestore_requests: vec![],
                                             message_to_user: vec![
                                                 MessageToUser::from(
                                                     UserOperation::OriginatingTransactionIDMessage(
                                                         OriginatingTransactionIDMessage {
-                                                            source_entity_id: origin_id.0.clone(),
+                                                            source_entity_id: origin_id.0,
                                                             transaction_sequence_number: origin_id
-                                                                .1
-                                                                .clone(),
+                                                                .1,
                                                         },
                                                     ),
                                                 ),
@@ -1185,7 +1174,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         let (id, sender, handle) = Self::spawn_send_transaction(
                                             request,
                                             sequence_number,
-                                            self.entity_id.clone(),
+                                            self.entity_id,
                                             transport_tx,
                                             entity_config,
                                             self.filestore.clone(),
@@ -1193,18 +1182,17 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                             false,
                                         )?;
 
-                                        let response =
-                                            Self::get_report(id.clone(), &transaction_channels);
+                                        let response = Self::get_report(id, &transaction_channels);
                                         if let Some(report) = response {
-                                            self.history.insert(id.clone(), report);
+                                            self.history.insert(id, report);
                                         }
                                         self.transaction_handles.push(handle);
                                         transaction_channels.insert(id, sender);
                                     }
                                     UserRequest::RemoteResume(resume_request) => {
                                         let suspend_indication = match transaction_channels.get(&(
-                                            resume_request.source_entity_id.clone(),
-                                            resume_request.transaction_sequence_number.clone(),
+                                            resume_request.source_entity_id,
+                                            resume_request.transaction_sequence_number,
                                         )) {
                                             Some(chan) => chan.send(Command::Resume).is_err(),
                                             None => true,
@@ -1213,17 +1201,16 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         let request = PutRequest {
                                             source_filename: "".into(),
                                             destination_filename: "".into(),
-                                            destination_entity_id: origin_id.0.clone(),
+                                            destination_entity_id: origin_id.0,
                                             transmission_mode: tx_mode.clone(),
                                             filestore_requests: vec![],
                                             message_to_user: vec![
                                                 MessageToUser::from(
                                                     UserOperation::OriginatingTransactionIDMessage(
                                                         OriginatingTransactionIDMessage {
-                                                            source_entity_id: origin_id.0.clone(),
+                                                            source_entity_id: origin_id.0,
                                                             transaction_sequence_number: origin_id
-                                                                .1
-                                                                .clone(),
+                                                                .1,
                                                         },
                                                     ),
                                                 ),
@@ -1260,7 +1247,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         let (id, sender, handle) = Self::spawn_send_transaction(
                                             request,
                                             sequence_number,
-                                            self.entity_id.clone(),
+                                            self.entity_id,
                                             transport_tx,
                                             entity_config,
                                             self.filestore.clone(),
@@ -1268,10 +1255,9 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                             false,
                                         )?;
 
-                                        let response =
-                                            Self::get_report(id.clone(), &transaction_channels);
+                                        let response = Self::get_report(id, &transaction_channels);
                                         if let Some(report) = response {
-                                            self.history.insert(id.clone(), report);
+                                            self.history.insert(id, report);
                                         }
                                         self.transaction_handles.push(handle);
                                         transaction_channels.insert(id, sender);
@@ -1313,17 +1299,17 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                             // If this PDU is to the sender, we send to the destination
                             // if this PDU is to the receiver, we send to the source
                             let transport_entity = match &pdu.header.direction {
-                                Direction::ToSender => pdu.header.destination_entity_id.clone(),
-                                Direction::ToReceiver => pdu.header.source_entity_id.clone(),
+                                Direction::ToSender => pdu.header.destination_entity_id,
+                                Direction::ToReceiver => pdu.header.source_entity_id,
                             };
 
                             let key = (
-                                pdu.header.source_entity_id.clone(),
-                                pdu.header.transaction_sequence_number.clone(),
+                                pdu.header.source_entity_id,
+                                pdu.header.transaction_sequence_number,
                             );
                             // hand pdu off to transaction
                             let channel = transaction_channels
-                                .entry(key.clone())
+                                .entry(key)
                                 // if this key is not in the channel list
                                 // create a new transaction
                                 .or_insert_with(|| {
@@ -1386,10 +1372,9 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                             self.message_tx.clone(),
                                         )?;
 
-                                    let response =
-                                        Self::get_report(id.clone(), &transaction_channels);
+                                    let response = Self::get_report(id, &transaction_channels);
                                     if let Some(report) = response {
-                                        self.history.insert(id.clone(), report);
+                                        self.history.insert(id, report);
                                     }
                                     self.transaction_handles.push(handle);
                                     new_channel.send(Command::Pdu(pdu.clone()))?;
@@ -1443,7 +1428,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                             let (id, sender, handle) = Self::spawn_send_transaction(
                                 request,
                                 sequence_number,
-                                self.entity_id.clone(),
+                                self.entity_id,
                                 transport_tx,
                                 entity_config,
                                 self.filestore.clone(),
@@ -1451,13 +1436,13 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                 false,
                             )?;
 
-                            let response = Self::get_report(id.clone(), &transaction_channels);
+                            let response = Self::get_report(id, &transaction_channels);
                             if let Some(report) = response {
-                                self.history.insert(id.clone(), report);
+                                self.history.insert(id, report);
                             }
 
                             self.transaction_handles.push(handle);
-                            transaction_channels.insert(id.clone(), sender);
+                            transaction_channels.insert(id, sender);
                             let response = {
                                 let mut buff = vec![];
                                 buff.extend(id.0.encode());
@@ -1482,15 +1467,14 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                             }
                         }
                         UserPrimitive::Report(id, seq) => {
-                            let report =
-                                Self::get_report((id.clone(), seq.clone()), &transaction_channels);
+                            let report = Self::get_report((id, seq), &transaction_channels);
                             let response = match report {
                                 Some(data) => {
                                     info!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", id, seq, data.state, data.status, data.condition);
-                                    self.history.insert(data.id.clone(), data.clone());
+                                    self.history.insert(data.id, data.clone());
                                     data.clone().encode()
                                 }
-                                None => match self.history.get(&(id.clone(), seq.clone())) {
+                                None => match self.history.get(&(id, seq)) {
                                     Some(data) => {
                                         info!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", id, seq, data.state, data.status, data.condition);
                                         data.clone().encode()
@@ -1514,7 +1498,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                                                 *value != inner_report.id
                                                             });
                                                             self.history.insert(
-                                                                inner_report.id.clone(),
+                                                                inner_report.id,
                                                                 inner_report,
                                                             );
                                                         }
@@ -1532,7 +1516,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
 
                                             cleanup = Instant::now();
                                         }
-                                        match self.history.get(&(id.clone(), seq.clone())) {
+                                        match self.history.get(&(id, seq)) {
                                             Some(data) => {
                                                 info!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", id, seq, data.state, data.status, data.condition);
                                                 data.clone().encode()
@@ -1575,7 +1559,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                 let _ = transaction_channels.remove(&report.id);
                                 // keep all proxy id maps where the finished transaction ID is not the entry
                                 self.proxy_id_map.retain(|_, value| *value != report.id);
-                                self.history.insert(report.id.clone(), report);
+                                self.history.insert(report.id, report);
                             }
                             Ok(Err(err)) => {
                                 info!("Error occured during transaction: {}", err)
@@ -1599,7 +1583,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                     let _ = transaction_channels.remove(&report.id);
                     // keep all proxy id maps where the finished transaction ID is not the entry
                     self.proxy_id_map.retain(|_, value| *value != report.id);
-                    self.history.insert(report.id.clone(), report);
+                    self.history.insert(report.id, report);
                 }
                 Ok(Err(err)) => {
                     info!("Error occured during transaction: {}", err)
@@ -1767,7 +1751,7 @@ mod test {
                 MessageToUser {
                     message_text: UserOperation::OriginatingTransactionIDMessage(
                         OriginatingTransactionIDMessage {
-                            source_entity_id: origin_id.0.clone(),
+                            source_entity_id: origin_id.0,
                             transaction_sequence_number: origin_id.1,
                         },
                     )

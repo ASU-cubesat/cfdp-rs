@@ -86,10 +86,12 @@ impl fmt::Display for PDUError {
                 "CRC Failure on PDU. Expected 0x{expected:X} Receieved 0x{received:X}"
             ),
             Self::ReadError(source) => write!(f, "Error Reading PDU Buffer. {source:}"),
-            Self::UnkownIDLength(other) => write!(
-                f,
-                "Bad length for Variable Identifier (not a power a of 2) {other:}."
-            ),
+            Self::UnkownIDLength(other) => {
+                write!(
+                    f,
+                    "Bad length for Variable Identifier (not a power a of 2) {other:}."
+                )
+            }
             Self::InvalidFileName(err) => write!(f, "Unable to decode filename. {err}"),
             Self::InvalidListingCode(code) => {
                 write!(f, "Invalide Directory Listing Response Code: {code}. ")

@@ -52,7 +52,7 @@ impl User {
         self.send(UserPrimitive::Cancel(transaction.0, transaction.1))
     }
     pub fn report(&mut self, transaction: TransactionID) -> Result<Option<Report>, IoError> {
-        let primitive = UserPrimitive::Report(transaction.clone().0, transaction.clone().1);
+        let primitive = UserPrimitive::Report(transaction.0, transaction.1);
 
         let report = {
             let mut connection = LocalSocketStream::connect(self.socket.as_str())?;

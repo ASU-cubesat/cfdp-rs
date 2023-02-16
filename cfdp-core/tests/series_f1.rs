@@ -527,25 +527,21 @@ fn f1s8(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         })
         .expect("unable to send put request.");
 
-    while user
-        .report(id.clone())
-        .expect("cannot send report")
-        .is_none()
-    {
+    while user.report(id).expect("cannot send report").is_none() {
         thread::sleep(Duration::from_millis(1));
     }
-    user.cancel(id.clone()).expect("unable to cancel.");
+    user.cancel(id).expect("unable to cancel.");
     thread::sleep(Duration::from_millis(5));
 
     let mut report = user
-        .report(id.clone())
+        .report(id)
         .expect("Unable to send Report Request.")
         .unwrap();
 
     while report.condition != Condition::CancelReceived {
         thread::sleep(Duration::from_millis(5));
         report = user
-            .report(id.clone())
+            .report(id)
             .expect("Unable to send Report Request.")
             .unwrap();
     }
@@ -590,25 +586,25 @@ fn f1s9(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         })
         .expect("unable to send put request.");
     while user_remote
-        .report(id.clone())
+        .report(id)
         .expect("cannot send report")
         .is_none()
     {
         thread::sleep(Duration::from_micros(1));
     }
     thread::sleep(Duration::from_millis(1));
-    user_remote.cancel(id.clone()).expect("unable to cancel.");
+    user_remote.cancel(id).expect("unable to cancel.");
     thread::sleep(Duration::from_millis(5));
 
     let mut report = user_remote
-        .report(id.clone())
+        .report(id)
         .expect("Unable to send Report Request.")
         .unwrap();
 
     while report.condition != Condition::CancelReceived {
         thread::sleep(Duration::from_millis(5));
         report = user_remote
-            .report(id.clone())
+            .report(id)
             .expect("Unable to send Report Request.")
             .unwrap();
     }
@@ -646,26 +642,22 @@ fn f1s10(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         })
         .expect("unable to send put request.");
 
-    while user
-        .report(id.clone())
-        .expect("cannot send report")
-        .is_none()
-    {
+    while user.report(id).expect("cannot send report").is_none() {
         thread::sleep(Duration::from_millis(1));
     }
 
-    user.cancel(id.clone()).expect("unable to cancel.");
+    user.cancel(id).expect("unable to cancel.");
     thread::sleep(Duration::from_millis(5));
 
     let mut report = user
-        .report(id.clone())
+        .report(id)
         .expect("Unable to send Report Request.")
         .unwrap();
 
     while report.condition != Condition::CancelReceived {
         thread::sleep(Duration::from_millis(5));
         report = user
-            .report(id.clone())
+            .report(id)
             .expect("Unable to send Report Request.")
             .unwrap();
     }

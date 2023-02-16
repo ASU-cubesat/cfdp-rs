@@ -27,7 +27,7 @@ macro_rules! impl_id {
 }
 pub type EntityID = VariableID;
 pub type TransactionSeqNum = VariableID;
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Copy)]
 pub enum VariableID {
     U8(u8),
     U16(u16),
@@ -79,7 +79,7 @@ impl VariableID {
     }
 
     pub fn get_and_increment(&mut self) -> Self {
-        let current = self.clone();
+        let current = *self;
         self.increment();
         current
     }
@@ -914,7 +914,7 @@ mod test {
         )]
         id: VariableID,
     ) {
-        let buff = id.clone().encode();
+        let buff = id.encode();
         let recovered =
             VariableID::decode(&mut buff.as_slice()).expect("Unable to decode VariableID");
 

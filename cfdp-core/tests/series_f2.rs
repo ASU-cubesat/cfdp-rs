@@ -710,14 +710,14 @@ fn f2s7(fixture_f2s7: &'static EntityConstructorReturn) {
     // wait long enough for the ack limit to be reached
 
     let mut report = user
-        .report(id.clone())
+        .report(id)
         .expect("Unable to send Report Request.")
         .unwrap();
 
     while report.condition != Condition::PositiveLimitReached {
         thread::sleep(Duration::from_millis(100));
         report = user
-            .report(id.clone())
+            .report(id)
             .expect("Unable to send Report Request.")
             .unwrap();
     }
@@ -822,14 +822,14 @@ fn f2s8(fixture_f2s8: &'static EntityConstructorReturn) {
 
     // wait long enough for the nak limit to be reached
     let mut report = user
-        .report(id.clone())
+        .report(id)
         .expect("Unable to send Report Request.")
         .unwrap();
 
     while report.condition != Condition::NakLimitReached {
         thread::sleep(Duration::from_millis(100));
         report = user
-            .report(id.clone())
+            .report(id)
             .expect("Unable to send Report Request.")
             .unwrap();
     }
@@ -932,14 +932,14 @@ fn f2s9(fixture_f2s9: &'static EntityConstructorReturn) {
 
     // wait long enough for the nak limit to be reached
     let mut report = user
-        .report(id.clone())
+        .report(id)
         .expect("Unable to send Report Request.")
         .unwrap();
 
     while report.condition != Condition::InactivityDetected {
         thread::sleep(Duration::from_millis(100));
         report = user
-            .report(id.clone())
+            .report(id)
             .expect("Unable to send Report Request.")
             .unwrap();
     }
@@ -1049,7 +1049,7 @@ fn f2s10(fixture_f2s10: &'static EntityConstructorReturn) {
 
     // wait long enough for the nak limit to be reached
     while user_remote
-        .report(id.clone())
+        .report(id)
         .expect("Unable to send Report Request.")
         .is_none()
     {
@@ -1057,14 +1057,14 @@ fn f2s10(fixture_f2s10: &'static EntityConstructorReturn) {
     }
 
     let mut report = user_remote
-        .report(id.clone())
+        .report(id)
         .expect("Unable to send Report Request.")
         .unwrap();
 
     while report.condition != Condition::InactivityDetected {
         thread::sleep(Duration::from_millis(100));
         report = user_remote
-            .report(id.clone())
+            .report(id)
             .expect("Unable to send Report Request.")
             .unwrap();
     }

@@ -160,7 +160,7 @@ fn f3s03(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         })
         .expect("unable to send put request.");
     while user
-        .report(id.clone())
+        .report(id)
         .expect("Unable to send Report Request.")
         .is_none()
     {
@@ -168,14 +168,14 @@ fn f3s03(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
     }
 
     let mut report = user
-        .report(id.clone())
+        .report(id)
         .expect("Unable to send Report Request.")
         .unwrap();
 
     while report.state != TransactionState::Terminated {
         thread::sleep(Duration::from_millis(5));
         report = user
-            .report(id.clone())
+            .report(id)
             .expect("Unable to send Report Request.")
             .unwrap();
     }
@@ -237,7 +237,7 @@ fn f3s04(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         .expect("unable to send put request.");
 
     while user
-        .report(id.clone())
+        .report(id)
         .expect("Unable to send Report Request.")
         .is_none()
     {
@@ -245,14 +245,14 @@ fn f3s04(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
     }
 
     let mut report = user
-        .report(id.clone())
+        .report(id)
         .expect("Unable to send Report Request.")
         .unwrap();
 
     while report.state != TransactionState::Terminated {
         thread::sleep(Duration::from_millis(5));
         report = user
-            .report(id.clone())
+            .report(id)
             .expect("Unable to send Report Request.")
             .unwrap();
     }
@@ -298,23 +298,13 @@ fn f3s05(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         })
         .expect("unable to send put request.");
 
-    while user
-        .report(id.clone())
-        .expect("unable to get report.")
-        .is_none()
-    {
+    while user.report(id).expect("unable to get report.").is_none() {
         thread::sleep(Duration::from_millis(150))
     }
-    let mut report = user
-        .report(id.clone())
-        .expect("unable to get report.")
-        .unwrap();
+    let mut report = user.report(id).expect("unable to get report.").unwrap();
     while report.state != TransactionState::Terminated {
         thread::sleep(Duration::from_millis(150));
-        report = user
-            .report(id.clone())
-            .expect("unable to get report.")
-            .unwrap();
+        report = user.report(id).expect("unable to get report.").unwrap();
     }
 
     assert!(path_to_out.exists());
@@ -335,7 +325,7 @@ fn f3s05(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         })
         .expect("unable to send put request.");
     while user
-        .report(id.clone())
+        .report(id)
         .expect("Unable to obtain report.")
         .unwrap()
         .state
@@ -411,7 +401,7 @@ fn f3s06(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         .expect("unable to send put request.");
 
     while user
-        .report(id.clone())
+        .report(id)
         .expect("Unable to send Report Request.")
         .is_none()
     {
@@ -419,14 +409,14 @@ fn f3s06(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
     }
 
     let mut report = user
-        .report(id.clone())
+        .report(id)
         .expect("Unable to send Report Request.")
         .unwrap();
 
     while report.state != TransactionState::Terminated {
         thread::sleep(Duration::from_millis(5));
         report = user
-            .report(id.clone())
+            .report(id)
             .expect("Unable to send Report Request.")
             .unwrap();
     }

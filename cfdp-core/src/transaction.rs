@@ -354,9 +354,9 @@ impl<T: FileStore> Transaction<T> {
                 pdu_data_field_length,
                 segmentation_control,
                 segment_metadata_flag: self.config.segment_metadata_flag.clone(),
-                source_entity_id: self.config.source_entity_id.clone(),
-                transaction_sequence_number: self.config.sequence_number.clone(),
-                destination_entity_id: self.config.destination_entity_id.clone(),
+                source_entity_id: self.config.source_entity_id,
+                transaction_sequence_number: self.config.sequence_number,
+                destination_entity_id: self.config.destination_entity_id,
             };
             self.header = Some(header.clone());
             header
@@ -364,10 +364,7 @@ impl<T: FileStore> Transaction<T> {
     }
 
     pub fn id(&self) -> (VariableID, TransactionSeqNum) {
-        (
-            self.config.source_entity_id.clone(),
-            self.config.sequence_number.clone(),
-        )
+        (self.config.source_entity_id, self.config.sequence_number)
     }
 
     fn get_checksum(&mut self) -> TransactionResult<u32> {
@@ -526,7 +523,7 @@ impl<T: FileStore> Transaction<T> {
             // TODO need definition of segment metadata. Not currently supported.
             SegmentedData::Present => unimplemented!(),
         };
-        let destination = self.config.destination_entity_id.clone();
+        let destination = self.config.destination_entity_id;
         let payload = PDUPayload::FileData(data);
         let payload_len: u16 = payload.clone().encode().len().try_into()?;
         let pdu = PDU {
@@ -710,7 +707,7 @@ impl<T: FileStore> Transaction<T> {
             SegmentationControl::NotPreserved,
         );
 
-        let destination = header.destination_entity_id.clone();
+        let destination = header.destination_entity_id;
         let pdu = PDU { header, payload };
 
         self.transport_tx.send((destination, pdu))?;
@@ -737,10 +734,10 @@ impl<T: FileStore> Transaction<T> {
     fn _cancel(&mut self) -> TransactionResult<()> {
         match (&self.config.action_type, &self.config.transmission_mode) {
             (Action::Send, TransmissionMode::Acknowledged) => {
-                self.send_eof(Some(self.config.source_entity_id.clone()))
+                self.send_eof(Some(self.config.source_entity_id))
             }
             (Action::Send, TransmissionMode::Unacknowledged) => {
-                self.send_eof(Some(self.config.source_entity_id.clone()))?;
+                self.send_eof(Some(self.config.source_entity_id))?;
                 self.shutdown();
                 Ok(())
             }
@@ -829,7 +826,7 @@ impl<T: FileStore> Transaction<T> {
             SegmentationControl::NotPreserved,
         );
 
-        let destination = header.destination_entity_id.clone();
+        let destination = header.destination_entity_id;
         let pdu = PDU { header, payload };
 
         self.transport_tx.send((destination, pdu))?;
@@ -855,7 +852,7 @@ impl<T: FileStore> Transaction<T> {
             SegmentationControl::NotPreserved,
         );
 
-        let destination = header.source_entity_id.clone();
+        let destination = header.source_entity_id;
         let pdu = PDU { header, payload };
         self.transport_tx.send((destination, pdu))?;
 
@@ -922,7 +919,7 @@ impl<T: FileStore> Transaction<T> {
             SegmentationControl::NotPreserved,
         );
 
-        let destination = header.source_entity_id.clone();
+        let destination = header.source_entity_id;
         let pdu = PDU { header, payload };
 
         self.transport_tx.send((destination, pdu))?;
@@ -957,7 +954,7 @@ impl<T: FileStore> Transaction<T> {
             payload_len as u16,
             SegmentationControl::NotPreserved,
         );
-        let destination = header.source_entity_id.clone();
+        let destination = header.source_entity_id;
         let pdu = PDU { header, payload };
         self.transport_tx.send((destination, pdu))?;
 
@@ -1061,26 +1058,26 @@ impl<T: FileStore> Transaction<T> {
             (Action::Send, TransmissionMode::Acknowledged) => {
                 match payload {
                     PDUPayload::FileData(_data) => Err(TransactionError::UnexpectedPDU((
-                        self.config.sequence_number.clone(),
+                        self.config.sequence_number,
                         self.config.action_type,
                         self.config.transmission_mode.clone(),
                         "File Data".to_owned(),
                     ))),
                     PDUPayload::Directive(operation) => match operation {
                         Operations::EoF(_eof) => Err(TransactionError::UnexpectedPDU((
-                            self.config.sequence_number.clone(),
+                            self.config.sequence_number,
                             self.config.action_type,
                             self.config.transmission_mode.clone(),
                             "End of File".to_owned(),
                         ))),
                         Operations::Metadata(_metadata) => Err(TransactionError::UnexpectedPDU((
-                            self.config.sequence_number.clone(),
+                            self.config.sequence_number,
                             self.config.action_type,
                             self.config.transmission_mode.clone(),
                             "Metadata PDU".to_owned(),
                         ))),
                         Operations::Prompt(_prompt) => Err(TransactionError::UnexpectedPDU((
-                            self.config.sequence_number.clone(),
+                            self.config.sequence_number,
                             self.config.action_type,
                             self.config.transmission_mode.clone(),
                             "Prompt PDU".to_owned(),
@@ -1102,51 +1099,43 @@ impl<T: FileStore> Transaction<T> {
                                         // if this originiated from a ProxyPutRequest
                                         // originate a Put request to send the results back
                                         if let Some(origin) = self.metadata.as_ref().and_then(|meta| {
-                                    meta.message_to_user.iter().find_map(|msg| {
-                                        match UserOperation::decode(&mut msg.message_text.as_slice())
-                                            .ok()?
-                                        {
-                                            UserOperation::OriginatingTransactionIDMessage(id) => {
-                                                Some(id)
-                                            }
-                                            _ => None,
-                                        }
-                                    })
-                                }) {
-                                    let mut message_to_user = vec![
-                                        MessageToUser::from(UserOperation::Response(
-                                            UserResponse::ProxyPut(self.get_proxy_response()),
-                                        )),
-                                        MessageToUser::from(
-                                            UserOperation::OriginatingTransactionIDMessage(
-                                                origin.clone(),
-                                            ),
-                                        ),
-                                    ];
-                                    finished.filestore_response.iter().for_each(|res| {
-                                        message_to_user.push(MessageToUser::from(
-                                            UserOperation::Response(UserResponse::ProxyFileStore(
-                                                res.clone(),
-                                            )),
-                                        ))
-                                    });
-                                    // });
+                                            meta.message_to_user.iter().find_map(|msg| {
+                                                match UserOperation::decode(&mut msg.message_text.as_slice()).ok()? {
+                                                    UserOperation::OriginatingTransactionIDMessage(id) => Some(id),
+                                                    _ => None,
+                                                }
+                                            })
+                                        }) {
+                                            let mut message_to_user = vec![
+                                                MessageToUser::from(UserOperation::Response(UserResponse::ProxyPut(
+                                                    self.get_proxy_response(),
+                                                ))),
+                                                MessageToUser::from(UserOperation::OriginatingTransactionIDMessage(
+                                                    origin.clone(),
+                                                )),
+                                            ];
+                                            finished.filestore_response.iter().for_each(|res| {
+                                                message_to_user.push(MessageToUser::from(UserOperation::Response(
+                                                    UserResponse::ProxyFileStore(res.clone()),
+                                                )))
+                                            });
+                                            // });
 
-                                    let req = PutRequest {
-                                        source_filename: "".into(),
-                                        destination_filename: "".into(),
-                                        destination_entity_id: origin.source_entity_id,
-                                        transmission_mode: TransmissionMode::Unacknowledged,
-                                        filestore_requests: vec![],
-                                        message_to_user,
-                                    };
-                                    // we should be able to connect to the socket we are running
-                                    // just fine. but we can ignore errors per
-                                    // CCSDS 727.0-B-5  § 6.2.5.1.2
-                                    if let Ok(mut conn) = LocalSocketStream::connect(SOCKET_ADDR) {
-                                        let _ = conn.write_all(req.encode().as_slice());
-                                    }
-                                }
+                                            let req = PutRequest {
+                                                source_filename: "".into(),
+                                                destination_filename: "".into(),
+                                                destination_entity_id: origin.source_entity_id,
+                                                transmission_mode: TransmissionMode::Unacknowledged,
+                                                filestore_requests: vec![],
+                                                message_to_user,
+                                            };
+                                            // we should be able to connect to the socket we are running
+                                            // just fine. but we can ignore errors per
+                                            // CCSDS 727.0-B-5  § 6.2.5.1.2
+                                            if let Ok(mut conn) = LocalSocketStream::connect(SOCKET_ADDR) {
+                                                let _ = conn.write_all(req.encode().as_slice());
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1252,7 +1241,7 @@ impl<T: FileStore> Transaction<T> {
                                 Ok(())
                             } else {
                                 Err(TransactionError::UnexpectedPDU((
-                                    self.config.sequence_number.clone(),
+                                    self.config.sequence_number,
                                     self.config.action_type,
                                     self.config.transmission_mode.clone(),
                                     format!("ACK {:?}", ack.directive),
@@ -1268,38 +1257,38 @@ impl<T: FileStore> Transaction<T> {
             }
             (Action::Send, TransmissionMode::Unacknowledged) => match payload {
                 PDUPayload::FileData(_data) => Err(TransactionError::UnexpectedPDU((
-                    self.config.sequence_number.clone(),
+                    self.config.sequence_number,
                     self.config.action_type,
                     self.config.transmission_mode.clone(),
                     "File Data".to_owned(),
                 ))),
                 PDUPayload::Directive(operation) => match operation {
                     Operations::EoF(_eof) => Err(TransactionError::UnexpectedPDU((
-                        self.config.sequence_number.clone(),
+                        self.config.sequence_number,
                         self.config.action_type,
                         self.config.transmission_mode.clone(),
                         "End of File".to_owned(),
                     ))),
                     Operations::Metadata(_metadata) => Err(TransactionError::UnexpectedPDU((
-                        self.config.sequence_number.clone(),
+                        self.config.sequence_number,
                         self.config.action_type,
                         self.config.transmission_mode.clone(),
                         "Metadata PDU".to_owned(),
                     ))),
                     Operations::Prompt(_prompt) => Err(TransactionError::UnexpectedPDU((
-                        self.config.sequence_number.clone(),
+                        self.config.sequence_number,
                         self.config.action_type,
                         self.config.transmission_mode.clone(),
                         "Prompt PDU".to_owned(),
                     ))),
                     Operations::Ack(_ack) => Err(TransactionError::UnexpectedPDU((
-                        self.config.sequence_number.clone(),
+                        self.config.sequence_number,
                         self.config.action_type,
                         self.config.transmission_mode.clone(),
                         "ACK PDU".to_owned(),
                     ))),
                     Operations::KeepAlive(_keepalive) => Err(TransactionError::UnexpectedPDU((
-                        self.config.sequence_number.clone(),
+                        self.config.sequence_number,
                         self.config.action_type,
                         self.config.transmission_mode.clone(),
                         "Keep Alive PDU".to_owned(),
@@ -1325,7 +1314,7 @@ impl<T: FileStore> Transaction<T> {
                                 Ok(())
                             }
                             false => Err(TransactionError::UnexpectedPDU((
-                                self.config.sequence_number.clone(),
+                                self.config.sequence_number,
                                 self.config.action_type,
                                 self.config.transmission_mode.clone(),
                                 "Prompt PDU".to_owned(),
@@ -1333,7 +1322,7 @@ impl<T: FileStore> Transaction<T> {
                         }
                     }
                     Operations::Nak(_) => Err(TransactionError::UnexpectedPDU((
-                        self.config.sequence_number.clone(),
+                        self.config.sequence_number,
                         self.config.action_type,
                         self.config.transmission_mode.clone(),
                         "NAK PDU".to_owned(),
@@ -1370,7 +1359,7 @@ impl<T: FileStore> Transaction<T> {
                                     self.send_finished(if self.condition == Condition::NoError {
                                         None
                                     } else {
-                                        Some(self.config.destination_entity_id.clone())
+                                        Some(self.config.destination_entity_id)
                                     })?
                                 }
                             };
@@ -1399,7 +1388,7 @@ impl<T: FileStore> Transaction<T> {
                                                 if self.condition == Condition::NoError {
                                                     None
                                                 } else {
-                                                    Some(self.config.destination_entity_id.clone())
+                                                    Some(self.config.destination_entity_id)
                                                 },
                                             )
                                         }
@@ -1415,7 +1404,7 @@ impl<T: FileStore> Transaction<T> {
                             }
                             Operations::Finished(_finished) => {
                                 Err(TransactionError::UnexpectedPDU((
-                                    self.config.sequence_number.clone(),
+                                    self.config.sequence_number,
                                     self.config.action_type,
                                     self.config.transmission_mode.clone(),
                                     "Finished".to_owned(),
@@ -1433,7 +1422,7 @@ impl<T: FileStore> Transaction<T> {
                                 } else {
                                     // No other ACKs are expected for a receiver
                                     Err(TransactionError::UnexpectedPDU((
-                                        self.config.sequence_number.clone(),
+                                        self.config.sequence_number,
                                         self.config.action_type,
                                         self.config.transmission_mode.clone(),
                                         format!(
@@ -1498,11 +1487,7 @@ impl<T: FileStore> Transaction<T> {
                                                     if self.condition == Condition::NoError {
                                                         None
                                                     } else {
-                                                        Some(
-                                                            self.config
-                                                                .destination_entity_id
-                                                                .clone(),
-                                                        )
+                                                        Some(self.config.destination_entity_id)
                                                     },
                                                 );
                                             }
@@ -1512,7 +1497,7 @@ impl<T: FileStore> Transaction<T> {
                                 Ok(())
                             }
                             Operations::Nak(_nak) => Err(TransactionError::UnexpectedPDU((
-                                self.config.sequence_number.clone(),
+                                self.config.sequence_number,
                                 self.config.action_type,
                                 self.config.transmission_mode.clone(),
                                 "NAK PDU".to_owned(),
@@ -1539,7 +1524,7 @@ impl<T: FileStore> Transaction<T> {
                                         SegmentationControl::NotPreserved,
                                     );
 
-                                    let destination = header.source_entity_id.clone();
+                                    let destination = header.source_entity_id;
 
                                     let pdu = PDU { header, payload };
                                     self.transport_tx.send((destination, pdu))?;
@@ -1548,7 +1533,7 @@ impl<T: FileStore> Transaction<T> {
                             },
                             Operations::KeepAlive(_keepalive) => {
                                 Err(TransactionError::UnexpectedPDU((
-                                    self.config.sequence_number.clone(),
+                                    self.config.sequence_number,
                                     self.config.action_type,
                                     self.config.transmission_mode.clone(),
                                     "KeepAlive PDU".to_owned(),
@@ -1558,152 +1543,164 @@ impl<T: FileStore> Transaction<T> {
                     }
                 }
             }
-            (Action::Receive, TransmissionMode::Unacknowledged) => match payload {
-                PDUPayload::FileData(filedata) => {
-                    // Issue notice of recieved? Log it.
-                    let (offset, length) = self.store_file_data(filedata)?;
-                    // update the total received size if appropriate.
-                    let size = offset + length;
-                    if self.received_file_size < size {
-                        self.received_file_size = size;
-                    }
-                    Ok(())
-                }
-                PDUPayload::Directive(operation) => match operation {
-                    Operations::Ack(ack) => {
-                        if ack.directive == PDUDirective::Finished
-                            && ack.directive_subtype_code == ACKSubDirective::Finished
-                            && ack.condition == Condition::NoError
-                            && self
-                                .metadata
-                                .as_ref()
-                                .map(|meta| meta.closure_requested)
-                                .unwrap_or(false)
-                        {
-                            Ok(())
-                        } else {
-                            // No other ACKs are expected for a receiver
-                            Err(TransactionError::UnexpectedPDU((
-                                self.config.sequence_number.clone(),
-                                self.config.action_type,
-                                self.config.transmission_mode.clone(),
-                                format!(
-                                    "ACK PDU: ({:?}, {:?})",
-                                    ack.directive, ack.directive_subtype_code
-                                ),
-                            )))
-                        }
-                    }
-                    Operations::EoF(eof) => {
-                        self.condition = eof.condition;
-                        self.checksum = Some(eof.checksum);
-                        if self.condition == Condition::NoError {
-                            self.check_file_size(eof.file_size)?;
-                            self.finalize_receive()?;
-                            // if closure was requested send a finished PDU
-                            if self
-                                .metadata
-                                .as_ref()
-                                .map(|meta| meta.closure_requested)
-                                .unwrap_or(false)
-                            {
-                                self.send_finished(if self.condition == Condition::NoError {
-                                    None
-                                } else {
-                                    Some(self.config.destination_entity_id.clone())
-                                })?;
-                            }
-
-                            Ok(())
-                        } else {
-                            // Any other condition is essentially a
-                            // CANCEL operation
-                            self._cancel()
-                            // issue finished log
-                            // shutdown?
-                        }
-                    }
-                    Operations::Metadata(metadata) => {
-                        if self.metadata.is_none() {
-                            let message_to_user =
-                                metadata.options.iter().filter_map(|op| match op {
-                                    MetadataTLV::MessageToUser(req) => Some(req.clone()),
-                                    _ => None,
-                                });
-                            // push each request up to the Daemon
-                            self.message_tx.send((
-                                self.id(),
-                                self.config.transmission_mode.clone(),
-                                message_to_user.clone().collect(),
-                            ))?;
-
-                            self.metadata = Some(Metadata {
-                                source_filename: std::str::from_utf8(
-                                    metadata.source_filename.as_slice(),
-                                )
-                                .map_err(FileStoreError::UTF8)?
-                                .into(),
-                                destination_filename: std::str::from_utf8(
-                                    metadata.destination_filename.as_slice(),
-                                )
-                                .map_err(FileStoreError::UTF8)?
-                                .into(),
-                                file_size: metadata.file_size,
-                                checksum_type: metadata.checksum_type,
-                                closure_requested: metadata.closure_requested,
-                                filestore_requests: metadata
-                                    .options
-                                    .iter()
-                                    .filter_map(|op| match op {
-                                        MetadataTLV::FileStoreRequest(req) => Some(req.clone()),
-                                        _ => None,
-                                    })
-                                    .collect(),
-                                message_to_user: message_to_user.collect(),
-                            });
+            (Action::Receive, TransmissionMode::Unacknowledged) => {
+                match payload {
+                    PDUPayload::FileData(filedata) => {
+                        // Issue notice of recieved? Log it.
+                        let (offset, length) = self.store_file_data(filedata)?;
+                        // update the total received size if appropriate.
+                        let size = offset + length;
+                        if self.received_file_size < size {
+                            self.received_file_size = size;
                         }
                         Ok(())
                     }
-                    // should never receive this as a Receiver type
-                    Operations::Finished(_finished) => Err(TransactionError::UnexpectedPDU((
-                        self.config.sequence_number.clone(),
-                        self.config.action_type,
-                        self.config.transmission_mode.clone(),
-                        "Finished".to_owned(),
-                    ))),
-                    Operations::KeepAlive(_keepalive) => Err(TransactionError::UnexpectedPDU((
-                        self.config.sequence_number.clone(),
-                        self.config.action_type,
-                        self.config.transmission_mode.clone(),
-                        "Keep Alive".to_owned(),
-                    ))),
-                    Operations::Prompt(_prompt) => Err(TransactionError::UnexpectedPDU((
-                        self.config.sequence_number.clone(),
-                        self.config.action_type,
-                        self.config.transmission_mode.clone(),
-                        "Prompt".to_owned(),
-                    ))),
-                    Operations::Nak(_nak) => Err(TransactionError::UnexpectedPDU((
-                        self.config.sequence_number.clone(),
-                        self.config.action_type,
-                        self.config.transmission_mode.clone(),
-                        "NAK PDU".to_owned(),
-                    ))),
-                },
-            },
+                    PDUPayload::Directive(operation) => {
+                        match operation {
+                            Operations::Ack(ack) => {
+                                if ack.directive == PDUDirective::Finished
+                                    && ack.directive_subtype_code == ACKSubDirective::Finished
+                                    && ack.condition == Condition::NoError
+                                    && self
+                                        .metadata
+                                        .as_ref()
+                                        .map(|meta| meta.closure_requested)
+                                        .unwrap_or(false)
+                                {
+                                    Ok(())
+                                } else {
+                                    // No other ACKs are expected for a receiver
+                                    Err(TransactionError::UnexpectedPDU((
+                                        self.config.sequence_number,
+                                        self.config.action_type,
+                                        self.config.transmission_mode.clone(),
+                                        format!(
+                                            "ACK PDU: ({:?}, {:?})",
+                                            ack.directive, ack.directive_subtype_code
+                                        ),
+                                    )))
+                                }
+                            }
+                            Operations::EoF(eof) => {
+                                self.condition = eof.condition;
+                                self.checksum = Some(eof.checksum);
+                                if self.condition == Condition::NoError {
+                                    self.check_file_size(eof.file_size)?;
+                                    self.finalize_receive()?;
+                                    // if closure was requested send a finished PDU
+                                    if self
+                                        .metadata
+                                        .as_ref()
+                                        .map(|meta| meta.closure_requested)
+                                        .unwrap_or(false)
+                                    {
+                                        self.send_finished(
+                                            if self.condition == Condition::NoError {
+                                                None
+                                            } else {
+                                                Some(self.config.destination_entity_id)
+                                            },
+                                        )?;
+                                    }
+
+                                    Ok(())
+                                } else {
+                                    // Any other condition is essentially a
+                                    // CANCEL operation
+                                    self._cancel()
+                                    // issue finished log
+                                    // shutdown?
+                                }
+                            }
+                            Operations::Metadata(metadata) => {
+                                if self.metadata.is_none() {
+                                    let message_to_user =
+                                        metadata.options.iter().filter_map(|op| match op {
+                                            MetadataTLV::MessageToUser(req) => Some(req.clone()),
+                                            _ => None,
+                                        });
+                                    // push each request up to the Daemon
+                                    self.message_tx.send((
+                                        self.id(),
+                                        self.config.transmission_mode.clone(),
+                                        message_to_user.clone().collect(),
+                                    ))?;
+
+                                    self.metadata = Some(Metadata {
+                                        source_filename: std::str::from_utf8(
+                                            metadata.source_filename.as_slice(),
+                                        )
+                                        .map_err(FileStoreError::UTF8)?
+                                        .into(),
+                                        destination_filename: std::str::from_utf8(
+                                            metadata.destination_filename.as_slice(),
+                                        )
+                                        .map_err(FileStoreError::UTF8)?
+                                        .into(),
+                                        file_size: metadata.file_size,
+                                        checksum_type: metadata.checksum_type,
+                                        closure_requested: metadata.closure_requested,
+                                        filestore_requests: metadata
+                                            .options
+                                            .iter()
+                                            .filter_map(|op| match op {
+                                                MetadataTLV::FileStoreRequest(req) => {
+                                                    Some(req.clone())
+                                                }
+                                                _ => None,
+                                            })
+                                            .collect(),
+                                        message_to_user: message_to_user.collect(),
+                                    });
+                                }
+                                Ok(())
+                            }
+                            // should never receive this as a Receiver type
+                            Operations::Finished(_finished) => {
+                                Err(TransactionError::UnexpectedPDU((
+                                    self.config.sequence_number,
+                                    self.config.action_type,
+                                    self.config.transmission_mode.clone(),
+                                    "Finished".to_owned(),
+                                )))
+                            }
+                            Operations::KeepAlive(_keepalive) => {
+                                Err(TransactionError::UnexpectedPDU((
+                                    self.config.sequence_number,
+                                    self.config.action_type,
+                                    self.config.transmission_mode.clone(),
+                                    "Keep Alive".to_owned(),
+                                )))
+                            }
+                            Operations::Prompt(_prompt) => Err(TransactionError::UnexpectedPDU((
+                                self.config.sequence_number,
+                                self.config.action_type,
+                                self.config.transmission_mode.clone(),
+                                "Prompt".to_owned(),
+                            ))),
+                            Operations::Nak(_nak) => Err(TransactionError::UnexpectedPDU((
+                                self.config.sequence_number,
+                                self.config.action_type,
+                                self.config.transmission_mode.clone(),
+                                "NAK PDU".to_owned(),
+                            ))),
+                        }
+                    }
+                }
+            }
         }
     }
 
     fn send_metadata(&mut self) -> TransactionResult<()> {
         self.timer.restart_inactivity();
         let id = self.id();
-        let destination = self.config.destination_entity_id.clone();
+        let destination = self.config.destination_entity_id;
         let metadata = MetadataPDU {
             closure_requested: self
                 .metadata
                 .as_ref()
                 .map(|meta| meta.closure_requested)
-                .ok_or_else(|| TransactionError::MissingMetadata(id.clone()))?,
+                .ok_or_else(|| TransactionError::MissingMetadata(id))?,
             checksum_type: self
                 .metadata
                 .as_ref()
@@ -1716,17 +1713,17 @@ impl<T: FileStore> Transaction<T> {
                 .metadata
                 .as_ref()
                 .map(|meta| meta.file_size.clone())
-                .ok_or_else(|| TransactionError::MissingMetadata(id.clone()))?,
+                .ok_or_else(|| TransactionError::MissingMetadata(id))?,
             source_filename: self
                 .metadata
                 .as_ref()
                 .map(|meta| meta.source_filename.as_str().as_bytes().to_vec())
-                .ok_or_else(|| TransactionError::MissingMetadata(id.clone()))?,
+                .ok_or_else(|| TransactionError::MissingMetadata(id))?,
             destination_filename: self
                 .metadata
                 .as_ref()
                 .map(|meta| meta.destination_filename.as_str().as_bytes().to_vec())
-                .ok_or_else(|| TransactionError::MissingMetadata(id.clone()))?,
+                .ok_or_else(|| TransactionError::MissingMetadata(id))?,
             options: self
                 .metadata
                 .as_ref()
@@ -1741,7 +1738,7 @@ impl<T: FileStore> Transaction<T> {
                         )
                         .collect()
                 })
-                .ok_or_else(|| TransactionError::MissingMetadata(id.clone()))?,
+                .ok_or_else(|| TransactionError::MissingMetadata(id))?,
         };
         let payload = PDUPayload::Directive(Operations::Metadata(metadata));
         let payload_len: u16 = payload.clone().encode().len().try_into()?;
@@ -1861,9 +1858,9 @@ mod test {
             pdu_data_field_length: payload_len,
             segmentation_control: SegmentationControl::NotPreserved,
             segment_metadata_flag: SegmentedData::NotPresent,
-            source_entity_id: default_config.source_entity_id.clone(),
-            destination_entity_id: default_config.destination_entity_id.clone(),
-            transaction_sequence_number: default_config.sequence_number.clone(),
+            source_entity_id: default_config.source_entity_id,
+            destination_entity_id: default_config.destination_entity_id,
+            transaction_sequence_number: default_config.sequence_number,
         };
         assert_eq!(
             expected,
@@ -2036,7 +2033,7 @@ mod test {
                 .unwrap();
         });
         let (destination_id, received_pdu) = transport_rx.recv().unwrap();
-        let expected_id = default_config.destination_entity_id.clone();
+        let expected_id = default_config.destination_entity_id;
         assert_eq!(expected_id, destination_id);
         assert_eq!(pdu, received_pdu);
         filestore.delete_file(path).expect("cannot remove file");
@@ -2146,7 +2143,7 @@ mod test {
                 .expect("cannot remove file");
         });
         let (destination_id, received_pdu) = transport_rx.recv().unwrap();
-        let expected_id = default_config.destination_entity_id.clone();
+        let expected_id = default_config.destination_entity_id;
         assert_eq!(expected_id, destination_id);
         assert_eq!(pdu, received_pdu);
     }
@@ -2239,7 +2236,7 @@ mod test {
         });
 
         let (destination_id, received_pdu) = transport_rx.recv().unwrap();
-        let expected_id = default_config.source_entity_id.clone();
+        let expected_id = default_config.source_entity_id;
 
         assert_eq!(expected_id, destination_id);
         assert_eq!(pdu, received_pdu);
@@ -2323,7 +2320,7 @@ mod test {
         });
 
         let (destination_id, received_pdu) = transport_rx.recv().unwrap();
-        let expected_id = default_config.destination_entity_id.clone();
+        let expected_id = default_config.destination_entity_id;
 
         assert_eq!(expected_id, destination_id);
         assert_eq!(pdu, received_pdu);
@@ -2424,7 +2421,7 @@ mod test {
         });
 
         let (destination_id, received_pdu) = transport_rx.recv().unwrap();
-        let expected_id = default_config.destination_entity_id.clone();
+        let expected_id = default_config.destination_entity_id;
 
         assert_eq!(expected_id, destination_id);
         assert_eq!(pdu, received_pdu);
@@ -2495,7 +2492,7 @@ mod test {
 
         if config.transmission_mode == TransmissionMode::Acknowledged {
             let (destination_id, received_pdu) = transport_rx.recv().unwrap();
-            let expected_id = default_config.source_entity_id.clone();
+            let expected_id = default_config.source_entity_id;
 
             assert_eq!(expected_id, destination_id);
             assert_eq!(pdu, received_pdu);
@@ -2589,7 +2586,7 @@ mod test {
         });
 
         let (destination_id, received_pdu) = transport_rx.recv().unwrap();
-        let expected_id = default_config.destination_entity_id.clone();
+        let expected_id = default_config.destination_entity_id;
 
         assert_eq!(expected_id, destination_id);
         assert_eq!(pdu, received_pdu);
@@ -2646,7 +2643,7 @@ mod test {
         });
 
         let (destination_id, received_pdu) = transport_rx.recv().unwrap();
-        let expected_id = default_config.source_entity_id.clone();
+        let expected_id = default_config.source_entity_id;
 
         assert_eq!(expected_id, destination_id);
         assert_eq!(pdu, received_pdu);
@@ -3280,7 +3277,7 @@ mod test {
         config.action_type = Action::Receive;
         config.transmission_mode = transmission_mode.clone();
 
-        let expected_id = config.source_entity_id.clone();
+        let expected_id = config.source_entity_id;
 
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
@@ -3447,7 +3444,7 @@ mod test {
         config.action_type = Action::Receive;
         config.transmission_mode = TransmissionMode::Acknowledged;
 
-        let expected_id = config.source_entity_id.clone();
+        let expected_id = config.source_entity_id;
 
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
@@ -3538,7 +3535,7 @@ mod test {
         config.action_type = Action::Send;
         config.transmission_mode = TransmissionMode::Acknowledged;
 
-        let expected_id = config.destination_entity_id.clone();
+        let expected_id = config.destination_entity_id;
 
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
@@ -3729,7 +3726,7 @@ mod test {
         config.action_type = Action::Send;
         config.transmission_mode = TransmissionMode::Acknowledged;
 
-        let expected_id = config.destination_entity_id.clone();
+        let expected_id = config.destination_entity_id;
 
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),

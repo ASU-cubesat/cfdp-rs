@@ -2,8 +2,9 @@ use std::{
     collections::HashMap,
     error::Error,
     fmt::Display,
-    fs::OpenOptions,
+    fs::{self, OpenOptions},
     io::{Error as IOError, ErrorKind, Read, Write},
+    path::Path,
     string::FromUtf8Error,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -40,7 +41,7 @@ use crate::{
 #[cfg(windows)]
 pub(crate) const SOCKET_ADDR: &str = "cfdp";
 #[cfg(not(windows))]
-pub(crate) const SOCKET_ADDR: &str = "/var/run/cdfp.socket";
+pub(crate) const SOCKET_ADDR: &str = "/var/run/cfdp.socket";
 
 #[derive(Debug)]
 pub enum PrimitiveError {
@@ -583,6 +584,11 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         socket_address: Option<&str>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let socket = socket_address.unwrap_or(SOCKET_ADDR);
+
+        let socket_path = Path::new(socket);
+        if socket_path.exists() {
+            fs::remove_file(socket_path)?;
+        }
 
         let listener = LocalSocketListener::bind(socket)?;
         // setting to non-blocking lets us grab conections that are open

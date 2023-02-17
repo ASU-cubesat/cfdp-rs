@@ -25,3 +25,7 @@ This software suite currently implements the following Common Inter-Agency Tests
 - [x] Series F3
 - [ ] Series F4
 - [ ] Series F5
+
+# Developers
+This package includes a `pre-commit` hook for any interested developer to ensure standard formatting and checking.
+The hooks can be installed via the python package `pre-commit` if desired.

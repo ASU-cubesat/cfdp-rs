@@ -1243,12 +1243,12 @@ impl<T: FileStore> Transaction<T> {
                         if self.received_file_size < size {
                             self.received_file_size = size;
                         }
-                        self.update_naks(self.metadata.as_ref().map(|meta| meta.file_size));
 
                         // need a block here for if we have sent naks
                         // in deferred mode. a second EoF is not sent
                         // so we should check if we have the whole thing?
                         if self.waiting_on == WaitingOn::Nak {
+                            self.update_naks(self.metadata.as_ref().map(|meta| meta.file_size));
                             match self.naks.is_empty() {
                                 false => self.send_naks()?,
                                 true => {
@@ -1371,11 +1371,11 @@ impl<T: FileStore> Transaction<T> {
                                             .collect(),
                                         message_to_user: message_to_user.collect(),
                                     });
-                                    self.update_naks(Some(metadata.file_size));
                                     // need a block here for if we have sent naks
                                     // in deferred mode. a second EoF is not sent
                                     // so we should check if we have the whole thing?
                                     if self.waiting_on == WaitingOn::Nak {
+                                        self.update_naks(Some(metadata.file_size));
                                         match self.naks.is_empty() {
                                             false => self.send_naks()?,
                                             true => {

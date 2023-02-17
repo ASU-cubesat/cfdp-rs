@@ -22,10 +22,10 @@ pub enum PDUPayload {
     FileData(FileDataPDU),
 }
 impl PDUPayload {
-    pub fn encode(self) -> Vec<u8> {
+    pub fn encode(self, file_size_flag: FileSizeFlag) -> Vec<u8> {
         match self {
-            Self::Directive(operation) => operation.encode(),
-            Self::FileData(data) => data.encode(),
+            Self::Directive(operation) => operation.encode(file_size_flag),
+            Self::FileData(data) => data.encode(file_size_flag),
         }
     }
 
@@ -58,8 +58,10 @@ impl PDUEncode for PDU {
 
     fn encode(self) -> Vec<u8> {
         let crc_flag = self.header.crc_flag;
+        let file_size_flag = self.header.large_file_flag;
+
         let mut buffer = self.header.encode();
-        buffer.extend(self.payload.encode());
+        buffer.extend(self.payload.encode(file_size_flag));
         match crc_flag {
             CRCFlag::Present => buffer.extend(crc16_ibm_3740(buffer.as_slice()).to_be_bytes()),
             CRCFlag::NotPresent => {}
@@ -163,13 +165,13 @@ mod test {
         PDUPayload::Directive(Operations::EoF(EndOfFile {
             condition: Condition::NoError,
             checksum: 123749_u32,
-            file_size: FileSizeSensitive::Large(7738949_u64),
+            file_size: 7738949_u64,
             fault_location: None,
         }))
     )]
     #[case(
         PDUPayload::FileData(FileDataPDU::Unsegmented(UnsegmentedFileData{
-            offset: FileSizeSensitive::Large(16_u64),
+            offset: 16_u64,
             file_data: "test some information".as_bytes().to_vec(),
         }))
     )]
@@ -177,7 +179,7 @@ mod test {
         #[case] payload: PDUPayload,
         #[values(CRCFlag::NotPresent, CRCFlag::Present)] crc_flag: CRCFlag,
     ) -> PDUResult<()> {
-        let pdu_data_field_length = payload.clone().encode().len() as u16;
+        let pdu_data_field_length = payload.clone().encode(FileSizeFlag::Large).len() as u16;
         let pdu_type = match &payload {
             PDUPayload::Directive(_) => PDUType::FileDirective,
             PDUPayload::FileData(_) => PDUType::FileData,

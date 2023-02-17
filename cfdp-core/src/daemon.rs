@@ -24,11 +24,11 @@ use crate::{
     filestore::{ChecksumType, FileStore},
     pdu::{
         error::PDUError, CRCFlag, Condition, Direction, DirectoryListingResponse, EntityID,
-        FaultHandlerAction, FileSizeFlag, FileSizeSensitive, FileStoreRequest, ListingResponseCode,
-        MessageToUser, OriginatingTransactionIDMessage, PDUEncode, PDUHeader, ProxyOperation,
-        ProxyPutRequest, RemoteStatusReportResponse, RemoteSuspendResponse, SegmentedData,
-        TransactionSeqNum, TransactionStatus, TransmissionMode, UserOperation, UserRequest,
-        UserResponse, VariableID, PDU,
+        FaultHandlerAction, FileSizeFlag, FileStoreRequest, ListingResponseCode, MessageToUser,
+        OriginatingTransactionIDMessage, PDUEncode, PDUHeader, ProxyOperation, ProxyPutRequest,
+        RemoteStatusReportResponse, RemoteSuspendResponse, SegmentedData, TransactionSeqNum,
+        TransactionStatus, TransmissionMode, UserOperation, UserRequest, UserResponse, VariableID,
+        PDU,
     },
     transaction::{
         Action, Metadata, Transaction, TransactionConfig, TransactionError, TransactionID,
@@ -207,11 +207,7 @@ impl PutRequest {
     }
 }
 
-fn construct_metadata(
-    req: PutRequest,
-    config: EntityConfig,
-    file_size: FileSizeSensitive,
-) -> Metadata {
+fn construct_metadata(req: PutRequest, config: EntityConfig, file_size: u64) -> Metadata {
     Metadata {
         source_filename: req.source_filename,
         destination_filename: req.destination_filename,
@@ -760,7 +756,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             nak_timeout: entity_config.nak_timeout,
             send_proxy_response,
         };
-        let mut metadata = construct_metadata(request, entity_config, FileSizeSensitive::Small(0));
+        let mut metadata = construct_metadata(request, entity_config, 0_u64);
 
         let handle = thread::Builder::new()
             .name(format!(
@@ -769,17 +765,14 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             ))
             .spawn(move || {
                 let file_size = match &metadata.source_filename.file_name().is_none() {
-                    true => FileSizeSensitive::Small(0_u32),
-                    false => match filestore.get_size(&metadata.source_filename)? {
-                        val if val <= u32::MAX as u64 => FileSizeSensitive::Small(val as u32),
-                        val => FileSizeSensitive::Large(val),
-                    },
+                    true => 0_u64,
+                    false => filestore.get_size(&metadata.source_filename)?,
                 };
 
                 metadata.file_size = file_size;
-                config.file_size_flag = match &metadata.file_size {
-                    FileSizeSensitive::Small(_) => FileSizeFlag::Small,
-                    FileSizeSensitive::Large(_) => FileSizeFlag::Large,
+                config.file_size_flag = match metadata.file_size <= u32::MAX.into() {
+                    true => FileSizeFlag::Small,
+                    false => FileSizeFlag::Large,
                 };
 
                 let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);

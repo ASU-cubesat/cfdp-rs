@@ -19,13 +19,12 @@ use crate::{
     filestore::{ChecksumType, FileChecksum, FileStore, FileStoreError},
     pdu::{
         ACKSubDirective, CRCFlag, Condition, DeliveryCode, Direction, EndOfFile, EntityID,
-        FaultHandlerAction, FileDataPDU, FileSizeFlag, FileSizeSensitive, FileStatusCode,
-        FileStoreRequest, FileStoreResponse, Finished, KeepAlivePDU, MessageToUser, MetadataPDU,
-        MetadataTLV, NakOrKeepAlive, NegativeAcknowldegmentPDU, Operations, PDUDirective,
-        PDUEncode, PDUHeader, PDUPayload, PDUType, PositiveAcknowledgePDU, ProxyPutResponse,
-        SegmentRequestForm, SegmentationControl, SegmentedData, TransactionSeqNum,
-        TransactionStatus, TransmissionMode, UnsegmentedFileData, UserOperation, UserResponse,
-        VariableID, PDU, U3,
+        FaultHandlerAction, FileDataPDU, FileSizeFlag, FileStatusCode, FileStoreRequest,
+        FileStoreResponse, Finished, KeepAlivePDU, MessageToUser, MetadataPDU, MetadataTLV,
+        NakOrKeepAlive, NegativeAcknowldegmentPDU, Operations, PDUDirective, PDUEncode, PDUHeader,
+        PDUPayload, PDUType, PositiveAcknowledgePDU, ProxyPutResponse, SegmentRequestForm,
+        SegmentationControl, SegmentedData, TransactionSeqNum, TransactionStatus, TransmissionMode,
+        UnsegmentedFileData, UserOperation, UserResponse, VariableID, PDU, U3,
     },
     timer::Timer,
 };
@@ -161,7 +160,7 @@ pub(crate) struct Metadata {
     /// Bytes of the destination filename, can be null if length is 0.
     pub destination_filename: Utf8PathBuf,
     /// The size of the file being transfered in this transaction.
-    pub file_size: FileSizeSensitive,
+    pub file_size: u64,
     /// List of any filestore requests to take after transaction is complete
     pub filestore_requests: Vec<FileStoreRequest>,
     /// Any Messages to user received either from the metadataPDU or as input
@@ -224,13 +223,13 @@ pub struct Transaction<T: FileStore> {
     /// A mapping of offsets and segments lengths to monitor progress.
     /// For a Receiver, these are the received segments.
     /// For a Sender, these are the sent segments.
-    saved_segments: BTreeMap<FileSizeSensitive, FileSizeSensitive>,
+    saved_segments: BTreeMap<u64, u64>,
     /// The list of all missing information
     naks: VecDeque<SegmentRequestForm>,
     /// Flag to check if metadata on the file has been received
     pub(crate) metadata: Option<Metadata>,
     /// Measurement of how large of a file has been received so far
-    received_file_size: FileSizeSensitive,
+    received_file_size: u64,
     /// a cache of the header used for interactions in this transmission
     header: Option<PDUHeader>,
     /// The current condition of the transaction
@@ -269,10 +268,7 @@ impl<T: FileStore> Transaction<T> {
         // Sender channel used to propagate Message To User back up to the Daemon Thread.
         message_tx: Sender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
     ) -> Self {
-        let received_file_size = match &config.file_size_flag {
-            FileSizeFlag::Small => FileSizeSensitive::Small(0),
-            FileSizeFlag::Large => FileSizeSensitive::Large(0),
-        };
+        let received_file_size = 0_u64;
         let timer = Timer::new(
             config.inactivity_timeout,
             config.max_count,
@@ -433,10 +429,7 @@ impl<T: FileStore> Transaction<T> {
             .unwrap_or(false)
     }
 
-    fn store_file_data(
-        &mut self,
-        pdu: FileDataPDU,
-    ) -> TransactionResult<(FileSizeSensitive, usize)> {
+    fn store_file_data(&mut self, pdu: FileDataPDU) -> TransactionResult<(u64, usize)> {
         let (offset, file_data) = match pdu {
             FileDataPDU::Segmented(data) => (data.offset, data.file_data),
             FileDataPDU::Unsegmented(data) => (data.offset, data.file_data),
@@ -445,21 +438,13 @@ impl<T: FileStore> Transaction<T> {
         {
             let handle = self.get_handle()?;
             handle
-                .seek(SeekFrom::Start(offset.as_u64()))
+                .seek(SeekFrom::Start(offset))
                 .map_err(FileStoreError::IO)?;
             handle
                 .write_all(file_data.as_slice())
                 .map_err(FileStoreError::IO)?;
-            match &self.config.file_size_flag {
-                FileSizeFlag::Small => self.saved_segments.insert(
-                    offset.clone(),
-                    FileSizeSensitive::Small(file_data.len() as u32),
-                ),
-                FileSizeFlag::Large => self.saved_segments.insert(
-                    offset.clone(),
-                    FileSizeSensitive::Large(file_data.len() as u64),
-                ),
-            };
+            self.saved_segments
+                .insert(offset.clone(), file_data.len() as u64);
         }
 
         Ok((offset, length))
@@ -511,10 +496,6 @@ impl<T: FileStore> Transaction<T> {
         self.timer.restart_inactivity();
         let (offset, file_data) = self.get_file_segment(offset, length)?;
 
-        let offset = match &self.config.file_size_flag {
-            FileSizeFlag::Small => FileSizeSensitive::Small(offset.try_into()?),
-            FileSizeFlag::Large => FileSizeSensitive::Large(offset),
-        };
         let (data, segmentation_control) = match self.config.segment_metadata_flag {
             SegmentedData::NotPresent => (
                 FileDataPDU::Unsegmented(UnsegmentedFileData { offset, file_data }),
@@ -524,17 +505,21 @@ impl<T: FileStore> Transaction<T> {
             SegmentedData::Present => unimplemented!(),
         };
         let destination = self.config.destination_entity_id;
+
         let payload = PDUPayload::FileData(data);
-        let payload_len: u16 = payload.clone().encode().len().try_into()?;
-        let pdu = PDU {
-            header: self.get_header(
-                Direction::ToReceiver,
-                PDUType::FileData,
-                payload_len,
-                segmentation_control,
-            ),
-            payload,
-        };
+
+        let payload_len: u16 = payload
+            .clone()
+            .encode(self.config.file_size_flag)
+            .len()
+            .try_into()?;
+        let header = self.get_header(
+            Direction::ToReceiver,
+            PDUType::FileData,
+            payload_len,
+            segmentation_control,
+        );
+        let pdu = PDU { header, payload };
 
         self.transport_tx.send((destination, pdu))?;
 
@@ -573,15 +558,11 @@ impl<T: FileStore> Transaction<T> {
             Some(request) => {
                 // only restart inactivity if we have something to do.
                 self.timer.restart_inactivity();
-                let (offset, length) = match (request.start_offset, request.end_offset) {
-                    (FileSizeSensitive::Small(s), FileSizeSensitive::Small(e)) => {
-                        (s.into(), (e - s).try_into()?)
-                    }
-                    (FileSizeSensitive::Large(s), FileSizeSensitive::Large(e)) => {
-                        (s, (e - s).try_into()?)
-                    }
-                    _ => unreachable!(),
-                };
+                let (offset, length) = (
+                    request.start_offset,
+                    (request.end_offset - request.start_offset).try_into()?,
+                );
+
                 match offset == 0 && length == 0 {
                     true => self.send_metadata(),
                     false => {
@@ -605,36 +586,21 @@ impl<T: FileStore> Transaction<T> {
         }
     }
 
-    fn update_naks(&mut self, file_size: Option<FileSizeSensitive>) {
+    fn update_naks(&mut self, file_size: Option<u64>) {
         let mut naks: VecDeque<SegmentRequestForm> = VecDeque::new();
-        let mut pointer: FileSizeSensitive = match &self.config.file_size_flag {
-            FileSizeFlag::Small => FileSizeSensitive::Small(0_u32),
-            FileSizeFlag::Large => FileSizeSensitive::Large(0_u64),
-        };
+        let mut pointer = 0_u64;
 
         if self.metadata.is_none() {
-            naks.push_back(match &self.config.file_size_flag {
-                FileSizeFlag::Small => SegmentRequestForm::from((0_u32, 0_u32)),
-                FileSizeFlag::Large => SegmentRequestForm::from((0_u64, 0_u64)),
-            });
+            naks.push_back((0_u64, 0_u64).into());
         }
         self.saved_segments.iter().for_each(|(offset, length)| {
             if offset > &pointer {
                 naks.push_back(SegmentRequestForm {
-                    start_offset: pointer.clone(),
-                    end_offset: offset.clone(),
+                    start_offset: pointer,
+                    end_offset: *offset,
                 });
             }
-            pointer = match (offset, length) {
-                (FileSizeSensitive::Small(left), FileSizeSensitive::Small(right)) => {
-                    FileSizeSensitive::Small(left + right)
-                }
-                (FileSizeSensitive::Large(left), FileSizeSensitive::Large(right)) => {
-                    FileSizeSensitive::Large(left + right)
-                }
-                // We have forced everything to be the same type, we just needed to get at their inners.
-                _ => unreachable!(),
-            };
+            pointer = offset + length;
         });
 
         if let Some(size) = file_size {
@@ -698,7 +664,7 @@ impl<T: FileStore> Transaction<T> {
 
         let payload = PDUPayload::Directive(Operations::EoF(eof));
 
-        let payload_len = payload.clone().encode().len() as u16;
+        let payload_len = payload.clone().encode(self.config.file_size_flag).len() as u16;
 
         let header = self.get_header(
             Direction::ToReceiver,
@@ -817,7 +783,7 @@ impl<T: FileStore> Transaction<T> {
             transaction_status: self.status.clone(),
         };
         let payload = PDUPayload::Directive(Operations::Ack(ack));
-        let payload_len = payload.clone().encode().len() as u16;
+        let payload_len = payload.clone().encode(self.config.file_size_flag).len() as u16;
 
         let header = self.get_header(
             Direction::ToReceiver,
@@ -842,7 +808,7 @@ impl<T: FileStore> Transaction<T> {
             transaction_status: self.status.clone(),
         };
         let payload = PDUPayload::Directive(Operations::Ack(ack));
-        let payload_len = payload.clone().encode().len();
+        let payload_len = payload.clone().encode(self.config.file_size_flag).len();
 
         let header = self.get_header(
             Direction::ToSender,
@@ -859,7 +825,7 @@ impl<T: FileStore> Transaction<T> {
         Ok(())
     }
 
-    fn check_file_size(&mut self, file_size: FileSizeSensitive) -> TransactionResult<()> {
+    fn check_file_size(&mut self, file_size: u64) -> TransactionResult<()> {
         if self.received_file_size > file_size {
             // we will always exit here anyway
             self.proceed_despite_fault(Condition::FilesizeError)?;
@@ -867,28 +833,11 @@ impl<T: FileStore> Transaction<T> {
         Ok(())
     }
 
-    fn get_progress(&self) -> FileSizeSensitive {
+    fn get_progress(&self) -> u64 {
         // the Enum types are guaranteed to match the FileSize flag, we just need to unwrap them.
-        match &self.config.file_size_flag {
-            FileSizeFlag::Small => self.saved_segments.iter().fold(
-                FileSizeSensitive::Small(0),
-                |size, (_offset, length)| match (size, length) {
-                    (FileSizeSensitive::Small(s), FileSizeSensitive::Small(l)) => {
-                        FileSizeSensitive::Small(s + l)
-                    }
-                    (_, _) => unreachable!(),
-                },
-            ),
-            FileSizeFlag::Large => self.saved_segments.iter().fold(
-                FileSizeSensitive::Large(0),
-                |size, (_offset, length)| match (size, length) {
-                    (FileSizeSensitive::Large(s), FileSizeSensitive::Large(l)) => {
-                        FileSizeSensitive::Large(s + l)
-                    }
-                    (_, _) => unreachable!(),
-                },
-            ),
-        }
+        self.saved_segments
+            .iter()
+            .fold(0_u64, |size, (_offset, length)| size + length)
     }
 
     fn send_finished(&mut self, fault_location: Option<VariableID>) -> TransactionResult<()> {
@@ -910,7 +859,7 @@ impl<T: FileStore> Transaction<T> {
 
         let payload = PDUPayload::Directive(Operations::Finished(finished));
 
-        let payload_len = payload.clone().encode().len() as u16;
+        let payload_len = payload.clone().encode(self.config.file_size_flag).len() as u16;
 
         let header = self.get_header(
             Direction::ToSender,
@@ -937,16 +886,13 @@ impl<T: FileStore> Transaction<T> {
         }
 
         let nak = NegativeAcknowldegmentPDU {
-            start_of_scope: match &self.config.file_size_flag {
-                FileSizeFlag::Small => FileSizeSensitive::Small(0),
-                FileSizeFlag::Large => FileSizeSensitive::Large(0),
-            },
+            start_of_scope: 0_u64,
             end_of_scope: self.received_file_size.clone(),
             segment_requests: self.naks.clone().into(),
         };
 
         let payload = PDUPayload::Directive(Operations::Nak(nak));
-        let payload_len = payload.clone().encode().len();
+        let payload_len = payload.clone().encode(self.config.file_size_flag).len();
 
         let header = self.get_header(
             Direction::ToSender,
@@ -1152,79 +1098,34 @@ impl<T: FileStore> Transaction<T> {
                                 nak.segment_requests
                                     .into_iter()
                                     .flat_map(|form| match form {
+                                        val @ SegmentRequestForm {
+                                            start_offset: start,
+                                            end_offset: end,
+                                        } if start == end => vec![val],
                                         SegmentRequestForm {
-                                            start_offset: FileSizeSensitive::Small(s),
-                                            end_offset: FileSizeSensitive::Small(e),
-                                        } => match s == e {
-                                            true => vec![SegmentRequestForm {
-                                                start_offset: FileSizeSensitive::Small(s),
-                                                end_offset: FileSizeSensitive::Small(e),
-                                            }],
-                                            false => (s..e)
-                                                .step_by(self.config.file_size_segment.into())
-                                                .map(|num| {
-                                                    if num
-                                                        < e.saturating_sub(
-                                                            self.config.file_size_segment.into(),
-                                                        )
-                                                    {
-                                                        SegmentRequestForm {
-                                                            start_offset: FileSizeSensitive::Small(
-                                                                num,
-                                                            ),
-                                                            end_offset: FileSizeSensitive::Small(
-                                                                num + self.config.file_size_segment
-                                                                    as u32,
-                                                            ),
-                                                        }
-                                                    } else {
-                                                        SegmentRequestForm {
-                                                            start_offset: FileSizeSensitive::Small(
-                                                                num,
-                                                            ),
-                                                            end_offset: FileSizeSensitive::Small(e),
-                                                        }
+                                            start_offset: start,
+                                            end_offset: end,
+                                        } => (start..end)
+                                            .step_by(self.config.file_size_segment.into())
+                                            .map(|num| {
+                                                if num
+                                                    < end.saturating_sub(
+                                                        self.config.file_size_segment.into(),
+                                                    )
+                                                {
+                                                    SegmentRequestForm {
+                                                        start_offset: num,
+                                                        end_offset: num
+                                                            + self.config.file_size_segment as u64,
                                                     }
-                                                })
-                                                .collect::<Vec<SegmentRequestForm>>(),
-                                        },
-                                        SegmentRequestForm {
-                                            start_offset: FileSizeSensitive::Large(s),
-                                            end_offset: FileSizeSensitive::Large(e),
-                                        } => match s == e {
-                                            true => vec![SegmentRequestForm {
-                                                start_offset: FileSizeSensitive::Large(s),
-                                                end_offset: FileSizeSensitive::Large(e),
-                                            }],
-                                            false => (s..e)
-                                                .step_by(self.config.file_size_segment.into())
-                                                .map(|num| {
-                                                    if num
-                                                        < e.saturating_sub(
-                                                            self.config.file_size_segment.into(),
-                                                        )
-                                                    {
-                                                        SegmentRequestForm {
-                                                            start_offset: FileSizeSensitive::Large(
-                                                                num,
-                                                            ),
-                                                            end_offset: FileSizeSensitive::Large(
-                                                                num + self.config.file_size_segment
-                                                                    as u64,
-                                                            ),
-                                                        }
-                                                    } else {
-                                                        SegmentRequestForm {
-                                                            start_offset: FileSizeSensitive::Large(
-                                                                num,
-                                                            ),
-                                                            end_offset: FileSizeSensitive::Large(e),
-                                                        }
+                                                } else {
+                                                    SegmentRequestForm {
+                                                        start_offset: num,
+                                                        end_offset: end,
                                                     }
-                                                })
-                                                .collect::<Vec<SegmentRequestForm>>(),
-                                        },
-                                        _ => unreachable!(),
+                                                }
+                                            })
+                                            .collect::<Vec<SegmentRequestForm>>(),
                                     });
                             self.naks.extend(formatted_segments);
                             // filter out any duplicated NAKS
@@ -1340,7 +1241,7 @@ impl<T: FileStore> Transaction<T> {
                         // Issue notice of recieved? Log it.
                         let (offset, length) = self.store_file_data(filedata)?;
                         // update the total received size if appropriate.
-                        let size = offset + length;
+                        let size = offset + length as u64;
                         if self.received_file_size < size {
                             self.received_file_size = size;
                         }
@@ -1515,7 +1416,9 @@ impl<T: FileStore> Transaction<T> {
 
                                     let payload =
                                         PDUPayload::Directive(Operations::KeepAlive(data));
-                                    let payload_len = payload.clone().encode().len() as u16;
+                                    let payload_len =
+                                        payload.clone().encode(self.config.file_size_flag).len()
+                                            as u16;
 
                                     let header = self.get_header(
                                         Direction::ToSender,
@@ -1549,7 +1452,7 @@ impl<T: FileStore> Transaction<T> {
                         // Issue notice of recieved? Log it.
                         let (offset, length) = self.store_file_data(filedata)?;
                         // update the total received size if appropriate.
-                        let size = offset + length;
+                        let size = offset + length as u64;
                         if self.received_file_size < size {
                             self.received_file_size = size;
                         }
@@ -1741,7 +1644,11 @@ impl<T: FileStore> Transaction<T> {
                 .ok_or_else(|| TransactionError::MissingMetadata(id))?,
         };
         let payload = PDUPayload::Directive(Operations::Metadata(metadata));
-        let payload_len: u16 = payload.clone().encode().len().try_into()?;
+        let payload_len: u16 = payload
+            .clone()
+            .encode(self.config.file_size_flag)
+            .len()
+            .try_into()?;
 
         let header = self.get_header(
             Direction::ToReceiver,
@@ -1796,7 +1703,7 @@ mod test {
             sequence_number: VariableID::from(3_u16),
             file_size_flag: FileSizeFlag::Small,
             fault_handler_override: HashMap::new(),
-            file_size_segment: 3_u16,
+            file_size_segment: 16630_u16,
             crc_flag: CRCFlag::NotPresent,
             segment_metadata_flag: SegmentedData::NotPresent,
             max_count: 5_u32,
@@ -1826,7 +1733,7 @@ mod test {
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
-            file_size: FileSizeSensitive::Small(600),
+            file_size: 600_u64,
             source_filename: path.clone(),
             destination_filename: path.clone(),
             message_to_user: vec![],
@@ -1887,14 +1794,14 @@ mod test {
 
         let input = vec![0, 5, 255, 99];
         let data = FileDataPDU::Unsegmented(UnsegmentedFileData {
-            offset: FileSizeSensitive::Small(6),
+            offset: 6,
             file_data: input.clone(),
         });
         let (offset, length) = transaction
             .store_file_data(data)
             .expect("Error saving file data");
 
-        assert_eq!(FileSizeSensitive::Small(6), offset);
+        assert_eq!(6, offset);
         assert_eq!(4, length);
 
         let handle = transaction.get_handle().unwrap();
@@ -1925,7 +1832,7 @@ mod test {
         let mut transaction = Transaction::new(config, filestore.clone(), transport_tx, message_tx);
         transaction.metadata = Some(Metadata {
             closure_requested: false,
-            file_size: FileSizeSensitive::Small(input.len() as u32),
+            file_size: input.len() as u64,
             source_filename: output_file.clone(),
             destination_filename: output_file.clone(),
             message_to_user: vec![],
@@ -1934,14 +1841,14 @@ mod test {
         });
 
         let data = FileDataPDU::Unsegmented(UnsegmentedFileData {
-            offset: FileSizeSensitive::Small(0),
+            offset: 0,
             file_data: input.as_bytes().to_vec(),
         });
         let (offset, length) = transaction
             .store_file_data(data)
             .expect("Error saving file data");
 
-        assert_eq!(FileSizeSensitive::Small(0), offset);
+        assert_eq!(0, offset);
         assert_eq!(input.len(), length);
 
         let result = transaction
@@ -1979,7 +1886,7 @@ mod test {
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
-            file_size: FileSizeSensitive::Small(10),
+            file_size: 10,
             source_filename: path.clone(),
             destination_filename: path.clone(),
             message_to_user: vec![],
@@ -1990,10 +1897,13 @@ mod test {
         let input = vec![0, 5, 255, 99];
 
         let payload = PDUPayload::FileData(FileDataPDU::Unsegmented(UnsegmentedFileData {
-            offset: FileSizeSensitive::Small(6),
+            offset: 6,
             file_data: input.clone(),
         }));
-        let payload_len = payload.clone().encode().len();
+        let payload_len = payload
+            .clone()
+            .encode(transaction.config.file_size_flag)
+            .len();
 
         let header = transaction.get_header(
             Direction::ToReceiver,
@@ -2025,11 +1935,11 @@ mod test {
                 handle.sync_all().expect("Bad file sync.");
             }
 
-            let offset = FileSizeSensitive::Small(6);
+            let offset = 6;
             let length = 4;
 
             transaction
-                .send_file_segment(Some(offset.as_u64()), Some(length as u16))
+                .send_file_segment(Some(offset), Some(length as u16))
                 .unwrap();
         });
         let (destination_id, received_pdu) = transport_rx.recv().unwrap();
@@ -2040,8 +1950,8 @@ mod test {
     }
 
     #[rstest]
-    #[case(SegmentRequestForm { start_offset: FileSizeSensitive::Small(6), end_offset: FileSizeSensitive::Small(10) })]
-    #[case(SegmentRequestForm { start_offset: FileSizeSensitive::Small(0), end_offset: FileSizeSensitive::Small(0) })]
+    #[case(SegmentRequestForm { start_offset: 6, end_offset: 10 })]
+    #[case(SegmentRequestForm { start_offset: 0, end_offset: 0 })]
     fn send_missing(
         #[case] nak: SegmentRequestForm,
         default_config: &TransactionConfig,
@@ -2060,7 +1970,7 @@ mod test {
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
-            file_size: FileSizeSensitive::Small(10),
+            file_size: 10,
             source_filename: path.clone(),
             destination_filename: path.clone(),
             message_to_user: vec![],
@@ -2071,14 +1981,17 @@ mod test {
         let input = vec![0, 5, 255, 99];
         let pdu = match &nak {
             SegmentRequestForm {
-                start_offset: FileSizeSensitive::Small(6),
-                end_offset: FileSizeSensitive::Small(10),
+                start_offset: 6,
+                end_offset: 10,
             } => {
                 let payload = PDUPayload::FileData(FileDataPDU::Unsegmented(UnsegmentedFileData {
-                    offset: FileSizeSensitive::Small(6),
+                    offset: 6,
                     file_data: input.clone(),
                 }));
-                let payload_len = payload.clone().encode().len();
+                let payload_len = payload
+                    .clone()
+                    .encode(transaction.config.file_size_flag)
+                    .len();
 
                 let header = transaction.get_header(
                     Direction::ToReceiver,
@@ -2091,13 +2004,16 @@ mod test {
             _ => {
                 let payload = PDUPayload::Directive(Operations::Metadata(MetadataPDU {
                     closure_requested: false,
-                    file_size: FileSizeSensitive::Small(10),
+                    file_size: 10,
                     checksum_type: ChecksumType::Modular,
                     source_filename: path.clone().as_str().as_bytes().to_vec(),
                     destination_filename: path.clone().as_str().as_bytes().to_vec(),
                     options: vec![],
                 }));
-                let payload_len = payload.clone().encode().len();
+                let payload_len = payload
+                    .clone()
+                    .encode(transaction.config.file_size_flag)
+                    .len();
 
                 let header = transaction.get_header(
                     Direction::ToReceiver,
@@ -2160,8 +2076,8 @@ mod test {
         config.action_type = Action::Receive;
         config.file_size_flag = file_size_flag;
         let file_size = match &file_size_flag {
-            FileSizeFlag::Small => FileSizeSensitive::Small(20),
-            FileSizeFlag::Large => FileSizeSensitive::Large(20),
+            FileSizeFlag::Small => 20,
+            FileSizeFlag::Large => u32::MAX as u64 + 100_u64,
         };
 
         let filestore = Arc::new(NativeFileStore::new(
@@ -2171,55 +2087,37 @@ mod test {
 
         let input = vec![0, 5, 255, 99];
         let data = FileDataPDU::Unsegmented(UnsegmentedFileData {
-            offset: match file_size_flag {
-                FileSizeFlag::Small => FileSizeSensitive::Small(6),
-                FileSizeFlag::Large => FileSizeSensitive::Large(6),
-            },
+            offset: 6,
             file_data: input,
         });
         let (offset, length) = transaction
             .store_file_data(data)
             .expect("Error saving file data");
 
-        match file_size_flag {
-            FileSizeFlag::Small => {
-                assert_eq!(FileSizeSensitive::Small(6), offset);
-            }
-            FileSizeFlag::Large => {
-                assert_eq!(FileSizeSensitive::Large(6), offset);
-            }
-        }
+        assert_eq!(6, offset);
         assert_eq!(4, length);
         transaction.update_naks(Some(file_size.clone()));
         transaction.received_file_size = file_size.clone();
 
-        let expected: VecDeque<SegmentRequestForm> = match file_size_flag {
-            FileSizeFlag::Small => vec![
-                SegmentRequestForm::from((0_u32, 0_u32)),
-                SegmentRequestForm::from((0_u32, 6_u32)),
-                SegmentRequestForm::from((10_u32, 20_u32)),
-            ]
-            .into(),
-            FileSizeFlag::Large => vec![
-                SegmentRequestForm::from((0_u64, 0_u64)),
-                SegmentRequestForm::from((0_u64, 6_u64)),
-                SegmentRequestForm::from((10_u64, 20_u64)),
-            ]
-            .into(),
-        };
+        let expected: VecDeque<SegmentRequestForm> = vec![
+            SegmentRequestForm::from((0_u64, 0_u64)),
+            SegmentRequestForm::from((0_u64, 6_u64)),
+            SegmentRequestForm::from((10_u64, file_size)),
+        ]
+        .into();
 
         assert_eq!(expected, transaction.naks);
 
         let payload = PDUPayload::Directive(Operations::Nak(NegativeAcknowldegmentPDU {
-            start_of_scope: match file_size_flag {
-                FileSizeFlag::Small => FileSizeSensitive::Small(0),
-                FileSizeFlag::Large => FileSizeSensitive::Large(0),
-            },
+            start_of_scope: 0,
             end_of_scope: file_size,
             segment_requests: expected.into(),
         }));
 
-        let payload_len = payload.clone().encode().len();
+        let payload_len = payload
+            .clone()
+            .encode(transaction.config.file_size_flag)
+            .len();
         let header = transaction.get_header(
             Direction::ToSender,
             PDUType::FileDirective,
@@ -2262,7 +2160,7 @@ mod test {
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
-            file_size: FileSizeSensitive::Small(input.as_bytes().len() as u32),
+            file_size: input.as_bytes().len() as u64,
             source_filename: path.clone(),
             destination_filename: path.clone(),
             message_to_user: vec![],
@@ -2285,10 +2183,13 @@ mod test {
         let payload = PDUPayload::Directive(Operations::EoF(EndOfFile {
             condition: Condition::NoError,
             checksum,
-            file_size: FileSizeSensitive::Small(input.as_bytes().len() as u32),
+            file_size: input.as_bytes().len() as u64,
             fault_location: None,
         }));
-        let payload_len = payload.clone().encode().len();
+        let payload_len = payload
+            .clone()
+            .encode(transaction.config.file_size_flag)
+            .len();
 
         let header = transaction.get_header(
             Direction::ToReceiver,
@@ -2356,7 +2257,7 @@ mod test {
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
-            file_size: FileSizeSensitive::Small(input.as_bytes().len() as u32),
+            file_size: input.as_bytes().len() as u64,
             source_filename: path.clone(),
             destination_filename: path.clone(),
             message_to_user: vec![],
@@ -2379,10 +2280,10 @@ mod test {
         let payload = PDUPayload::Directive(Operations::EoF(EndOfFile {
             condition: Condition::CancelReceived,
             checksum,
-            file_size: FileSizeSensitive::Small(input.as_bytes().len() as u32),
+            file_size: input.as_bytes().len() as u64,
             fault_location: Some(config.source_entity_id),
         }));
-        let payload_len = payload.clone().encode().len();
+        let payload_len = payload.clone().encode(config.file_size_flag).len();
 
         let header = transaction.get_header(
             Direction::ToReceiver,
@@ -2457,7 +2358,7 @@ mod test {
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
-            file_size: FileSizeSensitive::Small(input.as_bytes().len() as u32),
+            file_size: input.as_bytes().len() as u64,
             source_filename: path.clone(),
             destination_filename: path,
             message_to_user: vec![],
@@ -2472,7 +2373,7 @@ mod test {
             filestore_response: vec![],
             fault_location: None,
         }));
-        let payload_len = payload.clone().encode().len();
+        let payload_len = payload.clone().encode(config.file_size_flag).len();
 
         let header = transaction.get_header(
             Direction::ToSender,
@@ -2556,7 +2457,7 @@ mod test {
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
-            file_size: FileSizeSensitive::Small(input.as_bytes().len() as u32),
+            file_size: input.as_bytes().len() as u64,
             source_filename: path.clone(),
             destination_filename: path,
             message_to_user: vec![],
@@ -2571,7 +2472,7 @@ mod test {
             transaction_status: transaction.status.clone(),
         }));
 
-        let payload_len = payload.clone().encode().len();
+        let payload_len = payload.clone().encode(config.file_size_flag).len();
 
         let header = transaction.get_header(
             Direction::ToReceiver,
@@ -2613,7 +2514,7 @@ mod test {
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
-            file_size: FileSizeSensitive::Small(input.as_bytes().len() as u32),
+            file_size: input.as_bytes().len() as u64,
             source_filename: path.clone(),
             destination_filename: path,
             message_to_user: vec![],
@@ -2628,7 +2529,7 @@ mod test {
             transaction_status: transaction.status.clone(),
         }));
 
-        let payload_len = payload.clone().encode().len();
+        let payload_len = payload.clone().encode(config.file_size_flag).len();
 
         let header = transaction.get_header(
             Direction::ToSender,
@@ -2671,7 +2572,7 @@ mod test {
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
-            file_size: FileSizeSensitive::Small(input.as_bytes().len() as u32),
+            file_size: input.as_bytes().len() as u64,
             source_filename: path.clone(),
             destination_filename: path.clone(),
             message_to_user: vec![],
@@ -2694,7 +2595,7 @@ mod test {
                 });
 
         let pdu = FileDataPDU::Unsegmented(UnsegmentedFileData {
-            offset: FileSizeSensitive::Small(0),
+            offset: 0,
             file_data: input.as_bytes().to_vec(),
         });
         transaction.checksum = Some(checksum);
@@ -2738,14 +2639,14 @@ mod test {
 
             }),
             Operations::KeepAlive(KeepAlivePDU{
-                progress: FileSizeSensitive::Small(12_u32)
+                progress: 12_u64
             }),
             Operations::Prompt(PromptPDU{
                 nak_or_keep_alive: NakOrKeepAlive::KeepAlive,
             }),
             Operations::Nak(NegativeAcknowldegmentPDU{
-                start_of_scope: FileSizeSensitive::Small(0_u32),
-                end_of_scope: FileSizeSensitive::Small(1022_u32),
+                start_of_scope: 0_u64,
+                end_of_scope: 1022_u64,
                 segment_requests: vec![SegmentRequestForm::from((0_u32, 0_u32)), SegmentRequestForm::from((0_u32, 1022_u32))],
             })
         )]
@@ -2770,7 +2671,7 @@ mod test {
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
-            file_size: FileSizeSensitive::Small(600),
+            file_size: 600,
             source_filename: path.clone(),
             destination_filename: path,
             message_to_user: vec![],
@@ -2779,7 +2680,10 @@ mod test {
         });
 
         let payload = PDUPayload::Directive(operation);
-        let payload_len = payload.clone().encode().len() as u16;
+        let payload_len = payload
+            .clone()
+            .encode(transaction.config.file_size_flag)
+            .len() as u16;
         let header = transaction.get_header(
             Direction::ToReceiver,
             PDUType::FileDirective,
@@ -2828,11 +2732,11 @@ mod test {
 
             }),
             Operations::KeepAlive(KeepAlivePDU{
-                progress: FileSizeSensitive::Small(12_u32)
+                progress: 12_u64
             }),
             Operations::Nak(NegativeAcknowldegmentPDU{
-                start_of_scope: FileSizeSensitive::Small(0_u32),
-                end_of_scope: FileSizeSensitive::Small(1022_u32),
+                start_of_scope: 0_u64,
+                end_of_scope: 1022_u64,
                 segment_requests: vec![SegmentRequestForm::from((0_u32, 0_u32)), SegmentRequestForm::from((0_u32, 1022_u32))],
             })
         )]
@@ -2857,7 +2761,7 @@ mod test {
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
-            file_size: FileSizeSensitive::Small(600),
+            file_size: 600,
             source_filename: path.clone(),
             destination_filename: path,
             message_to_user: vec![],
@@ -2866,7 +2770,10 @@ mod test {
         });
 
         let payload = PDUPayload::Directive(operation);
-        let payload_len = payload.clone().encode().len() as u16;
+        let payload_len = payload
+            .clone()
+            .encode(transaction.config.file_size_flag)
+            .len() as u16;
         let header = transaction.get_header(
             Direction::ToReceiver,
             PDUType::FileDirective,
@@ -2896,13 +2803,13 @@ mod test {
             Operations::EoF(EndOfFile{
                 condition: Condition::CancelReceived,
                 checksum: 12_u32,
-                file_size: FileSizeSensitive::Small(1022_u32),
+                file_size: 1022_u64,
                 fault_location: None,
             }),
             Operations::Metadata(MetadataPDU{
                 closure_requested: false,
                 checksum_type: ChecksumType::Modular,
-                file_size: FileSizeSensitive::Small(1022_u32),
+                file_size: 1022_u64,
                 source_filename: "test_filename".into(),
                 destination_filename: "test_filename".into(),
                 options: vec![],
@@ -2917,7 +2824,7 @@ mod test {
                 transaction_status: TransactionStatus::Active,
             }),
             Operations::KeepAlive(KeepAlivePDU{
-                progress: FileSizeSensitive::Small(12_u32)
+                progress: 12_u64
             }),
             Operations::Finished(Finished{
                 condition: Condition::CheckLimitReached,
@@ -2935,8 +2842,8 @@ mod test {
 
             }),
             Operations::Nak(NegativeAcknowldegmentPDU{
-                start_of_scope: FileSizeSensitive::Small(0_u32),
-                end_of_scope: FileSizeSensitive::Small(1022_u32),
+                start_of_scope: 0_u64,
+                end_of_scope: 1022_u64,
                 segment_requests: vec![SegmentRequestForm::from((0_u32, 0_u32)), SegmentRequestForm::from((0_u32, 1022_u32))],
             }),
         )]
@@ -2961,7 +2868,7 @@ mod test {
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
-            file_size: FileSizeSensitive::Small(600),
+            file_size: 600,
             source_filename: path.clone(),
             destination_filename: path,
             message_to_user: vec![],
@@ -2970,7 +2877,10 @@ mod test {
         });
 
         let payload = PDUPayload::Directive(operation);
-        let payload_len = payload.clone().encode().len() as u16;
+        let payload_len = payload
+            .clone()
+            .encode(transaction.config.file_size_flag)
+            .len() as u16;
         let header = transaction.get_header(
             Direction::ToSender,
             PDUType::FileDirective,
@@ -3000,13 +2910,13 @@ mod test {
             Operations::EoF(EndOfFile{
                 condition: Condition::CancelReceived,
                 checksum: 12_u32,
-                file_size: FileSizeSensitive::Small(1022_u32),
+                file_size: 1022_u64,
                 fault_location: None,
             }),
             Operations::Metadata(MetadataPDU{
                 closure_requested: false,
                 checksum_type: ChecksumType::Modular,
-                file_size: FileSizeSensitive::Small(1022_u32),
+                file_size: 1022_u64,
                 source_filename: "test_filename".as_bytes().to_vec(),
                 destination_filename: "test_filename".as_bytes().to_vec(),
                 options: vec![],
@@ -3042,7 +2952,7 @@ mod test {
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
-            file_size: FileSizeSensitive::Small(600),
+            file_size: 600,
             source_filename: path.clone(),
             destination_filename: path,
             message_to_user: vec![],
@@ -3051,7 +2961,10 @@ mod test {
         });
 
         let payload = PDUPayload::Directive(operation);
-        let payload_len = payload.clone().encode().len() as u16;
+        let payload_len = payload
+            .clone()
+            .encode(transaction.config.file_size_flag)
+            .len() as u16;
         let header = transaction.get_header(
             Direction::ToSender,
             PDUType::FileDirective,
@@ -3099,7 +3012,7 @@ mod test {
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
-            file_size: FileSizeSensitive::Small(600),
+            file_size: 600,
             source_filename: path.clone(),
             destination_filename: path,
             message_to_user: vec![],
@@ -3108,10 +3021,13 @@ mod test {
         });
 
         let payload = PDUPayload::FileData(FileDataPDU::Unsegmented(UnsegmentedFileData {
-            offset: FileSizeSensitive::Small(12_u32),
+            offset: 12_u64,
             file_data: (0..12_u8).collect::<Vec<u8>>(),
         }));
-        let payload_len = payload.clone().encode().len() as u16;
+        let payload_len = payload
+            .clone()
+            .encode(transaction.config.file_size_flag)
+            .len() as u16;
         let header = transaction.get_header(
             Direction::ToSender,
             PDUType::FileData,
@@ -3154,7 +3070,7 @@ mod test {
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
-            file_size: FileSizeSensitive::Small(600),
+            file_size: 600,
             source_filename: path.clone(),
             destination_filename: path,
             message_to_user: vec![],
@@ -3163,10 +3079,13 @@ mod test {
         });
 
         let payload = PDUPayload::FileData(FileDataPDU::Unsegmented(UnsegmentedFileData {
-            offset: FileSizeSensitive::Small(12_u32),
+            offset: 12_u64,
             file_data: (0..12_u8).collect::<Vec<u8>>(),
         }));
-        let payload_len = payload.clone().encode().len() as u16;
+        let payload_len = payload
+            .clone()
+            .encode(transaction.config.file_size_flag)
+            .len() as u16;
         let header = transaction.get_header(
             Direction::ToSender,
             PDUType::FileData,
@@ -3226,7 +3145,7 @@ mod test {
 
         let expected = Some(Metadata {
             closure_requested: false,
-            file_size: FileSizeSensitive::Small(600),
+            file_size: 600,
             source_filename: path.clone(),
             destination_filename: path,
             message_to_user: vec![expected_msg.clone()],
@@ -3237,7 +3156,7 @@ mod test {
         let payload = PDUPayload::Directive(Operations::Metadata(MetadataPDU {
             closure_requested: false,
             checksum_type: ChecksumType::Modular,
-            file_size: FileSizeSensitive::Small(600_u32),
+            file_size: 600,
             source_filename: "Test_file.txt".as_bytes().to_vec(),
             destination_filename: "Test_file.txt".as_bytes().to_vec(),
             options: vec![
@@ -3245,7 +3164,10 @@ mod test {
                 MetadataTLV::FileStoreRequest(fs_req),
             ],
         }));
-        let payload_len = payload.clone().encode().len() as u16;
+        let payload_len = payload
+            .clone()
+            .encode(transaction.config.file_size_flag)
+            .len() as u16;
         let header = transaction.get_header(
             Direction::ToReceiver,
             PDUType::FileDirective,
@@ -3292,7 +3214,7 @@ mod test {
 
         transaction.metadata = Some(Metadata {
             closure_requested: true,
-            file_size: FileSizeSensitive::Small(600),
+            file_size: 600,
             source_filename: path.clone(),
             destination_filename: path,
             message_to_user: vec![],
@@ -3316,10 +3238,13 @@ mod test {
 
         let file_pdu = {
             let payload = PDUPayload::FileData(FileDataPDU::Unsegmented(UnsegmentedFileData {
-                offset: FileSizeSensitive::Small(0),
+                offset: 0,
                 file_data: input_data.as_bytes().to_vec(),
             }));
-            let payload_len = payload.clone().encode().len() as u16;
+            let payload_len = payload
+                .clone()
+                .encode(transaction.config.file_size_flag)
+                .len() as u16;
             let header = transaction.get_header(
                 Direction::ToReceiver,
                 PDUType::FileData,
@@ -3333,10 +3258,13 @@ mod test {
             let payload = PDUPayload::Directive(Operations::EoF(EndOfFile {
                 condition: Condition::NoError,
                 checksum,
-                file_size: FileSizeSensitive::Small(input_data.len() as u32),
+                file_size: input_data.len() as u64,
                 fault_location: None,
             }));
-            let payload_len = payload.clone().encode().len() as u16;
+            let payload_len = payload
+                .clone()
+                .encode(transaction.config.file_size_flag)
+                .len() as u16;
             let header = transaction.get_header(
                 Direction::ToReceiver,
                 PDUType::FileDirective,
@@ -3355,7 +3283,10 @@ mod test {
                 fault_location: None,
             }));
 
-            let payload_len = payload.clone().encode().len() as u16;
+            let payload_len = payload
+                .clone()
+                .encode(transaction.config.file_size_flag)
+                .len() as u16;
 
             let header = transaction.get_header(
                 Direction::ToSender,
@@ -3384,7 +3315,10 @@ mod test {
                         transaction_status: TransactionStatus::Undefined,
                     }));
 
-                    let payload_len = payload.clone().encode().len() as u16;
+                    let payload_len = payload
+                        .clone()
+                        .encode(transaction.config.file_size_flag)
+                        .len() as u16;
                     let header = transaction.get_header(
                         Direction::ToReceiver,
                         PDUType::FileDirective,
@@ -3410,7 +3344,10 @@ mod test {
                     transaction_status: TransactionStatus::Undefined,
                 }));
 
-                let payload_len = payload.clone().encode().len() as u16;
+                let payload_len = payload
+                    .clone()
+                    .encode(expected_pdu.header.large_file_flag)
+                    .len() as u16;
 
                 let header = {
                     let mut head = expected_pdu.header.clone();
@@ -3457,7 +3394,7 @@ mod test {
         };
         transaction.metadata = Some(Metadata {
             closure_requested: false,
-            file_size: FileSizeSensitive::Small(600),
+            file_size: 600,
             source_filename: path.clone(),
             destination_filename: path,
             message_to_user: vec![],
@@ -3469,7 +3406,10 @@ mod test {
             let payload = PDUPayload::Directive(Operations::Prompt(PromptPDU {
                 nak_or_keep_alive: nak_or_keep_alive.clone(),
             }));
-            let payload_len = payload.clone().encode().len() as u16;
+            let payload_len = payload
+                .clone()
+                .encode(transaction.config.file_size_flag)
+                .len() as u16;
 
             let header = transaction.get_header(
                 Direction::ToReceiver,
@@ -3484,14 +3424,17 @@ mod test {
         let expected_pdu = match nak_or_keep_alive {
             NakOrKeepAlive::Nak => {
                 let payload = PDUPayload::Directive(Operations::Nak(NegativeAcknowldegmentPDU {
-                    start_of_scope: FileSizeSensitive::Small(0),
-                    end_of_scope: FileSizeSensitive::Small(0),
+                    start_of_scope: 0,
+                    end_of_scope: 0,
                     segment_requests: vec![SegmentRequestForm {
-                        start_offset: FileSizeSensitive::Small(0),
-                        end_offset: FileSizeSensitive::Small(600),
+                        start_offset: 0,
+                        end_offset: 600,
                     }],
                 }));
-                let payload_len = payload.clone().encode().len() as u16;
+                let payload_len = payload
+                    .clone()
+                    .encode(transaction.config.file_size_flag)
+                    .len() as u16;
 
                 let header = transaction.get_header(
                     Direction::ToSender,
@@ -3503,10 +3446,12 @@ mod test {
                 PDU { header, payload }
             }
             NakOrKeepAlive::KeepAlive => {
-                let payload = PDUPayload::Directive(Operations::KeepAlive(KeepAlivePDU {
-                    progress: FileSizeSensitive::Small(0),
-                }));
-                let payload_len = payload.clone().encode().len() as u16;
+                let payload =
+                    PDUPayload::Directive(Operations::KeepAlive(KeepAlivePDU { progress: 0 }));
+                let payload_len = payload
+                    .clone()
+                    .encode(transaction.config.file_size_flag)
+                    .len() as u16;
 
                 let header = transaction.get_header(
                     Direction::ToSender,
@@ -3548,7 +3493,7 @@ mod test {
         };
         transaction.metadata = Some(Metadata {
             closure_requested: false,
-            file_size: FileSizeSensitive::Small(600),
+            file_size: 600,
             source_filename: path.clone(),
             destination_filename: path,
             message_to_user: vec![],
@@ -3564,7 +3509,10 @@ mod test {
                 filestore_response: vec![],
                 fault_location: None,
             }));
-            let payload_len = payload.clone().encode().len() as u16;
+            let payload_len = payload
+                .clone()
+                .encode(transaction.config.file_size_flag)
+                .len() as u16;
 
             let header = transaction.get_header(
                 Direction::ToSender,
@@ -3583,7 +3531,10 @@ mod test {
                 directive_subtype_code: ACKSubDirective::Finished,
                 transaction_status: TransactionStatus::Undefined,
             }));
-            let payload_len = payload.clone().encode().len() as u16;
+            let payload_len = payload
+                .clone()
+                .encode(transaction.config.file_size_flag)
+                .len() as u16;
 
             let header = transaction.get_header(
                 Direction::ToReceiver,
@@ -3607,9 +3558,13 @@ mod test {
     fn recv_nak(
         default_config: &TransactionConfig,
         tempdir_fixture: &TempDir,
-        #[values(FileSizeFlag::Small, FileSizeFlag::Large)] file_size_flag: FileSizeFlag,
-        #[values(2_usize, 17_usize)] total_size: usize,
+        #[values(2_u64, u32::MAX as u64 + 100_u64)] total_size: u64,
     ) {
+        let file_size_flag = match total_size > u32::MAX.into() {
+            true => FileSizeFlag::Large,
+            false => FileSizeFlag::Small,
+        };
+
         let (transport_tx, _) = unbounded();
         let (message_tx, _) = unbounded();
         let mut config = default_config.clone();
@@ -3628,10 +3583,7 @@ mod test {
         };
         transaction.metadata = Some(Metadata {
             closure_requested: false,
-            file_size: match &file_size_flag {
-                FileSizeFlag::Small => FileSizeSensitive::Small(total_size as u32),
-                FileSizeFlag::Large => FileSizeSensitive::Large(total_size as u64),
-            },
+            file_size: total_size,
             source_filename: path.clone(),
             destination_filename: path,
             message_to_user: vec![],
@@ -3640,25 +3592,18 @@ mod test {
         });
 
         let nak_pdu = {
-            let payload = PDUPayload::Directive(Operations::Nak(match file_size_flag {
-                FileSizeFlag::Small => NegativeAcknowldegmentPDU {
-                    start_of_scope: FileSizeSensitive::Small(0),
-                    end_of_scope: FileSizeSensitive::Small(total_size as u32),
-                    segment_requests: vec![SegmentRequestForm {
-                        start_offset: FileSizeSensitive::Small(0),
-                        end_offset: FileSizeSensitive::Small(total_size as u32),
-                    }],
-                },
-                FileSizeFlag::Large => NegativeAcknowldegmentPDU {
-                    start_of_scope: FileSizeSensitive::Large(0),
-                    end_of_scope: FileSizeSensitive::Large(total_size as u64),
-                    segment_requests: vec![SegmentRequestForm {
-                        start_offset: FileSizeSensitive::Large(0),
-                        end_offset: FileSizeSensitive::Large(total_size as u64),
-                    }],
-                },
+            let payload = PDUPayload::Directive(Operations::Nak(NegativeAcknowldegmentPDU {
+                start_of_scope: 0,
+                end_of_scope: total_size as u64,
+                segment_requests: vec![SegmentRequestForm {
+                    start_offset: 0,
+                    end_offset: total_size as u64,
+                }],
             }));
-            let payload_len = payload.clone().encode().len() as u16;
+            let payload_len = payload
+                .clone()
+                .encode(transaction.config.file_size_flag)
+                .len() as u16;
 
             let header = transaction.get_header(
                 Direction::ToSender,
@@ -3670,50 +3615,26 @@ mod test {
             PDU { header, payload }
         };
 
-        let expected_naks: VecDeque<SegmentRequestForm> = match &file_size_flag {
-            FileSizeFlag::Small => (0..total_size as u32)
-                .step_by(transaction.config.file_size_segment.into())
-                .map(|num| {
-                    if num
-                        < (total_size as u32)
-                            .saturating_sub(transaction.config.file_size_segment.into())
-                    {
-                        SegmentRequestForm {
-                            start_offset: FileSizeSensitive::Small(num),
-                            end_offset: FileSizeSensitive::Small(
-                                num + transaction.config.file_size_segment as u32,
-                            ),
-                        }
-                    } else {
-                        SegmentRequestForm {
-                            start_offset: FileSizeSensitive::Small(num),
-                            end_offset: FileSizeSensitive::Small(total_size as u32),
-                        }
+        let expected_naks: VecDeque<SegmentRequestForm> = (0..total_size)
+            .step_by(transaction.config.file_size_segment.into())
+            .map(|num| {
+                if num
+                    < (total_size as u64)
+                        .saturating_sub(transaction.config.file_size_segment.into())
+                {
+                    SegmentRequestForm {
+                        start_offset: num,
+                        end_offset: num + transaction.config.file_size_segment as u64,
                     }
-                })
-                .collect(),
-            FileSizeFlag::Large => (0..total_size as u64)
-                .step_by(transaction.config.file_size_segment.into())
-                .map(|num| {
-                    if num
-                        < (total_size as u64)
-                            .saturating_sub(transaction.config.file_size_segment.into())
-                    {
-                        SegmentRequestForm {
-                            start_offset: FileSizeSensitive::Large(num),
-                            end_offset: FileSizeSensitive::Large(
-                                num + transaction.config.file_size_segment as u64,
-                            ),
-                        }
-                    } else {
-                        SegmentRequestForm {
-                            start_offset: FileSizeSensitive::Large(num),
-                            end_offset: FileSizeSensitive::Large(total_size as u64),
-                        }
+                } else {
+                    SegmentRequestForm {
+                        start_offset: num,
+                        end_offset: total_size,
                     }
-                })
-                .collect(),
-        };
+                }
+            })
+            .collect();
+
         transaction.process_pdu(nak_pdu).unwrap();
         assert_eq!(expected_naks, transaction.naks);
     }
@@ -3739,7 +3660,7 @@ mod test {
         };
         transaction.metadata = Some(Metadata {
             closure_requested: false,
-            file_size: FileSizeSensitive::Small(500),
+            file_size: 500,
             source_filename: path.clone(),
             destination_filename: path,
             message_to_user: vec![],
@@ -3755,7 +3676,10 @@ mod test {
                 directive_subtype_code: ACKSubDirective::Other,
                 transaction_status: TransactionStatus::Undefined,
             }));
-            let payload_len = payload.clone().encode().len() as u16;
+            let payload_len = payload
+                .clone()
+                .encode(transaction.config.file_size_flag)
+                .len() as u16;
 
             let header = transaction.get_header(
                 Direction::ToSender,
@@ -3771,10 +3695,13 @@ mod test {
             let payload = PDUPayload::Directive(Operations::EoF(EndOfFile {
                 condition: Condition::NoError,
                 checksum: 0,
-                file_size: FileSizeSensitive::Small(500),
+                file_size: 500,
                 fault_location: None,
             }));
-            let payload_len = payload.clone().encode().len() as u16;
+            let payload_len = payload
+                .clone()
+                .encode(transaction.config.file_size_flag)
+                .len() as u16;
 
             let header = transaction.get_header(
                 Direction::ToReceiver,
@@ -3817,7 +3744,7 @@ mod test {
         };
         transaction.metadata = Some(Metadata {
             closure_requested: false,
-            file_size: FileSizeSensitive::Small(500),
+            file_size: 500,
             source_filename: path.clone(),
             destination_filename: path,
             message_to_user: vec![],
@@ -3827,10 +3754,12 @@ mod test {
         transaction.checksum = Some(0);
 
         let keep_alive = {
-            let payload = PDUPayload::Directive(Operations::KeepAlive(KeepAlivePDU {
-                progress: FileSizeSensitive::Small(300),
-            }));
-            let payload_len = payload.clone().encode().len() as u16;
+            let payload =
+                PDUPayload::Directive(Operations::KeepAlive(KeepAlivePDU { progress: 300 }));
+            let payload_len = payload
+                .clone()
+                .encode(transaction.config.file_size_flag)
+                .len() as u16;
 
             let header = transaction.get_header(
                 Direction::ToSender,
@@ -3842,11 +3771,8 @@ mod test {
             PDU { header, payload }
         };
 
-        assert_eq!(FileSizeSensitive::Small(0), transaction.received_file_size);
+        assert_eq!(0, transaction.received_file_size);
         transaction.process_pdu(keep_alive).unwrap();
-        assert_eq!(
-            FileSizeSensitive::Small(300),
-            transaction.received_file_size
-        )
+        assert_eq!(300, transaction.received_file_size)
     }
 }

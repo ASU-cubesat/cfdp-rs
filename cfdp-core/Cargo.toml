@@ -8,6 +8,7 @@ uart = ["serialport"]
 
 
 [dependencies]
+byteorder = "~1.4"
 camino = {version = "~1.1", features=["serde1"]}
 chrono = {version = "~0.4", default-features=false, features=["std"]}
 crossbeam-channel = "~0.5"

@@ -1,60 +1,12 @@
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 
-use std::{io::Read, ops::Add};
+use std::io::Read;
 
 use super::{
     error::{PDUError, PDUResult},
     VariableID,
 };
-
-#[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum FileSizeSensitive {
-    Small(u32),
-    Large(u64),
-}
-impl Add<usize> for FileSizeSensitive {
-    type Output = Self;
-
-    fn add(self, rhs: usize) -> Self::Output {
-        match self {
-            Self::Small(val) => Self::Small(val + rhs as u32),
-            Self::Large(val) => Self::Large(val + rhs as u64),
-        }
-    }
-}
-
-impl FileSizeSensitive {
-    pub fn as_u64(&self) -> u64 {
-        match *self {
-            Self::Small(val) => val.into(),
-            Self::Large(val) => val,
-        }
-    }
-
-    pub fn to_be_bytes(self) -> Vec<u8> {
-        match self {
-            Self::Small(val) => val.to_be_bytes().to_vec(),
-            Self::Large(val) => val.to_be_bytes().to_vec(),
-        }
-    }
-
-    pub fn from_be_bytes<T: Read>(buffer: &mut T, file_size_flag: FileSizeFlag) -> PDUResult<Self> {
-        match file_size_flag {
-            FileSizeFlag::Small => {
-                let mut u32_buffer = [0_u8; 4];
-                buffer.read_exact(&mut u32_buffer)?;
-                Ok(Self::Small(u32::from_be_bytes(u32_buffer)))
-            }
-            FileSizeFlag::Large => {
-                let mut u64_buffer = [0_u8; 8];
-                buffer.read_exact(&mut u64_buffer)?;
-                Ok(Self::Large(u64::from_be_bytes(u64_buffer)))
-            }
-        }
-    }
-}
 
 #[repr(u8)]
 #[derive(Clone, Debug, Hash, PartialEq, Eq, FromPrimitive)]
@@ -231,13 +183,13 @@ pub trait PDUEncode {
 
 pub trait FSSEncode {
     type PDUType;
-    fn encode(self) -> Vec<u8>;
+    fn encode(self, file_size_flag: FileSizeFlag) -> Vec<u8>;
     fn decode<T: Read>(buffer: &mut T, file_size_flag: FileSizeFlag) -> PDUResult<Self::PDUType>;
 }
 
 pub trait SegmentEncode {
     type PDUType;
-    fn encode(self) -> Vec<u8>;
+    fn encode(self, file_size_flag: FileSizeFlag) -> Vec<u8>;
     fn decode<T: Read>(
         buffer: &mut T,
         segmentation_flag: SegmentedData,

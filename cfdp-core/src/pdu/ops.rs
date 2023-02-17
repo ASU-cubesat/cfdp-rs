@@ -1,16 +1,15 @@
-use std::{fmt::Display, io::Read};
-
+use byteorder::{BigEndian, ReadBytesExt};
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
+use std::{fmt::Display, io::Read};
 
 use super::{
     error::{PDUError, PDUResult},
     fault_handler::FaultHandlerOverride,
     filestore::{FileStoreRequest, FileStoreResponse},
     header::{
-        read_length_value_pair, Condition, DeliveryCode, FSSEncode, FileSizeFlag,
-        FileSizeSensitive, FileStatusCode, NakOrKeepAlive, PDUEncode, SegmentEncode, SegmentedData,
-        TransactionStatus,
+        read_length_value_pair, Condition, DeliveryCode, FSSEncode, FileSizeFlag, FileStatusCode,
+        NakOrKeepAlive, PDUEncode, SegmentEncode, SegmentedData, TransactionStatus,
     },
     UserOperation,
 };
@@ -269,20 +268,27 @@ pub enum RecordContinuationState {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnsegmentedFileData {
-    pub offset: FileSizeSensitive,
+    pub offset: u64,
     pub file_data: Vec<u8>,
 }
 impl FSSEncode for UnsegmentedFileData {
     type PDUType = Self;
 
-    fn encode(self) -> Vec<u8> {
-        let mut buffer = self.offset.to_be_bytes();
+    fn encode(self, file_size_flag: FileSizeFlag) -> Vec<u8> {
+        let mut buffer = match file_size_flag {
+            FileSizeFlag::Small => (self.offset as u32).to_be_bytes().to_vec(),
+            FileSizeFlag::Large => self.offset.to_be_bytes().to_vec(),
+        };
         buffer.extend(self.file_data);
         buffer
     }
 
     fn decode<T: Read>(buffer: &mut T, file_size_flag: FileSizeFlag) -> PDUResult<Self::PDUType> {
-        let offset = FileSizeSensitive::from_be_bytes(buffer, file_size_flag)?;
+        let offset = match file_size_flag {
+            FileSizeFlag::Large => buffer.read_u64::<BigEndian>()?,
+            FileSizeFlag::Small => buffer.read_u32::<BigEndian>()? as u64,
+        };
+
         let file_data: Vec<u8> = {
             let mut data: Vec<u8> = vec![];
             buffer.read_to_end(&mut data)?;
@@ -296,19 +302,22 @@ impl FSSEncode for UnsegmentedFileData {
 pub struct SegmentedFileData {
     pub record_continuation_state: RecordContinuationState,
     pub segment_metadata: Vec<u8>,
-    pub offset: FileSizeSensitive,
+    pub offset: u64,
     pub file_data: Vec<u8>,
 }
 impl FSSEncode for SegmentedFileData {
     type PDUType = Self;
 
-    fn encode(self) -> Vec<u8> {
+    fn encode(self, file_size_flag: FileSizeFlag) -> Vec<u8> {
         let first_byte =
             ((self.record_continuation_state as u8) << 6) | self.segment_metadata.len() as u8;
         let mut buffer = vec![first_byte];
 
         buffer.extend(self.segment_metadata);
-        buffer.extend(self.offset.to_be_bytes());
+        match file_size_flag {
+            FileSizeFlag::Small => buffer.extend((self.offset as u32).to_be_bytes()),
+            FileSizeFlag::Large => buffer.extend(self.offset.to_be_bytes()),
+        };
         buffer.extend(self.file_data);
 
         buffer
@@ -326,7 +335,10 @@ impl FSSEncode for SegmentedFileData {
             data
         };
 
-        let offset = FileSizeSensitive::from_be_bytes(buffer, file_size_flag)?;
+        let offset = match file_size_flag {
+            FileSizeFlag::Large => buffer.read_u64::<BigEndian>()?,
+            FileSizeFlag::Small => buffer.read_u32::<BigEndian>()? as u64,
+        };
         let file_data: Vec<u8> = {
             let mut data: Vec<u8> = vec![];
             buffer.read_to_end(&mut data)?;
@@ -349,10 +361,10 @@ pub enum FileDataPDU {
 impl SegmentEncode for FileDataPDU {
     type PDUType = Self;
 
-    fn encode(self) -> Vec<u8> {
+    fn encode(self, file_size_flag: FileSizeFlag) -> Vec<u8> {
         match self {
-            Self::Unsegmented(message) => message.encode(),
-            Self::Segmented(message) => message.encode(),
+            Self::Unsegmented(message) => message.encode(file_size_flag),
+            Self::Segmented(message) => message.encode(file_size_flag),
         }
     }
 
@@ -400,16 +412,16 @@ impl Operations {
 impl FSSEncode for Operations {
     type PDUType = Self;
 
-    fn encode(self) -> Vec<u8> {
+    fn encode(self, file_size_flag: FileSizeFlag) -> Vec<u8> {
         let mut buffer: Vec<u8> = vec![self.get_directive() as u8];
         let message = match self {
-            Self::EoF(msg) => msg.encode(),
+            Self::EoF(msg) => msg.encode(file_size_flag),
             Self::Finished(msg) => msg.encode(),
             Self::Ack(msg) => msg.encode(),
-            Self::Metadata(msg) => msg.encode(),
-            Self::Nak(msg) => msg.encode(),
+            Self::Metadata(msg) => msg.encode(file_size_flag),
+            Self::Nak(msg) => msg.encode(file_size_flag),
             Self::Prompt(msg) => msg.encode(),
-            Self::KeepAlive(msg) => msg.encode(),
+            Self::KeepAlive(msg) => msg.encode(file_size_flag),
         };
         buffer.extend(message);
         buffer
@@ -440,18 +452,21 @@ impl FSSEncode for Operations {
 pub struct EndOfFile {
     pub condition: Condition,
     pub checksum: u32,
-    pub file_size: FileSizeSensitive,
+    pub file_size: u64,
     pub fault_location: Option<VariableID>,
 }
 impl FSSEncode for EndOfFile {
     type PDUType = Self;
 
-    fn encode(self) -> Vec<u8> {
+    fn encode(self, file_size_flag: FileSizeFlag) -> Vec<u8> {
         let first_byte = (self.condition as u8) << 4;
         let mut buffer = vec![first_byte];
 
         buffer.extend(self.checksum.to_be_bytes());
-        buffer.extend(self.file_size.to_be_bytes());
+        match file_size_flag {
+            FileSizeFlag::Small => buffer.extend((self.file_size as u32).to_be_bytes()),
+            FileSizeFlag::Large => buffer.extend(self.file_size.to_be_bytes()),
+        };
         if let Some(fault) = self.fault_location {
             buffer.push(MetadataTLVFieldCode::EntityID as u8);
             buffer.extend(fault.encode());
@@ -473,7 +488,10 @@ impl FSSEncode for EndOfFile {
             u32::from_be_bytes(u32_buff)
         };
 
-        let file_size = FileSizeSensitive::from_be_bytes(buffer, file_size_flag)?;
+        let file_size = match file_size_flag {
+            FileSizeFlag::Large => buffer.read_u64::<BigEndian>()?,
+            FileSizeFlag::Small => buffer.read_u32::<BigEndian>()? as u64,
+        };
 
         let fault_location = match &condition {
             Condition::NoError => None,
@@ -687,7 +705,7 @@ impl PDUEncode for PositiveAcknowledgePDU {
 pub struct MetadataPDU {
     pub closure_requested: bool,
     pub checksum_type: ChecksumType,
-    pub file_size: FileSizeSensitive,
+    pub file_size: u64,
     pub source_filename: Vec<u8>,
     pub destination_filename: Vec<u8>,
     pub options: Vec<MetadataTLV>,
@@ -695,10 +713,13 @@ pub struct MetadataPDU {
 impl FSSEncode for MetadataPDU {
     type PDUType = Self;
 
-    fn encode(self) -> Vec<u8> {
+    fn encode(self, file_size_flag: FileSizeFlag) -> Vec<u8> {
         let first_byte = ((self.closure_requested as u8) << 6) | (self.checksum_type as u8);
         let mut buffer = vec![first_byte];
-        buffer.extend(self.file_size.to_be_bytes());
+        match file_size_flag {
+            FileSizeFlag::Small => buffer.extend((self.file_size as u32).to_be_bytes()),
+            FileSizeFlag::Large => buffer.extend(self.file_size.to_be_bytes()),
+        };
 
         buffer.push(self.source_filename.len() as u8);
         buffer.extend(self.source_filename);
@@ -723,7 +744,10 @@ impl FSSEncode for MetadataPDU {
             ChecksumType::from_u8(possible).ok_or(PDUError::InvalidChecksumType(possible))?
         };
 
-        let file_size = FileSizeSensitive::from_be_bytes(buffer, file_size_flag)?;
+        let file_size = match file_size_flag {
+            FileSizeFlag::Large => buffer.read_u64::<BigEndian>()?,
+            FileSizeFlag::Small => buffer.read_u32::<BigEndian>()? as u64,
+        };
 
         let source_filename = read_length_value_pair(buffer)?;
         let destination_filename = read_length_value_pair(buffer)?;
@@ -751,37 +775,52 @@ impl FSSEncode for MetadataPDU {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SegmentRequestForm {
-    pub start_offset: FileSizeSensitive,
-    pub end_offset: FileSizeSensitive,
+    pub start_offset: u64,
+    pub end_offset: u64,
 }
 impl From<(u32, u32)> for SegmentRequestForm {
     fn from(vals: (u32, u32)) -> Self {
         Self {
-            start_offset: FileSizeSensitive::Small(vals.0),
-            end_offset: FileSizeSensitive::Small(vals.1),
+            start_offset: vals.0.into(),
+            end_offset: vals.1.into(),
         }
     }
 }
 impl From<(u64, u64)> for SegmentRequestForm {
     fn from(vals: (u64, u64)) -> Self {
         Self {
-            start_offset: FileSizeSensitive::Large(vals.0),
-            end_offset: FileSizeSensitive::Large(vals.1),
+            start_offset: vals.0,
+            end_offset: vals.1,
         }
     }
 }
 impl FSSEncode for SegmentRequestForm {
     type PDUType = Self;
 
-    fn encode(self) -> Vec<u8> {
-        let mut buffer = self.start_offset.to_be_bytes();
-        buffer.extend(self.end_offset.to_be_bytes());
-        buffer
+    fn encode(self, file_size_flag: FileSizeFlag) -> Vec<u8> {
+        match file_size_flag {
+            FileSizeFlag::Small => {
+                let mut buffer = (self.start_offset as u32).to_be_bytes().to_vec();
+                buffer.extend((self.end_offset as u32).to_be_bytes());
+                buffer
+            }
+            FileSizeFlag::Large => {
+                let mut buffer = self.start_offset.to_be_bytes().to_vec();
+                buffer.extend(self.end_offset.to_be_bytes());
+                buffer
+            }
+        }
     }
 
     fn decode<T: Read>(buffer: &mut T, file_size_flag: FileSizeFlag) -> PDUResult<Self::PDUType> {
-        let start_offset = FileSizeSensitive::from_be_bytes(buffer, file_size_flag)?;
-        let end_offset = FileSizeSensitive::from_be_bytes(buffer, file_size_flag)?;
+        let start_offset = match file_size_flag {
+            FileSizeFlag::Large => buffer.read_u64::<BigEndian>()?,
+            FileSizeFlag::Small => buffer.read_u32::<BigEndian>()? as u64,
+        };
+        let end_offset = match file_size_flag {
+            FileSizeFlag::Large => buffer.read_u64::<BigEndian>()?,
+            FileSizeFlag::Small => buffer.read_u32::<BigEndian>()? as u64,
+        };
         Ok(Self {
             start_offset,
             end_offset,
@@ -791,8 +830,8 @@ impl FSSEncode for SegmentRequestForm {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NegativeAcknowldegmentPDU {
-    pub start_of_scope: FileSizeSensitive,
-    pub end_of_scope: FileSizeSensitive,
+    pub start_of_scope: u64,
+    pub end_of_scope: u64,
     // 2 x FileSizeSensitive x N length for N requests.
     pub segment_requests: Vec<SegmentRequestForm>,
 }
@@ -800,19 +839,35 @@ type NakPDU = NegativeAcknowldegmentPDU;
 impl FSSEncode for NegativeAcknowldegmentPDU {
     type PDUType = Self;
 
-    fn encode(self) -> Vec<u8> {
-        let mut buffer = self.start_of_scope.to_be_bytes();
-        buffer.extend(self.end_of_scope.to_be_bytes());
+    fn encode(self, file_size_flag: FileSizeFlag) -> Vec<u8> {
+        let mut buffer = match file_size_flag {
+            FileSizeFlag::Small => {
+                let mut buffer = (self.start_of_scope as u32).to_be_bytes().to_vec();
+                buffer.extend((self.end_of_scope as u32).to_be_bytes());
+                buffer
+            }
+            FileSizeFlag::Large => {
+                let mut buffer = self.start_of_scope.to_be_bytes().to_vec();
+                buffer.extend(self.end_of_scope.to_be_bytes());
+                buffer
+            }
+        };
         self.segment_requests
             .into_iter()
-            .for_each(|req| buffer.extend(req.encode()));
+            .for_each(|req| buffer.extend(req.encode(file_size_flag)));
 
         buffer
     }
 
     fn decode<T: Read>(buffer: &mut T, file_size_flag: FileSizeFlag) -> PDUResult<Self::PDUType> {
-        let start_of_scope = FileSizeSensitive::from_be_bytes(buffer, file_size_flag)?;
-        let end_of_scope = FileSizeSensitive::from_be_bytes(buffer, file_size_flag)?;
+        let start_of_scope = match file_size_flag {
+            FileSizeFlag::Large => buffer.read_u64::<BigEndian>()?,
+            FileSizeFlag::Small => buffer.read_u32::<BigEndian>()? as u64,
+        };
+        let end_of_scope = match file_size_flag {
+            FileSizeFlag::Large => buffer.read_u64::<BigEndian>()?,
+            FileSizeFlag::Small => buffer.read_u32::<BigEndian>()? as u64,
+        };
 
         let mut segment_requests = vec![];
 
@@ -858,18 +913,24 @@ impl PDUEncode for PromptPDU {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeepAlivePDU {
-    pub progress: FileSizeSensitive,
+    pub progress: u64,
 }
 impl FSSEncode for KeepAlivePDU {
     type PDUType = Self;
 
-    fn encode(self) -> Vec<u8> {
-        self.progress.to_be_bytes()
+    fn encode(self, file_size_flag: FileSizeFlag) -> Vec<u8> {
+        match file_size_flag {
+            FileSizeFlag::Small => (self.progress as u32).to_be_bytes().to_vec(),
+            FileSizeFlag::Large => self.progress.to_be_bytes().to_vec(),
+        }
     }
 
     fn decode<T: Read>(buffer: &mut T, file_size_flag: FileSizeFlag) -> PDUResult<Self::PDUType> {
         Ok(Self {
-            progress: FileSizeSensitive::from_be_bytes(buffer, file_size_flag)?,
+            progress: match file_size_flag {
+                FileSizeFlag::Large => buffer.read_u64::<BigEndian>()?,
+                FileSizeFlag::Small => buffer.read_u32::<BigEndian>()? as u64,
+            },
         })
     }
 }
@@ -936,29 +997,28 @@ mod test {
     #[rstest]
     #[case(
         FileDataPDU::Unsegmented(UnsegmentedFileData{
-            offset: FileSizeSensitive::Large(34574292984u64),
+            offset: 34574292984_u64,
             file_data: (0..255).step_by(3).collect::<Vec<u8>>()
         })
     )]
     #[case(
         FileDataPDU::Unsegmented(UnsegmentedFileData{
-            offset: FileSizeSensitive::Small(12357u32),
+            offset: 12357_u64,
             file_data: (0..255).step_by(2).collect::<Vec<u8>>()
         })
     )]
     fn unsgemented_data(#[case] expected: FileDataPDU) {
-        let bytes = expected.clone().encode();
         let file_size_flag = match &expected {
-            FileDataPDU::Unsegmented(UnsegmentedFileData {
-                offset: FileSizeSensitive::Large(_),
-                ..
-            }) => FileSizeFlag::Large,
-            FileDataPDU::Unsegmented(UnsegmentedFileData {
-                offset: FileSizeSensitive::Small(_),
-                ..
-            }) => FileSizeFlag::Small,
-            _ => unreachable!(),
+            FileDataPDU::Unsegmented(UnsegmentedFileData { offset: val, .. })
+                if val <= &u32::MAX.into() =>
+            {
+                FileSizeFlag::Small
+            }
+            _ => FileSizeFlag::Large,
         };
+
+        let bytes = expected.clone().encode(file_size_flag);
+
         let recovered = FileDataPDU::decode(
             &mut bytes.as_slice(),
             SegmentedData::NotPresent,
@@ -974,7 +1034,7 @@ mod test {
         SegmentedFileData{
             record_continuation_state: RecordContinuationState::First,
             segment_metadata: vec![3_u8, 138, 255, 0, 133, 87],
-            offset: FileSizeSensitive::Large(717237408u64),
+            offset: 717237408_u64,
             file_data: (0..255).step_by(3).collect::<Vec<u8>>()
         }
     )]
@@ -982,7 +1042,7 @@ mod test {
         SegmentedFileData{
             record_continuation_state: RecordContinuationState::First,
             segment_metadata: vec![0_u8, 123, 83, 99, 108, 47, 32],
-            offset: FileSizeSensitive::Small(u32::MAX - 1_u32),
+            offset: (u32::MAX - 1_u32).into(),
             file_data: (0..255).step_by(8).collect::<Vec<u8>>()
         }
     )]
@@ -998,19 +1058,14 @@ mod test {
     ) {
         input.record_continuation_state = record_continuation_state;
 
-        let expected = FileDataPDU::Segmented(input);
-        let bytes = expected.clone().encode();
-        let file_size_flag = match &expected {
-            FileDataPDU::Segmented(SegmentedFileData {
-                offset: FileSizeSensitive::Large(_),
-                ..
-            }) => FileSizeFlag::Large,
-            FileDataPDU::Segmented(SegmentedFileData {
-                offset: FileSizeSensitive::Small(_),
-                ..
-            }) => FileSizeFlag::Small,
-            _ => unreachable!(),
+        let file_size_flag = match &input {
+            SegmentedFileData { offset: val, .. } if val <= &u32::MAX.into() => FileSizeFlag::Small,
+            _ => FileSizeFlag::Large,
         };
+        let expected = FileDataPDU::Segmented(input);
+
+        let bytes = expected.clone().encode(file_size_flag);
+
         let recovered = FileDataPDU::decode(
             &mut bytes.as_slice(),
             SegmentedData::Present,
@@ -1022,27 +1077,21 @@ mod test {
     }
 
     #[rstest]
-    fn end_of_file_no_error(
-        #[values(
-            FileSizeSensitive::Large(7573910375u64),
-            FileSizeSensitive::Small(194885483u32)
-        )]
-        file_size: FileSizeSensitive,
-    ) {
-        let file_size_flag = match &file_size {
-            FileSizeSensitive::Large(_) => FileSizeFlag::Large,
-            FileSizeSensitive::Small(_) => FileSizeFlag::Small,
+    fn end_of_file_no_error(#[values(7573910375_u64, 194885483_u64)] file_size: u64) {
+        let file_size_flag = match file_size <= u32::MAX.into() {
+            false => FileSizeFlag::Large,
+            true => FileSizeFlag::Small,
         };
 
         let end_of_file = EndOfFile {
             condition: Condition::NoError,
-            checksum: 7580274u32,
+            checksum: 7580274_u32,
             file_size,
             fault_location: None,
         };
         let expected = Operations::EoF(end_of_file);
 
-        let buffer = expected.clone().encode();
+        let buffer = expected.clone().encode(file_size_flag);
 
         let recovered = Operations::decode(&mut buffer.as_slice(), file_size_flag).unwrap();
 
@@ -1061,11 +1110,7 @@ mod test {
             Condition::NakLimitReached
         )]
         condition: Condition,
-        #[values(
-            FileSizeSensitive::Large(7573910375u64),
-            FileSizeSensitive::Small(194885483u32)
-        )]
-        file_size: FileSizeSensitive,
+        #[values(7573910375_u64, 194885483_u64)] file_size: u64,
         #[values(
             VariableID::from(3u8),
             VariableID::from(18484u16),
@@ -1074,9 +1119,9 @@ mod test {
         )]
         entity: VariableID,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let file_size_flag = match &file_size {
-            FileSizeSensitive::Large(_) => FileSizeFlag::Large,
-            FileSizeSensitive::Small(_) => FileSizeFlag::Small,
+        let file_size_flag = match file_size <= u32::MAX.into() {
+            false => FileSizeFlag::Large,
+            true => FileSizeFlag::Small,
         };
 
         let end_of_file = EndOfFile {
@@ -1087,7 +1132,7 @@ mod test {
         };
         let expected = Operations::EoF(end_of_file);
 
-        let buffer = expected.clone().encode();
+        let buffer = expected.clone().encode(file_size_flag);
 
         let recovered = Operations::decode(&mut buffer.as_slice(), file_size_flag)?;
 
@@ -1134,7 +1179,7 @@ mod test {
             ],
             fault_location: None,
         });
-        let buffer = expected.clone().encode();
+        let buffer = expected.clone().encode(FileSizeFlag::Small);
 
         let recovered = Operations::decode(&mut buffer.as_slice(), FileSizeFlag::Large)?;
 
@@ -1197,7 +1242,7 @@ mod test {
             ],
             fault_location: Some(entity),
         });
-        let buffer = expected.clone().encode();
+        let buffer = expected.clone().encode(FileSizeFlag::Small);
 
         let recovered = Operations::decode(&mut buffer.as_slice(), FileSizeFlag::Large)?;
 
@@ -1233,7 +1278,7 @@ mod test {
             condition,
             transaction_status,
         });
-        let buffer = expected.clone().encode();
+        let buffer = expected.clone().encode(FileSizeFlag::Small);
         let recovered = Operations::decode(&mut buffer.as_slice(), FileSizeFlag::Small)?;
 
         assert_eq!(expected, recovered);
@@ -1274,16 +1319,12 @@ mod test {
     fn metadata_pdu(
         #[values(true, false)] closure_requested: bool,
         #[values(ChecksumType::Null, ChecksumType::Modular)] checksum_type: ChecksumType,
-        #[values(
-            FileSizeSensitive::Small(184574_u32),
-            FileSizeSensitive::Large(7574839485_u64)
-        )]
-        file_size: FileSizeSensitive,
+        #[values(184574_u64, 7574839485_u64)] file_size: u64,
         #[case] options: Vec<MetadataTLV>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let file_size_flag = match &file_size {
-            FileSizeSensitive::Small(_) => FileSizeFlag::Small,
-            FileSizeSensitive::Large(_) => FileSizeFlag::Large,
+        let file_size_flag = match file_size <= u32::MAX.into() {
+            true => FileSizeFlag::Small,
+            false => FileSizeFlag::Large,
         };
 
         let expected = Operations::Metadata(MetadataPDU {
@@ -1294,7 +1335,7 @@ mod test {
             destination_filename: "/the/destination/filename.dat".as_bytes().to_vec(),
             options,
         });
-        let buffer = expected.clone().encode();
+        let buffer = expected.clone().encode(file_size_flag);
         let recovered = Operations::decode(&mut buffer.as_slice(), file_size_flag)?;
 
         assert_eq!(expected, recovered);
@@ -1303,52 +1344,49 @@ mod test {
 
     #[rstest]
     #[case(
-        FileSizeSensitive::Small(124_u32),
-        FileSizeSensitive::Small(412_u32),
+        124_u64,
+        412_u64,
         vec![
             SegmentRequestForm{
-                start_offset: FileSizeSensitive::Small(124_u32),
-                end_offset: FileSizeSensitive::Small(204_u32)
+                start_offset: 124_u64,
+                end_offset: 204_u64
             },
             SegmentRequestForm{
-                start_offset: FileSizeSensitive::Small(312_u32),
-                end_offset: FileSizeSensitive::Small(412_u32)
+                start_offset: 312_u64,
+                end_offset: 412_u64
             },
         ]
     )]
     #[case(
-        FileSizeSensitive::Large(32_u64),
-        FileSizeSensitive::Large(582872_u64),
+        32_u64,
+        582872_u64,
         vec![
             SegmentRequestForm{
-                start_offset: FileSizeSensitive::Large(32_u64),
-                end_offset: FileSizeSensitive::Large(816_u64)
+                start_offset: 32_u64,
+                end_offset: 816_u64
             },
             SegmentRequestForm{
-                start_offset: FileSizeSensitive::Large(1024_u64),
-                end_offset: FileSizeSensitive::Large(1536_u64)
+                start_offset: 1024_u64,
+                end_offset: 1536_u64
             },
             SegmentRequestForm{
-                start_offset: FileSizeSensitive::Large(582360_u64),
-                end_offset: FileSizeSensitive::Large(582872_u64)
+                start_offset: 582360_u64,
+                end_offset: 582872_u64
             },
         ]
     )]
     fn nak_pdu(
-        #[case] start_of_scope: FileSizeSensitive,
-        #[case] end_of_scope: FileSizeSensitive,
+        #[case] start_of_scope: u64,
+        #[case] end_of_scope: u64,
         #[case] segment_requests: Vec<SegmentRequestForm>,
+        #[values(FileSizeFlag::Small, FileSizeFlag::Large)] file_size_flag: FileSizeFlag,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let file_size_flag = match &start_of_scope {
-            FileSizeSensitive::Small(_) => FileSizeFlag::Small,
-            FileSizeSensitive::Large(_) => FileSizeFlag::Large,
-        };
         let expected = Operations::Nak(NakPDU {
             start_of_scope,
             end_of_scope,
             segment_requests,
         });
-        let buffer = expected.clone().encode();
+        let buffer = expected.clone().encode(file_size_flag);
         let recovered = Operations::decode(&mut buffer.as_slice(), file_size_flag)?;
 
         assert_eq!(expected, recovered);
@@ -1358,10 +1396,11 @@ mod test {
     #[rstest]
     fn prompt_pdu(
         #[values(NakOrKeepAlive::KeepAlive, NakOrKeepAlive::Nak)] nak_or_keep_alive: NakOrKeepAlive,
+        #[values(FileSizeFlag::Small, FileSizeFlag::Large)] file_size_flag: FileSizeFlag,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let expected = Operations::Prompt(PromptPDU { nak_or_keep_alive });
-        let buffer = expected.clone().encode();
-        let recovered = Operations::decode(&mut buffer.as_slice(), FileSizeFlag::Small)?;
+        let buffer = expected.clone().encode(file_size_flag);
+        let recovered = Operations::decode(&mut buffer.as_slice(), file_size_flag)?;
 
         assert_eq!(expected, recovered);
         Ok(())
@@ -1369,22 +1408,11 @@ mod test {
 
     #[rstest]
     fn keepalive_pdu(
-        #[values(
-            FileSizeSensitive::Small(0_u32),
-            FileSizeSensitive::Small(32_u32),
-            FileSizeSensitive::Small(65532_u32),
-            FileSizeSensitive::Large(12_u64),
-            FileSizeSensitive::Large(65536_u64),
-            FileSizeSensitive::Large(8573732_u64)
-        )]
-        progress: FileSizeSensitive,
+        #[values(0_u64, 32_u64, 65532_u64, 12_u64, 65536_u64, 8573732_u64)] progress: u64,
+        #[values(FileSizeFlag::Small, FileSizeFlag::Large)] file_size_flag: FileSizeFlag,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let file_size_flag = match &progress {
-            FileSizeSensitive::Small(_) => FileSizeFlag::Small,
-            FileSizeSensitive::Large(_) => FileSizeFlag::Large,
-        };
         let expected = Operations::KeepAlive(KeepAlivePDU { progress });
-        let buffer = expected.clone().encode();
+        let buffer = expected.clone().encode(file_size_flag);
         let recovered = Operations::decode(&mut buffer.as_slice(), file_size_flag)?;
 
         assert_eq!(expected, recovered);

@@ -443,8 +443,7 @@ impl<T: FileStore> Transaction<T> {
             handle
                 .write_all(file_data.as_slice())
                 .map_err(FileStoreError::IO)?;
-            self.saved_segments
-                .insert(offset.clone(), file_data.len() as u64);
+            self.saved_segments.insert(offset, file_data.len() as u64);
         }
 
         Ok((offset, length))
@@ -657,8 +656,7 @@ impl<T: FileStore> Transaction<T> {
                     let id = self.id();
                     TransactionError::MissingMetadata(id)
                 })?
-                .file_size
-                .clone(),
+                .file_size,
             fault_location,
         };
 
@@ -887,7 +885,7 @@ impl<T: FileStore> Transaction<T> {
 
         let nak = NegativeAcknowldegmentPDU {
             start_of_scope: 0_u64,
-            end_of_scope: self.received_file_size.clone(),
+            end_of_scope: self.received_file_size,
             segment_requests: self.naks.clone().into(),
         };
 
@@ -1245,7 +1243,7 @@ impl<T: FileStore> Transaction<T> {
                         if self.received_file_size < size {
                             self.received_file_size = size;
                         }
-                        self.update_naks(self.metadata.as_ref().map(|meta| meta.file_size.clone()));
+                        self.update_naks(self.metadata.as_ref().map(|meta| meta.file_size));
 
                         // need a block here for if we have sent naks
                         // in deferred mode. a second EoF is not sent
@@ -1277,7 +1275,7 @@ impl<T: FileStore> Transaction<T> {
                                 self.waiting_on = WaitingOn::MissingData;
 
                                 if self.condition == Condition::NoError {
-                                    self.update_naks(Some(eof.file_size.clone()));
+                                    self.update_naks(Some(eof.file_size));
 
                                     self.check_file_size(eof.file_size)?;
                                     match self.naks.is_empty() {
@@ -1358,7 +1356,7 @@ impl<T: FileStore> Transaction<T> {
                                         )
                                         .map_err(FileStoreError::UTF8)?
                                         .into(),
-                                        file_size: metadata.file_size.clone(),
+                                        file_size: metadata.file_size,
                                         checksum_type: metadata.checksum_type,
                                         closure_requested: metadata.closure_requested,
                                         filestore_requests: metadata
@@ -1406,7 +1404,7 @@ impl<T: FileStore> Transaction<T> {
                             Operations::Prompt(prompt) => match prompt.nak_or_keep_alive {
                                 NakOrKeepAlive::Nak => {
                                     self.update_naks(
-                                        self.metadata.as_ref().map(|meta| meta.file_size.clone()),
+                                        self.metadata.as_ref().map(|meta| meta.file_size),
                                     );
                                     self.send_naks()
                                 }
@@ -1615,7 +1613,7 @@ impl<T: FileStore> Transaction<T> {
             file_size: self
                 .metadata
                 .as_ref()
-                .map(|meta| meta.file_size.clone())
+                .map(|meta| meta.file_size)
                 .ok_or_else(|| TransactionError::MissingMetadata(id))?,
             source_filename: self
                 .metadata
@@ -2096,8 +2094,8 @@ mod test {
 
         assert_eq!(6, offset);
         assert_eq!(4, length);
-        transaction.update_naks(Some(file_size.clone()));
-        transaction.received_file_size = file_size.clone();
+        transaction.update_naks(Some(file_size));
+        transaction.received_file_size = file_size;
 
         let expected: VecDeque<SegmentRequestForm> = vec![
             SegmentRequestForm::from((0_u64, 0_u64)),
@@ -3594,10 +3592,10 @@ mod test {
         let nak_pdu = {
             let payload = PDUPayload::Directive(Operations::Nak(NegativeAcknowldegmentPDU {
                 start_of_scope: 0,
-                end_of_scope: total_size as u64,
+                end_of_scope: total_size,
                 segment_requests: vec![SegmentRequestForm {
                     start_offset: 0,
-                    end_offset: total_size as u64,
+                    end_offset: total_size,
                 }],
             }));
             let payload_len = payload
@@ -3618,10 +3616,7 @@ mod test {
         let expected_naks: VecDeque<SegmentRequestForm> = (0..total_size)
             .step_by(transaction.config.file_size_segment.into())
             .map(|num| {
-                if num
-                    < (total_size as u64)
-                        .saturating_sub(transaction.config.file_size_segment.into())
-                {
+                if num < total_size.saturating_sub(transaction.config.file_size_segment.into()) {
                     SegmentRequestForm {
                         start_offset: num,
                         end_offset: num + transaction.config.file_size_segment as u64,

@@ -1,6 +1,7 @@
 pub mod daemon;
 pub mod filestore;
 pub mod pdu;
+pub(crate) mod segments;
 pub(crate) mod timer;
 pub mod transaction;
 pub mod transport;

@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     error::Error,
     fmt::{self, Display},
     fs::{File, OpenOptions},
@@ -26,6 +26,7 @@ use crate::{
         SegmentationControl, SegmentedData, TransactionSeqNum, TransactionStatus, TransmissionMode,
         UnsegmentedFileData, UserOperation, UserResponse, VariableID, PDU, U3,
     },
+    segments,
     timer::Timer,
 };
 
@@ -220,10 +221,10 @@ pub struct Transaction<T: FileStore> {
     message_tx: Sender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
     /// The current file being worked by this Transaction.
     file_handle: Option<File>,
-    /// A mapping of offsets and segments lengths to monitor progress.
+    /// A sorted list of contiguous (start offset, end offset) to monitor progress.
     /// For a Receiver, these are the received segments.
     /// For a Sender, these are the sent segments.
-    saved_segments: BTreeMap<u64, u64>,
+    saved_segments: Vec<(u64, u64)>,
     /// The list of all missing information
     naks: VecDeque<SegmentRequestForm>,
     /// Flag to check if metadata on the file has been received
@@ -285,7 +286,7 @@ impl<T: FileStore> Transaction<T> {
             transport_tx,
             message_tx,
             file_handle: None,
-            saved_segments: BTreeMap::new(),
+            saved_segments: Vec::new(),
             naks: VecDeque::new(),
             metadata: None,
             received_file_size,
@@ -435,7 +436,8 @@ impl<T: FileStore> Transaction<T> {
             FileDataPDU::Unsegmented(data) => (data.offset, data.file_data),
         };
         let length = file_data.len();
-        {
+
+        if length > 0 {
             let handle = self.get_handle()?;
             handle
                 .seek(SeekFrom::Start(offset))
@@ -443,7 +445,15 @@ impl<T: FileStore> Transaction<T> {
             handle
                 .write_all(file_data.as_slice())
                 .map_err(FileStoreError::IO)?;
-            self.saved_segments.insert(offset, file_data.len() as u64);
+            segments::update_segments(
+                &mut self.saved_segments,
+                (offset, offset + file_data.len() as u64),
+            );
+        } else {
+            log::warn!(
+                "Received FileDataPDU with invalid file_data.length = {}; ignored",
+                length
+            );
         }
 
         Ok((offset, length))
@@ -592,14 +602,14 @@ impl<T: FileStore> Transaction<T> {
         if self.metadata.is_none() {
             naks.push_back((0_u64, 0_u64).into());
         }
-        self.saved_segments.iter().for_each(|(offset, length)| {
-            if offset > &pointer {
+        self.saved_segments.iter().for_each(|(start, end)| {
+            if start > &pointer {
                 naks.push_back(SegmentRequestForm {
                     start_offset: pointer,
-                    end_offset: *offset,
+                    end_offset: *start,
                 });
             }
-            pointer = offset + length;
+            pointer = *end;
         });
 
         if let Some(size) = file_size {
@@ -835,7 +845,7 @@ impl<T: FileStore> Transaction<T> {
         // the Enum types are guaranteed to match the FileSize flag, we just need to unwrap them.
         self.saved_segments
             .iter()
-            .fold(0_u64, |size, (_offset, length)| size + length)
+            .fold(0_u64, |size, (start, end)| size + (end - start))
     }
 
     fn send_finished(&mut self, fault_location: Option<VariableID>) -> TransactionResult<()> {

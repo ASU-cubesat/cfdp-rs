@@ -7,7 +7,7 @@ use std::{
 
 use crossbeam_channel::Sender;
 use interprocess::local_socket::LocalSocketStream;
-use log::info;
+use log::{debug, info};
 
 use super::{
     config::{Metadata, TransactionConfig, TransactionState, WaitingOn},
@@ -406,15 +406,18 @@ impl<T: FileStore> SendTransaction<T> {
         let pdu = PDU { header, payload };
 
         self.transport_tx.send((destination, pdu))?;
+        debug!("Transaction {0:?} sending EndOfFile.", self.id());
         Ok(())
     }
 
     pub fn abandon(&mut self) {
+        debug!("Transaction {0:?} abandoning.", self.id());
         self.status = TransactionStatus::Terminated;
         self.shutdown();
     }
 
     pub fn shutdown(&mut self) {
+        debug!("Transaction {0:?} shutting down.", self.id());
         self.state = TransactionState::Terminated;
         self.timer.ack.pause();
         self.timer.nak.pause();
@@ -422,6 +425,7 @@ impl<T: FileStore> SendTransaction<T> {
     }
 
     pub fn cancel(&mut self) -> TransactionResult<()> {
+        debug!("Transaction {0:?} canceling.", self.id());
         self.condition = Condition::CancelReceived;
         self._cancel()
     }
@@ -827,6 +831,7 @@ impl<T: FileStore> SendTransaction<T> {
         let pdu = PDU { header, payload };
 
         self.transport_tx.send((destination, pdu))?;
+        debug!("Transaction {0:?} sending Metadata.", self.id());
         Ok(())
     }
 

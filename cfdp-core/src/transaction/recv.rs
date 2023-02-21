@@ -6,6 +6,7 @@ use std::{
 };
 
 use crossbeam_channel::Sender;
+use log::{debug, warn};
 
 use super::{
     config::{Metadata, TransactionConfig, TransactionID, TransactionState, WaitingOn},
@@ -215,7 +216,7 @@ impl<T: FileStore> RecvTransaction<T> {
                 (offset, offset + file_data.len() as u64),
             );
         } else {
-            log::warn!(
+            warn!(
                 "Received FileDataPDU with invalid file_data.length = {}; ignored",
                 length
             );
@@ -277,11 +278,14 @@ impl<T: FileStore> RecvTransaction<T> {
     }
 
     pub fn abandon(&mut self) {
+        debug!("Transaction {0:?} abandoning.", self.id());
         self.status = TransactionStatus::Terminated;
         self.shutdown();
     }
 
     pub fn shutdown(&mut self) {
+        debug!("Transaction {0:?} shutting down.", self.id());
+
         self.state = TransactionState::Terminated;
         self.timer.ack.pause();
         self.timer.nak.pause();
@@ -289,6 +293,7 @@ impl<T: FileStore> RecvTransaction<T> {
     }
 
     pub fn cancel(&mut self) -> TransactionResult<()> {
+        debug!("Transaction {0:?} canceling.", self.id());
         self.condition = Condition::CancelReceived;
         self._cancel()
     }
@@ -593,6 +598,7 @@ impl<T: FileStore> RecvTransaction<T> {
                     PDUPayload::Directive(operation) => {
                         match operation {
                             Operations::EoF(eof) => {
+                                debug!("Trasaction {0:?} received EndOfFile.", self.id());
                                 self.condition = eof.condition;
                                 self.send_ack_eof()?;
                                 self.checksum = Some(eof.checksum);
@@ -637,6 +643,10 @@ impl<T: FileStore> RecvTransaction<T> {
                                     && ack.directive_subtype_code == ACKSubDirective::Finished
                                     && ack.condition == Condition::NoError
                                 {
+                                    debug!(
+                                        "Transaction {0:?} received Acknowledge Finished.",
+                                        self.id()
+                                    );
                                     self.timer.ack.pause();
                                     self.waiting_on = WaitingOn::None;
                                     self.shutdown();
@@ -655,6 +665,7 @@ impl<T: FileStore> RecvTransaction<T> {
                             }
                             Operations::Metadata(metadata) => {
                                 if self.metadata.is_none() {
+                                    debug!("Transaction {0:?} received Metadata.", self.id());
                                     let message_to_user =
                                         metadata.options.iter().filter_map(|op| match op {
                                             MetadataTLV::MessageToUser(req) => Some(req.clone()),

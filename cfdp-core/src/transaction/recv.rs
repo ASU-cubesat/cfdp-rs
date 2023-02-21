@@ -539,12 +539,8 @@ impl<T: FileStore> RecvTransaction<T> {
         if self.timer.nak.timeout_occured() && self.waiting_on == WaitingOn::Nak {
             return self.send_naks();
         }
-        if self.timer.ack.timeout_occured() {
-            match self.waiting_on {
-                WaitingOn::AckEof => unreachable!(),
-                WaitingOn::AckFin => return self.send_finished(None),
-                _ => {}
-            }
+        if self.timer.ack.timeout_occured() && self.waiting_on == WaitingOn::AckFin {
+            return self.send_finished(None);
         }
         Ok(())
     }

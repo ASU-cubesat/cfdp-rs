@@ -1,4 +1,4 @@
-use std::{num::TryFromIntError, sync::PoisonError};
+use std::num::TryFromIntError;
 
 use crossbeam_channel::SendError;
 use thiserror::Error;
@@ -28,9 +28,6 @@ pub enum TransactionError {
 
     #[error("Error during daemon thread listening: {0}")]
     Daemon(String),
-
-    #[error("Thread lock poisoining.")]
-    Poison,
 
     #[error("Error converting from integer: {0}")]
     IntConverstion(#[from] TryFromIntError),
@@ -66,10 +63,5 @@ impl From<SendError<(VariableID, PDU)>> for TransactionError {
 impl From<SendError<(TransactionID, TransmissionMode, Vec<MessageToUser>)>> for TransactionError {
     fn from(error: SendError<(TransactionID, TransmissionMode, Vec<MessageToUser>)>) -> Self {
         Self::UserMessage(Box::new(error))
-    }
-}
-impl<T> From<PoisonError<T>> for TransactionError {
-    fn from(_: PoisonError<T>) -> Self {
-        Self::Poison
     }
 }

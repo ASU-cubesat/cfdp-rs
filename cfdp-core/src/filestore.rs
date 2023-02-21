@@ -1,6 +1,5 @@
 use std::{
-    error::Error,
-    fmt::{self, Display, Write as _Write},
+    fmt::Write as _Write,
     fs::{self, File, OpenOptions},
     io::{Error as IOError, ErrorKind, Read, Seek, Write},
     str::Utf8Error,
@@ -11,6 +10,7 @@ use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
 use num_derive::FromPrimitive;
 use pathdiff::diff_paths;
 use tempfile::tempfile;
+use thiserror::Error;
 
 pub use crate::pdu::{
     AppendStatus, CreateDirectoryStatus, CreateFileStatus, DeleteFileStatus, DenyStatus,
@@ -55,63 +55,20 @@ fn normalize_path(path: &Utf8Path) -> Utf8PathBuf {
 }
 
 pub type FileStoreResult<T> = Result<T, FileStoreError>;
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub enum FileStoreError {
-    IO(IOError),
-    Format(std::fmt::Error),
-    SystemTime(SystemTimeError),
+    #[error("File data storage error: {0}")]
+    IO(#[from] IOError),
+    #[error("Error Formating String: {0}")]
+    Format(#[from] std::fmt::Error),
+    #[error("Error getting SystemTime: {0}")]
+    SystemTime(#[from] SystemTimeError),
+    #[error("Cannot find relative path between {0:} and {1:}.")]
     PathDiff(String, String),
-    UTF8(Utf8Error),
-}
-impl Display for FileStoreError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::IO(source) => source.fmt(f),
-            Self::Format(source) => source.fmt(f),
-            Self::SystemTime(source) => source.fmt(f),
-            Self::PathDiff(source1, source2) => {
-                write!(
-                    f,
-                    "Cannot find relative path between {source1} and {source2}.",
-                )
-            }
-            Self::UTF8(source) => source.fmt(f),
-        }
-    }
-}
-impl Error for FileStoreError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::IO(source) => Some(source),
-            Self::Format(source) => Some(source),
-            Self::SystemTime(source) => Some(source),
-            Self::PathDiff(_, _) => None,
-            Self::UTF8(source) => Some(source),
-        }
-    }
+    #[error("Error converting string from UTF-8: {0:}")]
+    UTF8(#[from] Utf8Error),
 }
 
-impl From<std::io::Error> for FileStoreError {
-    fn from(err: std::io::Error) -> Self {
-        Self::IO(err)
-    }
-}
-
-impl From<std::fmt::Error> for FileStoreError {
-    fn from(err: std::fmt::Error) -> Self {
-        Self::Format(err)
-    }
-}
-impl From<SystemTimeError> for FileStoreError {
-    fn from(err: SystemTimeError) -> Self {
-        Self::SystemTime(err)
-    }
-}
-impl From<Utf8Error> for FileStoreError {
-    fn from(err: Utf8Error) -> Self {
-        Self::UTF8(err)
-    }
-}
 /// Defines any necessary actions a CFDP File Store implementation
 /// must perform. Assumes any FileStore has a root path it operates retalive to.
 pub trait FileStore {

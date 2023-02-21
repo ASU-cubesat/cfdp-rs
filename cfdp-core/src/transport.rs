@@ -14,44 +14,17 @@ use crossbeam_channel::{Receiver, Sender};
 use log::error;
 #[cfg(feature = "uart")]
 use serialport::{Error as SerialError, SerialPort};
+use thiserror::Error;
 
 use crate::pdu::{PDUEncode, VariableID, PDU};
 
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub enum TransportError {
-    Io(IoError),
+    #[error("IO error during transport operation: {0}")]
+    Io(#[from] IoError),
     #[cfg(feature = "uart")]
-    Serial(SerialError),
-}
-impl std::fmt::Display for TransportError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io(error) => error.fmt(f),
-            #[cfg(feature = "uart")]
-            Self::Serial(error) => error.fmt(f),
-        }
-    }
-}
-impl std::error::Error for TransportError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Io(source) => Some(source),
-            #[cfg(feature = "uart")]
-            Self::Serial(source) => Some(source),
-        }
-    }
-}
-
-impl From<IoError> for TransportError {
-    fn from(err: IoError) -> Self {
-        Self::Io(err)
-    }
-}
-#[cfg(feature = "uart")]
-impl From<SerialError> for TransportError {
-    fn from(err: SerialError) -> Self {
-        Self::Serial(err)
-    }
+    #[cfg_attr(feature = "uart", error("Serial port communcation error {0:}"))]
+    Serial(#[from] SerialError),
 }
 
 /// Transports are designed to run in a thread in the background

@@ -12,7 +12,7 @@ use num_derive::FromPrimitive;
 use pathdiff::diff_paths;
 use tempfile::tempfile;
 
-use crate::pdu::{
+pub use crate::pdu::{
     AppendStatus, CreateDirectoryStatus, CreateFileStatus, DeleteFileStatus, DenyStatus,
     FileStoreAction, FileStoreRequest, FileStoreResponse, FileStoreStatus, RemoveDirectoryStatus,
     RenameStatus, ReplaceStatus,

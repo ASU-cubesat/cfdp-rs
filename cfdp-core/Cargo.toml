@@ -21,6 +21,7 @@ pathdiff = "~0.2"
 serialport = { version = "~4.2", optional = true }
 signal-hook = "~0.3"
 tempfile = "~3.3"
+thiserror = "~1.0"
 timer = "~0.2"
 
 [dev-dependencies]

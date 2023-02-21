@@ -829,14 +829,14 @@ impl FSSEncode for SegmentRequestForm {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NegativeAcknowldegmentPDU {
+pub struct NegativeAcknowledgmentPDU {
     pub start_of_scope: u64,
     pub end_of_scope: u64,
     // 2 x FileSizeSensitive x N length for N requests.
     pub segment_requests: Vec<SegmentRequestForm>,
 }
-type NakPDU = NegativeAcknowldegmentPDU;
-impl FSSEncode for NegativeAcknowldegmentPDU {
+type NakPDU = NegativeAcknowledgmentPDU;
+impl FSSEncode for NegativeAcknowledgmentPDU {
     type PDUType = Self;
 
     fn encode(self, file_size_flag: FileSizeFlag) -> Vec<u8> {

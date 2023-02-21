@@ -32,8 +32,8 @@ use crate::{
         PDU,
     },
     transaction::{
-        Action, Metadata, Transaction, TransactionConfig, TransactionError, TransactionID,
-        TransactionState,
+        Metadata, RecvTransaction, SendTransaction, TransactionConfig, TransactionError,
+        TransactionID, TransactionState,
     },
     transport::PDUTransport,
 };
@@ -641,7 +641,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         let (transaction_tx, transaction_rx) = unbounded();
 
         let config = TransactionConfig {
-            action_type: Action::Receive,
             source_entity_id: header.source_entity_id,
             destination_entity_id: header.destination_entity_id,
             transmission_mode: header.transmission_mode.clone(),
@@ -661,7 +660,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             "({:?}, {:?})",
             &config.source_entity_id, &config.sequence_number
         );
-        let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
+        let mut transaction = RecvTransaction::new(config, filestore, transport_tx, message_tx);
         let id = transaction.id();
 
         let handle = thread::Builder::new().name(name).spawn(move || {
@@ -679,10 +678,8 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                             Command::Pdu(pdu) => {
                                 match transaction.process_pdu(pdu) {
                                     Ok(()) => {}
-                                    Err(crate::transaction::TransactionError::UnexpectedPDU(
-                                        info,
-                                    )) => {
-                                        info!("Recieved Unexpected PDU: {:?}", info);
+                                    Err(err @ TransactionError::UnexpectedPDU(..)) => {
+                                        info!("Recieved Unexpected PDU: {err}");
                                         // log some info on the unexpected PDU?
                                     }
                                     Err(err) => return Err(err),
@@ -737,7 +734,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         transport_tx: Sender<(EntityID, PDU)>,
         entity_config: EntityConfig,
         filestore: Arc<T>,
-        message_tx: Sender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
         send_proxy_response: bool,
     ) -> Result<SpawnerTuple, Box<dyn std::error::Error>> {
         let (transaction_tx, transaction_rx) = unbounded();
@@ -746,7 +742,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         let destination_entity_id = request.destination_entity_id;
         let transmission_mode = request.transmission_mode.clone();
         let mut config = TransactionConfig {
-            action_type: Action::Send,
             source_entity_id,
             destination_entity_id,
             transmission_mode,
@@ -781,7 +776,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                     false => FileSizeFlag::Large,
                 };
 
-                let mut transaction = Transaction::new(config, filestore, transport_tx, message_tx);
+                let mut transaction = SendTransaction::new(config, filestore, transport_tx);
                 transaction.put(metadata)?;
 
                 while transaction.get_state() != &TransactionState::Terminated {
@@ -808,13 +803,9 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                 Command::Pdu(pdu) => {
                                     match transaction.process_pdu(pdu) {
                                         Ok(()) => {}
-                                        Err(
-                                            crate::transaction::TransactionError::UnexpectedPDU(
-                                                _info,
-                                            ),
-                                        ) => {
+                                        Err(err @ TransactionError::UnexpectedPDU(..)) => {
+                                            info!("Recieved Unexpected PDU: {err}");
                                             // log some info on the unexpected PDU?
-                                            info!("Unexpected PDU {_info:?}");
                                         }
                                         Err(err) => {
                                             return Err(err);
@@ -900,7 +891,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                     transport_tx,
                                     entity_config,
                                     self.filestore.clone(),
-                                    self.message_tx.clone(),
                                     true,
                                 )?;
                                 self.proxy_id_map.insert(origin_id, id);
@@ -1021,7 +1011,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                                     transport_tx,
                                                     entity_config,
                                                     self.filestore.clone(),
-                                                    self.message_tx.clone(),
                                                     false,
                                                 )?;
 
@@ -1104,7 +1093,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                             transport_tx,
                                             entity_config,
                                             self.filestore.clone(),
-                                            self.message_tx.clone(),
                                             false,
                                         )?;
 
@@ -1177,7 +1165,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                             transport_tx,
                                             entity_config,
                                             self.filestore.clone(),
-                                            self.message_tx.clone(),
                                             false,
                                         )?;
 
@@ -1250,7 +1237,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                             transport_tx,
                                             entity_config,
                                             self.filestore.clone(),
-                                            self.message_tx.clone(),
                                             false,
                                         )?;
 
@@ -1431,7 +1417,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                 transport_tx,
                                 entity_config,
                                 self.filestore.clone(),
-                                self.message_tx.clone(),
                                 false,
                             )?;
 

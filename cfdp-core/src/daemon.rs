@@ -1,7 +1,5 @@
 use std::{
     collections::HashMap,
-    error::Error,
-    fmt::Display,
     fs::{self, OpenOptions},
     io::{Error as IOError, ErrorKind, Read, Write},
     path::Path,
@@ -20,6 +18,7 @@ use interprocess::local_socket::LocalSocketListener;
 use itertools::{Either, Itertools};
 use log::{error, info};
 use num_traits::FromPrimitive;
+use thiserror::Error;
 
 use crate::{
     filestore::{ChecksumType, FileStore},
@@ -43,19 +42,24 @@ pub(crate) const SOCKET_ADDR: &str = "cfdp";
 #[cfg(not(windows))]
 pub(crate) const SOCKET_ADDR: &str = "/var/run/cfdp.socket";
 
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub enum PrimitiveError {
-    IO(IOError),
+    #[error("IO Error During Primitive execution: {0}")]
+    IO(#[from] IOError),
+
+    #[error("Unexpected value for User Primitive.")]
     UnexpextedPrimitive,
+
+    #[error("Error (en)de-coding PDU. {0}")]
     Encode(Box<PDUError>),
+
+    #[error("Error (en)de-coding Metadata. {0}")]
     Metadata(Box<TransactionError>),
-    Utf8(FromUtf8Error),
+
+    #[error("Invalid file path encoding. {0}")]
+    Utf8(#[from] FromUtf8Error),
 }
-impl From<IOError> for PrimitiveError {
-    fn from(err: IOError) -> Self {
-        Self::IO(err)
-    }
-}
+
 impl From<PDUError> for PrimitiveError {
     fn from(err: PDUError) -> Self {
         Self::Encode(Box::new(err))
@@ -64,40 +68,6 @@ impl From<PDUError> for PrimitiveError {
 impl From<TransactionError> for PrimitiveError {
     fn from(err: TransactionError) -> Self {
         Self::Metadata(Box::new(err))
-    }
-}
-
-impl From<FromUtf8Error> for PrimitiveError {
-    fn from(err: FromUtf8Error) -> Self {
-        Self::Utf8(err)
-    }
-}
-impl Display for PrimitiveError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::IO(err) => err.fmt(f),
-            Self::UnexpextedPrimitive => {
-                write!(f, "Unexpected value for User Primitive.")
-            }
-            Self::Encode(err) => err.fmt(f),
-            Self::Metadata(err) => {
-                write!(f, "Error (en)de-coding Metadata. {err}")
-            }
-            Self::Utf8(error) => {
-                write!(f, "Invalid file path encoding. {error}")
-            }
-        }
-    }
-}
-impl Error for PrimitiveError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::IO(source) => Some(source),
-            Self::UnexpextedPrimitive => None,
-            Self::Encode(source) => Some(source),
-            Self::Metadata(source) => Some(source),
-            Self::Utf8(source) => Some(source),
-        }
     }
 }
 

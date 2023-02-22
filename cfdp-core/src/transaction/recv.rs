@@ -402,7 +402,6 @@ impl<T: FileStore> RecvTransaction<T> {
     }
 
     fn get_progress(&self) -> u64 {
-        // the Enum types are guaranteed to match the FileSize flag, we just need to unwrap them.
         self.saved_segments
             .iter()
             .fold(0_u64, |size, (start, end)| size + (end - start))

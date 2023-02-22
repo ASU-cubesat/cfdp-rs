@@ -451,15 +451,10 @@ impl<T: FileStore> SendTransaction<T> {
 
     pub fn resume(&mut self) {
         self.timer.restart_inactivity();
-        match self.waiting_on {
-            WaitingOn::AckEof | WaitingOn::AckFin => self.timer.restart_ack(),
-            WaitingOn::Nak => self.timer.restart_nak(),
-            _ => {}
+        if self.waiting_on == WaitingOn::AckEof {
+            self.timer.restart_ack();
         }
         self.state = TransactionState::Active;
-
-        // what to do about the other timers?
-        // We need to track if one is needed?
     }
 
     /// Take action according to the defined handler mapping.
@@ -1412,10 +1407,6 @@ mod test {
         transaction.waiting_on = WaitingOn::AckEof;
         transaction.resume();
         assert!(transaction.timer.ack.is_ticking());
-
-        transaction.waiting_on = WaitingOn::Nak;
-        transaction.resume();
-        assert!(transaction.timer.nak.is_ticking());
     }
 
     #[rstest]

@@ -31,16 +31,6 @@ pub enum TransactionState {
     Terminated,
 }
 
-#[repr(u8)]
-#[derive(Debug, Clone, Copy)]
-/// The Action type of a [Transaction] entity.
-pub enum Action {
-    /// Sending a file to another Entity.
-    Send,
-    /// Receiving a file from another Entity.
-    Receive,
-}
-
 #[cfg_attr(test, derive(Debug, Clone, PartialEq))]
 pub struct Metadata {
     /// Bytes of the source filename, can be null if length is 0.

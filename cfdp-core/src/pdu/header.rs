@@ -55,7 +55,7 @@ pub enum Direction {
 }
 
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum TransmissionMode {
     Acknowledged = 0,
     Unacknowledged = 1,

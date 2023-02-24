@@ -746,8 +746,9 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                     false => FileSizeFlag::Large,
                 };
 
-                let mut transaction = SendTransaction::new(config, filestore, transport_tx);
-                transaction.put(metadata)?;
+                let mut transaction =
+                    SendTransaction::new(config, metadata, filestore, transport_tx);
+                transaction.start()?;
 
                 while transaction.get_state() != &TransactionState::Terminated {
                     // this function handles any timeouts and resends

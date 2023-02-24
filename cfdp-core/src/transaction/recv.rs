@@ -157,7 +157,7 @@ impl<T: FileStore> RecvTransaction<T> {
                 version: U3::One,
                 pdu_type,
                 direction,
-                transmission_mode: self.config.transmission_mode.clone(),
+                transmission_mode: self.config.transmission_mode,
                 crc_flag: self.config.crc_flag,
                 large_file_flag: self.config.file_size_flag,
                 pdu_data_field_length,
@@ -633,7 +633,7 @@ impl<T: FileStore> RecvTransaction<T> {
                             Operations::Finished(_finished) => {
                                 Err(TransactionError::UnexpectedPDU(
                                     self.config.sequence_number,
-                                    self.config.transmission_mode.clone(),
+                                    self.config.transmission_mode,
                                     "Finished".to_owned(),
                                 ))
                             }
@@ -654,7 +654,7 @@ impl<T: FileStore> RecvTransaction<T> {
                                     // No other ACKs are expected for a receiver
                                     Err(TransactionError::UnexpectedPDU(
                                         self.config.sequence_number,
-                                        self.config.transmission_mode.clone(),
+                                        self.config.transmission_mode,
                                         format!(
                                             "ACK PDU: ({:?}, {:?})",
                                             ack.directive, ack.directive_subtype_code
@@ -673,7 +673,7 @@ impl<T: FileStore> RecvTransaction<T> {
                                     // push each request up to the Daemon
                                     self.message_tx.send((
                                         self.id(),
-                                        self.config.transmission_mode.clone(),
+                                        self.config.transmission_mode,
                                         message_to_user.clone().collect(),
                                     ))?;
 
@@ -729,7 +729,7 @@ impl<T: FileStore> RecvTransaction<T> {
                             }
                             Operations::Nak(_nak) => Err(TransactionError::UnexpectedPDU(
                                 self.config.sequence_number,
-                                self.config.transmission_mode.clone(),
+                                self.config.transmission_mode,
                                 "NAK PDU".to_owned(),
                             )),
                             Operations::Prompt(prompt) => match prompt.nak_or_keep_alive {
@@ -766,7 +766,7 @@ impl<T: FileStore> RecvTransaction<T> {
                             Operations::KeepAlive(_keepalive) => {
                                 Err(TransactionError::UnexpectedPDU(
                                     self.config.sequence_number,
-                                    self.config.transmission_mode.clone(),
+                                    self.config.transmission_mode,
                                     "KeepAlive PDU".to_owned(),
                                 ))
                             }
@@ -803,7 +803,7 @@ impl<T: FileStore> RecvTransaction<T> {
                                     // No other ACKs are expected for a receiver
                                     Err(TransactionError::UnexpectedPDU(
                                         self.config.sequence_number,
-                                        self.config.transmission_mode.clone(),
+                                        self.config.transmission_mode,
                                         format!(
                                             "ACK PDU: ({:?}, {:?})",
                                             ack.directive, ack.directive_subtype_code
@@ -852,7 +852,7 @@ impl<T: FileStore> RecvTransaction<T> {
                                     // push each request up to the Daemon
                                     self.message_tx.send((
                                         self.id(),
-                                        self.config.transmission_mode.clone(),
+                                        self.config.transmission_mode,
                                         message_to_user.clone().collect(),
                                     ))?;
 
@@ -889,25 +889,25 @@ impl<T: FileStore> RecvTransaction<T> {
                             Operations::Finished(_finished) => {
                                 Err(TransactionError::UnexpectedPDU(
                                     self.config.sequence_number,
-                                    self.config.transmission_mode.clone(),
+                                    self.config.transmission_mode,
                                     "Finished".to_owned(),
                                 ))
                             }
                             Operations::KeepAlive(_keepalive) => {
                                 Err(TransactionError::UnexpectedPDU(
                                     self.config.sequence_number,
-                                    self.config.transmission_mode.clone(),
+                                    self.config.transmission_mode,
                                     "Keep Alive".to_owned(),
                                 ))
                             }
                             Operations::Prompt(_prompt) => Err(TransactionError::UnexpectedPDU(
                                 self.config.sequence_number,
-                                self.config.transmission_mode.clone(),
+                                self.config.transmission_mode,
                                 "Prompt".to_owned(),
                             )),
                             Operations::Nak(_nak) => Err(TransactionError::UnexpectedPDU(
                                 self.config.sequence_number,
-                                self.config.transmission_mode.clone(),
+                                self.config.transmission_mode,
                                 "NAK PDU".to_owned(),
                             )),
                         }
@@ -1781,7 +1781,7 @@ mod test {
         let (transport_tx, transport_rx) = unbounded();
         let (message_tx, _) = unbounded();
         let mut config = default_config.clone();
-        config.transmission_mode = transmission_mode.clone();
+        config.transmission_mode = transmission_mode;
 
         let expected_id = config.source_entity_id;
 

@@ -388,7 +388,7 @@ fn get_proxy_request(origin_id: &TransactionID, messages: &[ProxyOperation]) -> 
         let transmission_mode = messages
             .iter()
             .find_map(|msg| match msg {
-                ProxyOperation::ProxyTransmissionMode(mode) => Some(mode.clone()),
+                ProxyOperation::ProxyTransmissionMode(mode) => Some(*mode),
                 _ => None,
             })
             .unwrap_or(TransmissionMode::Unacknowledged);
@@ -613,7 +613,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         let config = TransactionConfig {
             source_entity_id: header.source_entity_id,
             destination_entity_id: header.destination_entity_id,
-            transmission_mode: header.transmission_mode.clone(),
+            transmission_mode: header.transmission_mode,
             sequence_number: header.transaction_sequence_number,
             file_size_flag: header.large_file_flag,
             fault_handler_override: entity_config.fault_handler_override.clone(),
@@ -710,7 +710,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         let id = (source_entity_id, sequence_number);
 
         let destination_entity_id = request.destination_entity_id;
-        let transmission_mode = request.transmission_mode.clone();
+        let transmission_mode = request.transmission_mode;
         let mut config = TransactionConfig {
             source_entity_id,
             destination_entity_id,
@@ -912,7 +912,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                                     source_filename: outfile,
                                                     destination_filename: directory_request.directory_filename.clone(),
                                                     destination_entity_id: origin_id.0,
-                                                    transmission_mode: tx_mode.clone(),
+                                                    transmission_mode: tx_mode,
                                                     filestore_requests: vec![],
                                                     message_to_user: vec![
                                                         MessageToUser::from(
@@ -938,7 +938,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                                 source_filename: "".into(),
                                                 destination_filename: "".into(),
                                                 destination_entity_id: origin_id.0,
-                                                transmission_mode: tx_mode.clone(),
+                                                transmission_mode: tx_mode,
                                                 filestore_requests: vec![],
                                                 message_to_user: vec![
                                                     MessageToUser::from(
@@ -1026,7 +1026,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                             source_filename: "".into(),
                                             destination_filename: "".into(),
                                             destination_entity_id: origin_id.0,
-                                            transmission_mode: tx_mode.clone(),
+                                            transmission_mode: tx_mode,
                                             filestore_requests: vec![],
                                             message_to_user: vec![
                                                 MessageToUser::from(
@@ -1087,7 +1087,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                             source_filename: "".into(),
                                             destination_filename: "".into(),
                                             destination_entity_id: origin_id.0,
-                                            transmission_mode: tx_mode.clone(),
+                                            transmission_mode: tx_mode,
                                             filestore_requests: vec![],
                                             message_to_user: vec![
                                                 MessageToUser::from(
@@ -1159,7 +1159,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                             source_filename: "".into(),
                                             destination_filename: "".into(),
                                             destination_entity_id: origin_id.0,
-                                            transmission_mode: tx_mode.clone(),
+                                            transmission_mode: tx_mode,
                                             filestore_requests: vec![],
                                             message_to_user: vec![
                                                 MessageToUser::from(

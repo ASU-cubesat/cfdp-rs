@@ -122,7 +122,7 @@ impl<T: FileStore> SendTransaction<T> {
     }
 
     pub fn get_mode(&self) -> TransmissionMode {
-        self.config.transmission_mode.clone()
+        self.config.transmission_mode
     }
     pub fn generate_report(&self) -> Report {
         Report {
@@ -153,7 +153,7 @@ impl<T: FileStore> SendTransaction<T> {
                 version: U3::One,
                 pdu_type,
                 direction,
-                transmission_mode: self.config.transmission_mode.clone(),
+                transmission_mode: self.config.transmission_mode,
                 crc_flag: self.config.crc_flag,
                 large_file_flag: self.config.file_size_flag,
                 pdu_data_field_length,
@@ -519,23 +519,23 @@ impl<T: FileStore> SendTransaction<T> {
                 match payload {
                     PDUPayload::FileData(_data) => Err(TransactionError::UnexpectedPDU(
                         self.config.sequence_number,
-                        self.config.transmission_mode.clone(),
+                        self.config.transmission_mode,
                         "File Data".to_owned(),
                     )),
                     PDUPayload::Directive(operation) => match operation {
                         Operations::EoF(_eof) => Err(TransactionError::UnexpectedPDU(
                             self.config.sequence_number,
-                            self.config.transmission_mode.clone(),
+                            self.config.transmission_mode,
                             "End of File".to_owned(),
                         )),
                         Operations::Metadata(_metadata) => Err(TransactionError::UnexpectedPDU(
                             self.config.sequence_number,
-                            self.config.transmission_mode.clone(),
+                            self.config.transmission_mode,
                             "Metadata PDU".to_owned(),
                         )),
                         Operations::Prompt(_prompt) => Err(TransactionError::UnexpectedPDU(
                             self.config.sequence_number,
-                            self.config.transmission_mode.clone(),
+                            self.config.transmission_mode,
                             "Prompt PDU".to_owned(),
                         )),
                         Operations::Finished(finished) => {
@@ -651,7 +651,7 @@ impl<T: FileStore> SendTransaction<T> {
                             } else {
                                 Err(TransactionError::UnexpectedPDU(
                                     self.config.sequence_number,
-                                    self.config.transmission_mode.clone(),
+                                    self.config.transmission_mode,
                                     format!("ACK {:?}", ack.directive),
                                 ))
                             }
@@ -666,33 +666,33 @@ impl<T: FileStore> SendTransaction<T> {
             TransmissionMode::Unacknowledged => match payload {
                 PDUPayload::FileData(_data) => Err(TransactionError::UnexpectedPDU(
                     self.config.sequence_number,
-                    self.config.transmission_mode.clone(),
+                    self.config.transmission_mode,
                     "File Data".to_owned(),
                 )),
                 PDUPayload::Directive(operation) => match operation {
                     Operations::EoF(_eof) => Err(TransactionError::UnexpectedPDU(
                         self.config.sequence_number,
-                        self.config.transmission_mode.clone(),
+                        self.config.transmission_mode,
                         "End of File".to_owned(),
                     )),
                     Operations::Metadata(_metadata) => Err(TransactionError::UnexpectedPDU(
                         self.config.sequence_number,
-                        self.config.transmission_mode.clone(),
+                        self.config.transmission_mode,
                         "Metadata PDU".to_owned(),
                     )),
                     Operations::Prompt(_prompt) => Err(TransactionError::UnexpectedPDU(
                         self.config.sequence_number,
-                        self.config.transmission_mode.clone(),
+                        self.config.transmission_mode,
                         "Prompt PDU".to_owned(),
                     )),
                     Operations::Ack(_ack) => Err(TransactionError::UnexpectedPDU(
                         self.config.sequence_number,
-                        self.config.transmission_mode.clone(),
+                        self.config.transmission_mode,
                         "ACK PDU".to_owned(),
                     )),
                     Operations::KeepAlive(_keepalive) => Err(TransactionError::UnexpectedPDU(
                         self.config.sequence_number,
-                        self.config.transmission_mode.clone(),
+                        self.config.transmission_mode,
                         "Keep Alive PDU".to_owned(),
                     )),
                     Operations::Finished(finished) => match self.metadata.closure_requested {
@@ -711,13 +711,13 @@ impl<T: FileStore> SendTransaction<T> {
                         }
                         false => Err(TransactionError::UnexpectedPDU(
                             self.config.sequence_number,
-                            self.config.transmission_mode.clone(),
+                            self.config.transmission_mode,
                             "Prompt PDU".to_owned(),
                         )),
                     },
                     Operations::Nak(_) => Err(TransactionError::UnexpectedPDU(
                         self.config.sequence_number,
-                        self.config.transmission_mode.clone(),
+                        self.config.transmission_mode,
                         "NAK PDU".to_owned(),
                     )),
                 },

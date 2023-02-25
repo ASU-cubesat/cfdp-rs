@@ -129,7 +129,7 @@ impl<T: FileStore> SendTransaction<T> {
             id: self.id(),
             state: self.get_state().clone(),
             status: self.get_status().clone(),
-            condition: self.condition.clone(),
+            condition: self.condition,
         }
     }
     fn get_header(
@@ -360,7 +360,7 @@ impl<T: FileStore> SendTransaction<T> {
             return Ok(());
         }
         let eof = EndOfFile {
-            condition: self.condition.clone(),
+            condition: self.condition,
             checksum: self.get_checksum()?,
             file_size: self.metadata.file_size,
             fault_location,
@@ -466,7 +466,7 @@ impl<T: FileStore> SendTransaction<T> {
         let ack = PositiveAcknowledgePDU {
             directive: PDUDirective::Finished,
             directive_subtype_code: ACKSubDirective::Finished,
-            condition: self.condition.clone(),
+            condition: self.condition,
             transaction_status: self.status.clone(),
         };
         let payload = PDUPayload::Directive(Operations::Ack(ack));
@@ -489,7 +489,7 @@ impl<T: FileStore> SendTransaction<T> {
 
     pub fn get_proxy_response(&mut self) -> ProxyPutResponse {
         ProxyPutResponse {
-            condition: self.condition.clone(),
+            condition: self.condition,
             delivery_code: self.delivery_code.clone(),
             file_status: self.file_status.clone(),
         }

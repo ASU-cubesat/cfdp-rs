@@ -133,7 +133,7 @@ impl<T: FileStore> RecvTransaction<T> {
             id: self.id(),
             state: self.get_state().clone(),
             status: self.get_status().clone(),
-            condition: self.condition.clone(),
+            condition: self.condition,
         }
     }
     fn get_header(
@@ -372,7 +372,7 @@ impl<T: FileStore> RecvTransaction<T> {
         let ack = PositiveAcknowledgePDU {
             directive: PDUDirective::EoF,
             directive_subtype_code: ACKSubDirective::Other,
-            condition: self.condition.clone(),
+            condition: self.condition,
             transaction_status: self.status.clone(),
         };
         let payload = PDUPayload::Directive(Operations::Ack(ack));
@@ -417,7 +417,7 @@ impl<T: FileStore> RecvTransaction<T> {
             return Ok(());
         }
         let finished = Finished {
-            condition: self.condition.clone(),
+            condition: self.condition,
             delivery_code: self.delivery_code.clone(),
             file_status: self.file_status.clone(),
             filestore_response: self.filestore_response.clone(),

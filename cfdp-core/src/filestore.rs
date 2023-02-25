@@ -396,7 +396,7 @@ impl FileStore for NativeFileStore {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, FromPrimitive, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, FromPrimitive, PartialEq, Eq)]
 pub enum ChecksumType {
     Modular = 0,
     Null = 15,

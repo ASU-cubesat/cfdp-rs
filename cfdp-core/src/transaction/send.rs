@@ -179,7 +179,7 @@ impl<T: FileStore> SendTransaction<T> {
                 let checksum = {
                     match self.is_file_transfer() {
                         true => {
-                            let checksum_type = self.metadata.checksum_type.clone();
+                            let checksum_type = self.metadata.checksum_type;
                             self.get_handle()?.checksum(checksum_type)?
                         }
                         false => 0,
@@ -731,7 +731,7 @@ impl<T: FileStore> SendTransaction<T> {
         let destination = self.config.destination_entity_id;
         let metadata = MetadataPDU {
             closure_requested: self.metadata.closure_requested,
-            checksum_type: self.metadata.checksum_type.clone(),
+            checksum_type: self.metadata.checksum_type,
             file_size: self.metadata.file_size,
             source_filename: self.metadata.source_filename.as_str().as_bytes().to_vec(),
             destination_filename: self

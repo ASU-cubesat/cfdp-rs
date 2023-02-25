@@ -478,7 +478,7 @@ impl<T: FileStore> RecvTransaction<T> {
         let checksum_type = self
             .metadata
             .as_ref()
-            .map(|meta| meta.checksum_type.clone())
+            .map(|meta| meta.checksum_type)
             .ok_or_else(|| {
                 let id = self.id();
                 TransactionError::MissingMetadata(id)

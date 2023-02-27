@@ -11,8 +11,7 @@ uart = ["serialport"]
 byteorder = "~1.4"
 camino = {version = "~1.1", features=["serde1"]}
 chrono = {version = "~0.4", default-features=false, features=["std"]}
-crossbeam-channel = "~0.5"
-interprocess = "~1.2"
+interprocess = { version = "~1.2", features = ["tokio_support"] }
 itertools = "~0.10"
 log = '~0.4'
 num-derive = "0.3"
@@ -23,6 +22,8 @@ signal-hook = "~0.3"
 tempfile = "~3.3"
 thiserror = "~1.0"
 timer = "~0.2"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { versio="0.7", default-features=false, features = ["compat"] }
 
 [dev-dependencies]
 rstest = "0.15.0"

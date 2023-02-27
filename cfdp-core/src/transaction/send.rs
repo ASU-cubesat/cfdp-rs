@@ -3,6 +3,7 @@ use std::{
     fs::{File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     sync::Arc,
+    time::Duration,
 };
 
 use crossbeam_channel::Sender;
@@ -10,7 +11,7 @@ use interprocess::local_socket::LocalSocketStream;
 use log::{debug, info};
 
 use super::{
-    config::{Metadata, TransactionConfig, TransactionState, WaitingOn},
+    config::{Metadata, TransactionConfig, TransactionState},
     error::{TransactionError, TransactionResult},
 };
 use crate::{
@@ -27,6 +28,21 @@ use crate::{
     timer::Timer,
 };
 
+#[derive(PartialEq, Debug)]
+enum SendState {
+    // initial state
+    // send the metadata and then go to SendData (if file transfer) or directly to SendEof
+    SendMetadata,
+    // send data until finished then go to SendEof
+    SendData,
+    // send EOF and wait for ack, then go to Finished
+    SendEof,
+    // send EOF and wait for ack, then go to Finished
+    Cancelled,
+    // wait for Finished and send ack
+    Finished,
+}
+
 pub struct SendTransaction<T: FileStore> {
     /// The current status of the Transaction. See [TransactionStatus]
     status: TransactionStatus,
@@ -34,8 +50,6 @@ pub struct SendTransaction<T: FileStore> {
     config: TransactionConfig,
     /// The [FileStore] implementation used to interact with files on disk.
     filestore: Arc<T>,
-    /// Channel used to send outgoing PDUs through the Transport layer.
-    transport_tx: Sender<(VariableID, PDU)>,
     /// The current file being worked by this Transaction.
     file_handle: Option<File>,
     /// The list of all missing information
@@ -59,26 +73,26 @@ pub struct SendTransaction<T: FileStore> {
     // checksum cache to reduce I/0
     // doubles as stored checksum in received mode
     checksum: Option<u32>,
-    // tracker to know what to do when a timeout occurs
-    waiting_on: WaitingOn,
-    // The current state of the transaction.
+    // The current general state of the transaction.
     // Used to determine when the thread should be killed
     state: TransactionState,
-    // a tracker for sending the first EoF
-    do_once: bool,
+    // The detailed sub-state valid when state = TransactionState::Active
+    // Used to control the state machine
+    send_state: SendState,
+    // EoF prepared to be sent at the next opportunity if the bool is true
+    eof: Option<(EndOfFile, bool)>,
+    ack: Option<PositiveAcknowledgePDU>,
 }
 impl<T: FileStore> SendTransaction<T> {
     /// Start a new SendTransaction with the given [configuration](TransactionConfig)
     /// and [Filestore Implementation](FileStore)
     pub fn new(
-        // Configuation of this Transaction.
+        // Configuration of this Transaction.
         config: TransactionConfig,
         // Metadata of this Transaction
         metadata: Metadata,
         // Connection to the local FileStore implementation.
         filestore: Arc<T>,
-        // Sender channel connected to the Transport thread to send PDUs.
-        transport_tx: Sender<(VariableID, PDU)>,
     ) -> Self {
         let received_file_size = 0_u64;
         let timer = Timer::new(
@@ -90,11 +104,10 @@ impl<T: FileStore> SendTransaction<T> {
             config.max_count,
         );
 
-        let mut transaction = Self {
+        Self {
             status: TransactionStatus::Undefined,
             config,
             filestore,
-            transport_tx,
             file_handle: None,
             naks: VecDeque::new(),
             metadata,
@@ -105,12 +118,114 @@ impl<T: FileStore> SendTransaction<T> {
             file_status: FileStatusCode::Unreported,
             timer,
             checksum: None,
-            waiting_on: WaitingOn::None,
+            send_state: SendState::SendMetadata,
             state: TransactionState::Active,
-            do_once: true,
+            eof: None,
+            ack: None,
+        }
+    }
+
+    pub(crate) fn has_pdu_to_send(&self) -> bool {
+        match self.send_state {
+            SendState::SendMetadata | SendState::SendData => true,
+            SendState::SendEof => !self.naks.is_empty() || self.eof.as_ref().map_or(false, |x| x.1),
+            SendState::Cancelled => self.eof.as_ref().map_or(false, |x| x.1),
+            SendState::Finished => self.ack.is_some(),
+        }
+    }
+
+    // returns the time until the first timeout (inactivity or ack)
+    pub(crate) fn until_timeout(&self) -> Duration {
+        match self.send_state {
+            SendState::SendEof | SendState::Cancelled => self.timer.until_timeout(),
+            _ => Duration::MAX,
+        }
+    }
+
+    pub(crate) fn send_pdu(
+        &mut self,
+        transport_tx: &Sender<(VariableID, PDU)>,
+    ) -> TransactionResult<()> {
+        match self.send_state {
+            SendState::SendMetadata => {
+                self.send_metadata(transport_tx)?;
+                if self.is_file_transfer() {
+                    self.send_state = SendState::SendData;
+                } else {
+                    self.prepare_eof(None)?;
+                    self.send_state = SendState::SendEof;
+                }
+            }
+            SendState::SendData => {
+                while !transport_tx.is_full() {
+                    if !self.naks.is_empty() {
+                        // if we have received a NAK send the missing data
+                        self.send_missing_data(transport_tx)?;
+                    } else {
+                        self.send_file_segment(None, None, transport_tx)?
+                    }
+
+                    let handle = self.get_handle()?;
+                    if handle.stream_position().map_err(FileStoreError::IO)?
+                        == handle.metadata().map_err(FileStoreError::IO)?.len()
+                    {
+                        self.prepare_eof(None)?;
+                        self.send_state = SendState::SendEof;
+                        break;
+                    }
+                }
+            }
+            SendState::SendEof => {
+                if !self.naks.is_empty() {
+                    // if we have received a NAK send the missing data
+                    self.send_missing_data(transport_tx)?;
+                } else {
+                    self.send_eof(transport_tx)?;
+                    if self.get_mode() == TransmissionMode::Unacknowledged {
+                        self.shutdown();
+                    }
+                }
+            }
+            SendState::Cancelled => {
+                self.send_eof(transport_tx)?;
+            }
+            SendState::Finished => {
+                self.send_ack(transport_tx)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn handle_timeout(&mut self) -> TransactionResult<()> {
+        match self.send_state {
+            SendState::SendEof => {
+                if self.timer.inactivity.limit_reached() {
+                    self.handle_fault(Condition::InactivityDetected)?
+                }
+                if self.timer.ack.timeout_occured() {
+                    if self.timer.ack.limit_reached() {
+                        self.handle_fault(Condition::PositiveLimitReached)?
+                    } else {
+                        self.set_eof_flag(true);
+                    }
+                }
+            }
+            SendState::Cancelled => {
+                if self.timer.inactivity.limit_reached() {
+                    self.abandon();
+                }
+                if self.timer.ack.timeout_occured() {
+                    if self.timer.ack.limit_reached() {
+                        self.abandon();
+                    } else {
+                        self.set_eof_flag(true);
+                    }
+                }
+            }
+            _ => {}
         };
-        transaction.timer.restart_inactivity();
-        transaction
+
+        Ok(())
     }
 
     pub fn get_status(&self) -> &TransactionStatus {
@@ -194,7 +309,6 @@ impl<T: FileStore> SendTransaction<T> {
     fn open_source_file(&mut self) -> TransactionResult<()> {
         self.file_handle = {
             let fname = &self.metadata.source_filename;
-
             Some(self.filestore.open(fname, OpenOptions::new().read(true))?)
         };
         Ok(())
@@ -256,8 +370,8 @@ impl<T: FileStore> SendTransaction<T> {
         &mut self,
         offset: Option<u64>,
         length: Option<u16>,
+        transport_tx: &Sender<(VariableID, PDU)>,
     ) -> TransactionResult<()> {
-        self.timer.restart_inactivity();
         let (offset, file_data) = self.get_file_segment(offset, length)?;
 
         let (data, segmentation_control) = match self.config.segment_metadata_flag {
@@ -277,6 +391,7 @@ impl<T: FileStore> SendTransaction<T> {
             .encode(self.config.file_size_flag)
             .len()
             .try_into()?;
+
         let header = self.get_header(
             Direction::ToReceiver,
             PDUType::FileData,
@@ -285,39 +400,15 @@ impl<T: FileStore> SendTransaction<T> {
         );
         let pdu = PDU { header, payload };
 
-        self.transport_tx.send((destination, pdu))?;
+        transport_tx.send((destination, pdu))?;
 
         Ok(())
     }
 
-    pub fn all_data_sent(&mut self) -> TransactionResult<bool> {
-        match self.is_file_transfer() {
-            true => match self.condition == Condition::NoError {
-                true => {
-                    let handle = self.get_handle()?;
-                    let eof = handle.stream_position().map_err(FileStoreError::IO)?
-                        == handle.metadata().map_err(FileStoreError::IO)?.len();
-                    if eof && self.do_once {
-                        self.send_eof(None)?;
-                        self.do_once = false;
-                    }
-                    Ok(eof)
-                }
-                // if we have been canceled or another error happened just say
-                // end of file reached
-                false => Ok(true),
-            },
-            false => {
-                if self.do_once {
-                    self.send_eof(None)?;
-                    self.do_once = false;
-                }
-                Ok(true)
-            }
-        }
-    }
-
-    pub fn send_missing_data(&mut self) -> TransactionResult<()> {
+    pub fn send_missing_data(
+        &mut self,
+        transport_tx: &Sender<(VariableID, PDU)>,
+    ) -> TransactionResult<()> {
         match self.naks.pop_front() {
             Some(request) => {
                 // only restart inactivity if we have something to do.
@@ -328,14 +419,14 @@ impl<T: FileStore> SendTransaction<T> {
                 );
 
                 match offset == 0 && length == 0 {
-                    true => self.send_metadata(),
+                    true => self.send_metadata(transport_tx),
                     false => {
                         let current_pos = {
                             let handle = self.get_handle()?;
                             handle.stream_position().map_err(FileStoreError::IO)?
                         };
 
-                        self.send_file_segment(Some(offset), Some(length))?;
+                        self.send_file_segment(Some(offset), Some(length), transport_tx)?;
 
                         // restore to original location in the file
                         let handle = self.get_handle()?;
@@ -350,39 +441,48 @@ impl<T: FileStore> SendTransaction<T> {
         }
     }
 
-    pub fn send_eof(&mut self, fault_location: Option<VariableID>) -> TransactionResult<()> {
-        self.timer.restart_ack();
-        self.waiting_on = WaitingOn::AckEof;
-        //  if is lazily evaluated so the fault is only handled if the limit is reached
-        if self.timer.ack.limit_reached()
-            && !self.proceed_despite_fault(Condition::PositiveLimitReached)?
-        {
-            return Ok(());
-        }
-        let eof = EndOfFile {
-            condition: self.condition,
-            checksum: self.get_checksum()?,
-            file_size: self.metadata.file_size,
-            fault_location,
-        };
+    fn prepare_eof(&mut self, fault_location: Option<VariableID>) -> TransactionResult<()> {
+        self.eof = Some((
+            EndOfFile {
+                condition: self.condition,
+                checksum: self.get_checksum()?,
+                file_size: self.metadata.file_size,
+                fault_location,
+            },
+            true,
+        ));
 
-        let payload = PDUPayload::Directive(Operations::EoF(eof));
-
-        let payload_len = payload.clone().encode(self.config.file_size_flag).len() as u16;
-
-        let header = self.get_header(
-            Direction::ToReceiver,
-            PDUType::FileDirective,
-            payload_len,
-            SegmentationControl::NotPreserved,
-        );
-
-        let destination = header.destination_entity_id;
-        let pdu = PDU { header, payload };
-
-        self.transport_tx.send((destination, pdu))?;
-        debug!("Transaction {0:?} sending EndOfFile.", self.id());
         Ok(())
+    }
+
+    pub fn send_eof(&mut self, transport_tx: &Sender<(VariableID, PDU)>) -> TransactionResult<()> {
+        if let Some((eof, true)) = &self.eof {
+            self.timer.restart_ack();
+
+            let payload = PDUPayload::Directive(Operations::EoF(eof.clone()));
+            let payload_len = payload.clone().encode(self.config.file_size_flag).len() as u16;
+            let header = self.get_header(
+                Direction::ToReceiver,
+                PDUType::FileDirective,
+                payload_len,
+                SegmentationControl::NotPreserved,
+            );
+
+            let destination = header.destination_entity_id;
+            let pdu = PDU { header, payload };
+
+            transport_tx.send((destination, pdu))?;
+            debug!("Transaction {0:?} sent EndOfFile.", self.id());
+            self.set_eof_flag(false);
+        }
+        Ok(())
+    }
+
+    // set the true flag on the eof such that it is sent at the next opportunity
+    fn set_eof_flag(&mut self, flag: bool) {
+        if let Some(x) = self.eof.as_mut() {
+            x.1 = flag;
+        }
     }
 
     pub fn abandon(&mut self) {
@@ -395,95 +495,98 @@ impl<T: FileStore> SendTransaction<T> {
         debug!("Transaction {0:?} shutting down.", self.id());
         self.state = TransactionState::Terminated;
         self.timer.ack.pause();
-        self.timer.nak.pause();
         self.timer.inactivity.pause();
     }
 
     pub fn cancel(&mut self) -> TransactionResult<()> {
-        debug!("Transaction {0:?} canceling.", self.id());
-        self.condition = Condition::CancelReceived;
-        self._cancel()
+        self._cancel(Condition::CancelReceived)
     }
 
-    fn _cancel(&mut self) -> TransactionResult<()> {
-        match &self.config.transmission_mode {
-            TransmissionMode::Acknowledged => self.send_eof(Some(self.config.source_entity_id)),
-            TransmissionMode::Unacknowledged => {
-                self.send_eof(Some(self.config.source_entity_id))?;
-                self.shutdown();
-                Ok(())
-            }
-        }
-        // make some kind of log/indication
+    fn _cancel(&mut self, condition: Condition) -> TransactionResult<()> {
+        self.timer.inactivity.pause();
+        self.condition = condition;
+        self.send_state = SendState::Cancelled;
+        self.prepare_eof(Some(self.config.source_entity_id))
     }
 
     pub fn suspend(&mut self) {
         self.timer.ack.pause();
-        self.timer.nak.pause();
         self.timer.inactivity.pause();
         self.state = TransactionState::Suspended;
     }
 
     pub fn resume(&mut self) {
-        self.timer.restart_inactivity();
-        if self.waiting_on == WaitingOn::AckEof {
-            self.timer.restart_ack();
+        match self.send_state {
+            SendState::SendEof | SendState::Cancelled => {
+                self.timer.restart_ack();
+                self.timer.restart_inactivity();
+            }
+            _ => {}
         }
+
         self.state = TransactionState::Active;
     }
 
     /// Take action according to the defined handler mapping.
     /// Returns a boolean indicating if the calling function should continue (true) or not (false.)
-    fn proceed_despite_fault(&mut self, condition: Condition) -> TransactionResult<bool> {
+    fn handle_fault(&mut self, condition: Condition) -> TransactionResult<()> {
         self.condition = condition;
-        match self
+        let action = self
             .config
             .fault_handler_override
             .get(&self.condition)
-            .unwrap_or(&FaultHandlerAction::Cancel)
-        {
-            FaultHandlerAction::Ignore => {
-                // Log ignoring error
-                Ok(true)
-            }
+            .unwrap_or(&FaultHandlerAction::Cancel);
+        info!(
+            "Transaction {:?} handling fault {:?}, action: {:?} ",
+            self.id(),
+            condition,
+            action
+        );
+
+        match action {
+            FaultHandlerAction::Ignore => {}
             FaultHandlerAction::Cancel => {
-                self._cancel()?;
-                Ok(false)
+                self._cancel(condition)?;
             }
 
             FaultHandlerAction::Suspend => {
                 self.suspend();
-                Ok(false)
             }
             FaultHandlerAction::Abandon => {
                 self.abandon();
-                Ok(false)
             }
         }
+        Ok(())
     }
 
-    fn send_ack_finished(&mut self) -> TransactionResult<()> {
-        let ack = PositiveAcknowledgePDU {
+    fn prepare_ack(&mut self) {
+        self.ack.replace(PositiveAcknowledgePDU {
             directive: PDUDirective::Finished,
             directive_subtype_code: ACKSubDirective::Finished,
             condition: self.condition,
             transaction_status: self.status.clone(),
-        };
-        let payload = PDUPayload::Directive(Operations::Ack(ack));
-        let payload_len = payload.clone().encode(self.config.file_size_flag).len() as u16;
+        });
+    }
 
-        let header = self.get_header(
-            Direction::ToReceiver,
-            PDUType::FileDirective,
-            payload_len,
-            SegmentationControl::NotPreserved,
-        );
+    fn send_ack(&mut self, transport_tx: &Sender<(VariableID, PDU)>) -> TransactionResult<()> {
+        if let Some(ack) = self.ack.take() {
+            let payload = PDUPayload::Directive(Operations::Ack(ack));
+            let payload_len = payload.clone().encode(self.config.file_size_flag).len() as u16;
 
-        let destination = header.destination_entity_id;
-        let pdu = PDU { header, payload };
+            let header = self.get_header(
+                Direction::ToReceiver,
+                PDUType::FileDirective,
+                payload_len,
+                SegmentationControl::NotPreserved,
+            );
 
-        self.transport_tx.send((destination, pdu))?;
+            let destination = header.destination_entity_id;
+            let pdu = PDU { header, payload };
 
+            transport_tx.send((destination, pdu))?;
+            debug!("Transaction {0:?} sent Ack(Finished).", self.id());
+            self.shutdown();
+        }
         Ok(())
     }
 
@@ -495,21 +598,10 @@ impl<T: FileStore> SendTransaction<T> {
         }
     }
 
-    pub fn monitor_timeout(&mut self) -> TransactionResult<()> {
-        if self.timer.inactivity.timeout_occured()
-            && self.timer.inactivity.limit_reached()
-            && !self.proceed_despite_fault(Condition::InactivityDetected)?
-        {
-            return Ok(());
-        }
-        if self.timer.ack.timeout_occured() && self.waiting_on == WaitingOn::AckEof {
-            return self.send_eof(None);
-        }
-        Ok(())
-    }
-
     pub fn process_pdu(&mut self, pdu: PDU) -> TransactionResult<()> {
-        self.timer.restart_inactivity();
+        if self.send_state == SendState::SendEof {
+            self.timer.restart_inactivity();
+        }
         let PDU {
             header: _header,
             payload,
@@ -540,8 +632,14 @@ impl<T: FileStore> SendTransaction<T> {
                         )),
                         Operations::Finished(finished) => {
                             self.delivery_code = finished.delivery_code;
-                            self.send_ack_finished()?;
+                            self.prepare_ack();
+                            self.send_state = SendState::Finished;
                             self.condition = finished.condition;
+                            debug!(
+                                "Transaction {:?} received Finished ({:?})",
+                                self.id(),
+                                self.condition
+                            );
                             match self.condition != Condition::NoError {
                                 true => {
                                     info!(
@@ -559,6 +657,7 @@ impl<T: FileStore> SendTransaction<T> {
                                                     UserOperation::OriginatingTransactionIDMessage(id) => Some(id),
                                                     _ => None,
                                                 }
+
                                         }) {
                                             let mut message_to_user = vec![
                                                 MessageToUser::from(UserOperation::Response(UserResponse::ProxyPut(
@@ -593,8 +692,6 @@ impl<T: FileStore> SendTransaction<T> {
                                     }
                                 }
                             }
-
-                            self.shutdown();
                             Ok(())
                         }
                         Operations::Nak(nak) => {
@@ -645,7 +742,6 @@ impl<T: FileStore> SendTransaction<T> {
                         Operations::Ack(ack) => {
                             if ack.directive == PDUDirective::EoF {
                                 self.timer.ack.pause();
-                                self.waiting_on = WaitingOn::None;
                                 // all good
                                 Ok(())
                             } else {
@@ -725,9 +821,7 @@ impl<T: FileStore> SendTransaction<T> {
         }
     }
 
-    fn send_metadata(&mut self) -> TransactionResult<()> {
-        self.timer.restart_inactivity();
-
+    fn send_metadata(&mut self, transport_tx: &Sender<(VariableID, PDU)>) -> TransactionResult<()> {
         let destination = self.config.destination_entity_id;
         let metadata = MetadataPDU {
             closure_requested: self.metadata.closure_requested,
@@ -753,6 +847,7 @@ impl<T: FileStore> SendTransaction<T> {
                 )
                 .collect(),
         };
+
         let payload = PDUPayload::Directive(Operations::Metadata(metadata));
         let payload_len: u16 = payload
             .clone()
@@ -770,13 +865,9 @@ impl<T: FileStore> SendTransaction<T> {
 
         let pdu = PDU { header, payload };
 
-        self.transport_tx.send((destination, pdu))?;
-        debug!("Transaction {0:?} sending Metadata.", self.id());
+        transport_tx.send((destination, pdu))?;
+        debug!("Transaction {0:?} sent Metadata.", self.id());
         Ok(())
-    }
-
-    pub(crate) fn start(&mut self) -> TransactionResult<()> {
-        self.send_metadata()
     }
 }
 
@@ -808,13 +899,14 @@ mod test {
 
     #[rstest]
     fn header(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (transport_tx, _) = unbounded();
         let config = default_config.clone();
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
+
         let metadata = test_metadata(10, Utf8PathBuf::from(""));
-        let mut transaction = SendTransaction::new(config, metadata, filestore, transport_tx);
+        let mut transaction = SendTransaction::new(config, metadata, filestore);
+
         let payload_len = 12;
         let expected = PDUHeader {
             version: U3::One,
@@ -843,14 +935,13 @@ mod test {
 
     #[rstest]
     fn test_if_file_transfer(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (transport_tx, _) = unbounded();
         let config = default_config.clone();
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
         let metadata = test_metadata(600_u64, Utf8PathBuf::from("a"));
-        let transaction = SendTransaction::new(config, metadata, filestore, transport_tx);
+        let transaction = SendTransaction::new(config, metadata, filestore);
 
         assert_eq!(
             TransactionStatus::Undefined,
@@ -871,8 +962,7 @@ mod test {
         let path = Utf8PathBuf::from("testfile");
 
         let metadata = test_metadata(10, path.clone());
-        let mut transaction =
-            SendTransaction::new(config, metadata, filestore.clone(), transport_tx);
+        let mut transaction = SendTransaction::new(config, metadata, filestore.clone());
 
         let input = vec![0, 5, 255, 99];
 
@@ -914,7 +1004,7 @@ mod test {
             let length = 4;
 
             transaction
-                .send_file_segment(Some(offset), Some(length as u16))
+                .send_file_segment(Some(offset), Some(length as u16), &transport_tx)
                 .unwrap();
         });
         let (destination_id, received_pdu) = transport_rx.recv().unwrap();
@@ -941,7 +1031,7 @@ mod test {
         let path = Utf8PathBuf::from("testfile_missing");
         let metadata = test_metadata(10, path.clone());
 
-        let mut transaction = SendTransaction::new(config, metadata, filestore, transport_tx);
+        let mut transaction = SendTransaction::new(config, metadata, filestore);
 
         let input = vec![0, 5, 255, 99];
         let pdu = match &nak {
@@ -1011,7 +1101,7 @@ mod test {
             }
 
             transaction.naks.push_back(nak);
-            transaction.send_missing_data().unwrap();
+            transaction.send_missing_data(&transport_tx).unwrap();
 
             transaction
                 .filestore
@@ -1026,13 +1116,13 @@ mod test {
 
     #[rstest]
     fn checksum_cache(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (transport_tx, _) = unbounded();
         let config = default_config.clone();
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
+
         let metadata = test_metadata(10, Utf8PathBuf::from(""));
-        let mut transaction = SendTransaction::new(config, metadata, filestore, transport_tx);
+        let mut transaction = SendTransaction::new(config, metadata, filestore);
 
         let result = transaction
             .get_checksum()
@@ -1057,8 +1147,7 @@ mod test {
 
         let path = Utf8PathBuf::from("test_eof.dat");
         let metadata = test_metadata(input.as_bytes().len() as u64, path.clone());
-        let mut transaction =
-            SendTransaction::new(config, metadata, filestore.clone(), transport_tx);
+        let mut transaction = SendTransaction::new(config, metadata, filestore.clone());
 
         let (checksum, _overflow) =
             input
@@ -1104,7 +1193,8 @@ mod test {
                     .expect("Cannot write test file in thread.");
                 handle.sync_all().expect("Bad file sync.");
             }
-            transaction.send_eof(None).unwrap()
+            transaction.prepare_eof(None).unwrap();
+            transaction.send_eof(&transport_tx).unwrap()
         });
 
         let (destination_id, received_pdu) = transport_rx.recv().unwrap();
@@ -1130,12 +1220,12 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
+
         let input = "Here is some test data to write!$*#*.\n";
 
         let path = Utf8PathBuf::from(format!("test_eof_{:}.dat", config.transmission_mode as u8));
         let metadata = test_metadata(input.as_bytes().len() as u64, path.clone());
-        let mut transaction =
-            SendTransaction::new(config.clone(), metadata, filestore.clone(), transport_tx);
+        let mut transaction = SendTransaction::new(config.clone(), metadata, filestore.clone());
 
         let (checksum, _overflow) =
             input
@@ -1182,6 +1272,8 @@ mod test {
                 handle.sync_all().expect("Bad file sync.");
             }
             transaction.cancel().unwrap();
+            assert!(transaction.has_pdu_to_send());
+            transaction.send_pdu(&transport_tx).unwrap();
 
             if transaction.config.transmission_mode == TransmissionMode::Unacknowledged {
                 assert_eq!(TransactionStatus::Terminated, transaction.status);
@@ -1199,25 +1291,20 @@ mod test {
 
     #[rstest]
     fn suspend(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (transport_tx, _) = unbounded();
         let config = default_config.clone();
 
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
         let metadata = test_metadata(0, Utf8PathBuf::from(""));
-        let mut transaction = SendTransaction::new(config, metadata, filestore, transport_tx);
+        let mut transaction = SendTransaction::new(config, metadata, filestore);
 
         transaction.timer.restart_ack();
         transaction.timer.restart_inactivity();
         transaction.timer.restart_nak();
 
         {
-            let timers = [
-                &transaction.timer.nak,
-                &transaction.timer.inactivity,
-                &transaction.timer.nak,
-            ];
+            let timers = [&transaction.timer.ack, &transaction.timer.inactivity];
             timers.iter().for_each(|timer| {
                 assert!(timer.is_ticking());
             });
@@ -1225,36 +1312,26 @@ mod test {
 
         transaction.suspend();
 
-        let timers = [
-            &transaction.timer.ack,
-            &transaction.timer.inactivity,
-            &transaction.timer.nak,
-        ];
+        let timers = [&transaction.timer.ack, &transaction.timer.inactivity];
         timers.iter().for_each(|timer| assert!(!timer.is_ticking()));
         assert_eq!(TransactionState::Suspended, transaction.state)
     }
 
     #[rstest]
     fn resume(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (transport_tx, _) = unbounded();
         let config = default_config.clone();
 
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
         let metadata = test_metadata(0, Utf8PathBuf::from(""));
-        let mut transaction = SendTransaction::new(config, metadata, filestore, transport_tx);
+        let mut transaction = SendTransaction::new(config, metadata, filestore);
 
         transaction.timer.restart_ack();
         transaction.timer.restart_inactivity();
-        transaction.timer.restart_nak();
 
         {
-            let timers = [
-                &transaction.timer.nak,
-                &transaction.timer.inactivity,
-                &transaction.timer.nak,
-            ];
+            let timers = [&transaction.timer.ack, &transaction.timer.inactivity];
             timers.iter().for_each(|timer| {
                 assert!(timer.is_ticking());
             });
@@ -1262,21 +1339,15 @@ mod test {
 
         transaction.suspend();
 
-        let timers = [
-            &transaction.timer.ack,
-            &transaction.timer.inactivity,
-            &transaction.timer.nak,
-        ];
+        let timers = [&transaction.timer.ack, &transaction.timer.inactivity];
         timers.iter().for_each(|timer| assert!(!timer.is_ticking()));
 
         transaction.resume();
         assert_eq!(TransactionState::Active, transaction.state);
 
-        assert!(transaction.timer.inactivity.is_ticking());
         assert!(!transaction.timer.ack.is_ticking());
-        assert!(!transaction.timer.nak.is_ticking());
 
-        transaction.waiting_on = WaitingOn::AckEof;
+        transaction.send_state = SendState::SendEof;
         transaction.resume();
         assert!(transaction.timer.ack.is_ticking());
     }
@@ -1292,9 +1363,9 @@ mod test {
 
         let path = Utf8PathBuf::from(format!("test_eof_{:}.dat", config.transmission_mode as u8));
         let input = "Here is some test data to write!$*#*.\n";
+
         let metadata = test_metadata(input.as_bytes().len() as u64, path);
-        let mut transaction =
-            SendTransaction::new(config.clone(), metadata, filestore, transport_tx);
+        let mut transaction = SendTransaction::new(config.clone(), metadata, filestore);
 
         let payload = PDUPayload::Directive(Operations::Ack(PositiveAcknowledgePDU {
             directive: PDUDirective::Finished,
@@ -1314,7 +1385,8 @@ mod test {
         let pdu = PDU { header, payload };
 
         thread::spawn(move || {
-            transaction.send_ack_finished().unwrap();
+            transaction.prepare_ack();
+            transaction.send_ack(&transport_tx).unwrap();
         });
 
         let (destination_id, received_pdu) = transport_rx.recv().unwrap();
@@ -1378,7 +1450,6 @@ mod test {
         )]
         operation: Operations,
     ) {
-        let (transport_tx, _) = unbounded();
         let mut config = default_config.clone();
         config.transmission_mode = TransmissionMode::Unacknowledged;
 
@@ -1387,7 +1458,7 @@ mod test {
         ));
 
         let metadata = test_metadata(600, Utf8PathBuf::from("Test_file.txt"));
-        let mut transaction = SendTransaction::new(config, metadata, filestore, transport_tx);
+        let mut transaction = SendTransaction::new(config, metadata, filestore);
 
         let payload = PDUPayload::Directive(operation);
         let payload_len = payload
@@ -1445,7 +1516,6 @@ mod test {
         )]
         operation: Operations,
     ) {
-        let (transport_tx, _) = unbounded();
         let mut config = default_config.clone();
         config.transmission_mode = TransmissionMode::Acknowledged;
 
@@ -1454,7 +1524,7 @@ mod test {
         ));
 
         let metadata = test_metadata(600, Utf8PathBuf::from("Test_file.txt"));
-        let mut transaction = SendTransaction::new(config, metadata, filestore, transport_tx);
+        let mut transaction = SendTransaction::new(config, metadata, filestore);
 
         let payload = PDUPayload::Directive(operation);
         let payload_len = payload
@@ -1488,7 +1558,6 @@ mod test {
         #[values(TransmissionMode::Unacknowledged, TransmissionMode::Acknowledged)]
         transmission_mode: TransmissionMode,
     ) {
-        let (transport_tx, _) = unbounded();
         let mut config = default_config.clone();
         config.transmission_mode = transmission_mode;
 
@@ -1497,7 +1566,7 @@ mod test {
         ));
 
         let metadata = test_metadata(600, Utf8PathBuf::from("Test_file.txt"));
-        let mut transaction = SendTransaction::new(config, metadata, filestore, transport_tx);
+        let mut transaction = SendTransaction::new(config, metadata, filestore);
 
         let payload = PDUPayload::FileData(FileDataPDU::Unsegmented(UnsegmentedFileData {
             offset: 12_u64,
@@ -1530,9 +1599,10 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
+
         let path = Utf8PathBuf::from("test_file");
         let metadata = test_metadata(600, path);
-        let mut transaction = SendTransaction::new(config, metadata, filestore, transport_tx);
+        let mut transaction = SendTransaction::new(config, metadata, filestore);
 
         let finished_pdu = {
             let payload = PDUPayload::Directive(Operations::Finished(Finished {
@@ -1580,6 +1650,8 @@ mod test {
         };
         thread::spawn(move || {
             transaction.process_pdu(finished_pdu).unwrap();
+            assert!(transaction.has_pdu_to_send());
+            transaction.send_pdu(&transport_tx).unwrap();
         });
 
         let (destination_id, received_pdu) = transport_rx.recv().unwrap();
@@ -1598,7 +1670,6 @@ mod test {
             false => FileSizeFlag::Small,
         };
 
-        let (transport_tx, _) = unbounded();
         let mut config = default_config.clone();
         config.transmission_mode = TransmissionMode::Acknowledged;
         config.file_size_flag = file_size_flag;
@@ -1608,7 +1679,7 @@ mod test {
         ));
 
         let metadata = test_metadata(total_size, Utf8PathBuf::from("test_file"));
-        let mut transaction = SendTransaction::new(config, metadata, filestore, transport_tx);
+        let mut transaction = SendTransaction::new(config, metadata, filestore);
 
         let nak_pdu = {
             let payload = PDUPayload::Directive(Operations::Nak(NegativeAcknowledgmentPDU {
@@ -1666,6 +1737,7 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
+
         let path = Utf8PathBuf::from("test_file");
 
         let metadata = Metadata {
@@ -1677,7 +1749,8 @@ mod test {
             filestore_requests: vec![],
             checksum_type: ChecksumType::Null,
         };
-        let mut transaction = SendTransaction::new(config, metadata, filestore, transport_tx);
+
+        let mut transaction = SendTransaction::new(config, metadata, filestore);
 
         transaction.checksum = Some(0);
 
@@ -1725,7 +1798,8 @@ mod test {
             PDU { header, payload }
         };
         thread::spawn(move || {
-            transaction.send_eof(None).unwrap();
+            transaction.prepare_eof(None).unwrap();
+            transaction.send_eof(&transport_tx).unwrap();
             assert!(transaction.timer.ack.is_ticking());
 
             transaction.process_pdu(ack_pdu).unwrap();
@@ -1738,14 +1812,15 @@ mod test {
     }
     #[rstest]
     fn recv_keepalive(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (transport_tx, _) = unbounded();
         let mut config = default_config.clone();
         config.transmission_mode = TransmissionMode::Acknowledged;
 
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
+
         let path = Utf8PathBuf::from("test_file");
+
         let metadata = Metadata {
             closure_requested: false,
             file_size: 500,
@@ -1755,7 +1830,8 @@ mod test {
             filestore_requests: vec![],
             checksum_type: ChecksumType::Null,
         };
-        let mut transaction = SendTransaction::new(config, metadata, filestore, transport_tx);
+
+        let mut transaction = SendTransaction::new(config, metadata, filestore);
         transaction.checksum = Some(0);
 
         let keep_alive = {

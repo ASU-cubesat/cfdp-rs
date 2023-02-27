@@ -1,76 +1,83 @@
-use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use chrono::Duration;
-use timer::{Guard, Timer as ThreadTimer};
-
+#[derive(Debug)]
 pub struct Counter {
-    guard: Option<Guard>,
+    start_time: Instant,
     timeout: Duration,
     max_count: u32,
-    count: Arc<Mutex<u32>>,
-    occurred: Arc<Mutex<bool>>,
+    count: u32,
+    occurred: bool,
+    paused: bool,
 }
 impl Counter {
-    fn new(timeout: i64, max_count: u32) -> Self {
+    fn new(timeout: u64, max_count: u32) -> Self {
         Self {
-            guard: None,
             max_count,
-            timeout: Duration::seconds(timeout),
-            count: Arc::new(Mutex::new(0_u32)),
-            occurred: Arc::new(Mutex::new(false)),
+            timeout: Duration::from_secs(timeout),
+            count: 0,
+            start_time: Instant::now(),
+            occurred: false,
+            paused: true,
         }
     }
-    fn restart(&mut self, timer: &mut ThreadTimer) {
-        if self.guard.is_some() {
-            self.guard = None;
-        }
-
+    fn restart(&mut self) {
         // reset timeout flag
-        *self.occurred.lock().unwrap() = false;
-
-        self.guard = {
-            let count = self.count.clone();
-            let max = self.max_count;
-            let occurred = self.occurred.clone();
-            Some(timer.schedule_repeating(self.timeout, move || {
-                *occurred.lock().unwrap() = true;
-
-                let mut c = count.lock().unwrap();
-                *c = (*c + 1).clamp(0, max)
-            }))
-        };
+        self.update();
+        self.start_time = Instant::now();
+        self.paused = false;
+        self.occurred = false;
     }
+
+    fn update(&mut self) {
+        if self.paused {
+            return;
+        }
+        let now = Instant::now();
+        while now.duration_since(self.start_time) >= self.timeout {
+            self.count = (self.count + 1).clamp(0, self.max_count);
+            self.start_time += self.timeout;
+            self.occurred = true;
+        }
+    }
+
     pub fn pause(&mut self) {
-        if self.guard.is_some() {
-            self.guard = None
+        self.update();
+        self.paused = true;
+    }
+
+    pub fn limit_reached(&mut self) -> bool {
+        self.update();
+        self.count == self.max_count
+    }
+
+    pub fn timeout_occured(&mut self) -> bool {
+        self.update();
+        self.occurred
+    }
+
+    pub fn until_timeout(&self) -> Duration {
+        let next_timeout = self.start_time + self.timeout;
+        let now = Instant::now();
+        if next_timeout > now {
+            next_timeout.duration_since(now)
+        } else {
+            Duration::ZERO
         }
     }
 
+    #[cfg(test)]
     pub fn get_count(&self) -> u32 {
-        *self.count.lock().unwrap()
-    }
-
-    pub fn limit_reached(&self) -> bool {
-        self.get_count() == self.max_count
-    }
-
-    pub fn timeout_occured(&self) -> bool {
-        let value = *self.occurred.lock().unwrap();
-        if value {
-            // reset to see if another timout occurred next time
-            *self.occurred.lock().unwrap() = false;
-        }
-        value
+        self.count
     }
 
     #[cfg(test)]
     pub fn is_ticking(&self) -> bool {
-        self.guard.is_some()
+        !self.paused
     }
 }
 
+#[derive(Debug)]
 pub struct Timer {
-    timer: ThreadTimer,
     pub inactivity: Counter,
     pub ack: Counter,
     pub nak: Counter,
@@ -85,23 +92,41 @@ impl Timer {
         nak_max_count: u32,
     ) -> Self {
         Self {
-            timer: ThreadTimer::new(),
-            inactivity: Counter::new(inactivity_timeout, inactivity_max_count),
-            ack: Counter::new(ack_timeout, ack_max_count),
-            nak: Counter::new(nak_timeout, nak_max_count),
+            inactivity: Counter::new(inactivity_timeout as u64, inactivity_max_count),
+            ack: Counter::new(ack_timeout as u64, ack_max_count),
+            nak: Counter::new(nak_timeout as u64, nak_max_count),
         }
     }
 
     pub fn restart_inactivity(&mut self) {
-        self.inactivity.restart(&mut self.timer)
+        self.inactivity.restart()
     }
 
     pub fn restart_ack(&mut self) {
-        self.ack.restart(&mut self.timer)
+        self.ack.restart()
     }
 
     pub fn restart_nak(&mut self) {
-        self.nak.restart(&mut self.timer)
+        self.nak.restart()
+    }
+
+    /// returns the duration until one of the timers timeouts
+    /// if all timers are paused, returns Duration::MAX
+    pub fn until_timeout(&self) -> Duration {
+        let mut min = Duration::MAX;
+
+        if !self.ack.paused {
+            min = Duration::min(min, self.ack.until_timeout());
+        }
+
+        if !self.nak.paused {
+            min = Duration::min(min, self.nak.until_timeout());
+        }
+
+        if !self.inactivity.paused {
+            min = Duration::min(min, self.inactivity.until_timeout());
+        }
+        min
     }
 }
 
@@ -115,7 +140,6 @@ mod test {
     fn timeout() {
         let mut timer = Timer::new(1_i64, 5, 1_i64, 5, 1_i64, 5);
         timer.restart_inactivity();
-        assert!(timer.inactivity.guard.is_some());
         thread::sleep(Duration::from_secs_f32(2.5_f32));
         timer.inactivity.pause();
         assert_eq!(timer.inactivity.get_count(), 2);

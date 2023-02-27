@@ -572,7 +572,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
 
         for (vec, mut transport) in transport_map.into_iter() {
             let (pdu_send, pdu_receive) = unbounded();
-            let (remote_send, remote_receive) = unbounded();
+            let (remote_send, remote_receive) = bounded(1);
 
             vec.iter().for_each(|id| {
                 transport_tx_map.insert(*id, remote_send.clone());
@@ -746,65 +746,73 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                     false => FileSizeFlag::Large,
                 };
 
-                let mut transaction =
-                    SendTransaction::new(config, metadata, filestore, transport_tx);
-                transaction.start()?;
+                let mut transaction = SendTransaction::new(config, metadata, filestore);
+                let mut sel = Select::new();
+                let rx_select_id = sel.recv(&transaction_rx);
+
+                let mut tx_select_id = Option::<usize>::None;
 
                 while transaction.get_state() != &TransactionState::Terminated {
-                    // this function handles any timeouts and resends
-                    transaction.monitor_timeout()?;
-                    // if we have recieved a NAK send the missing data
-                    transaction.send_missing_data()?;
-                    // send the next data segment for the first time
-                    match transaction.all_data_sent()? {
-                        false => transaction.send_file_segment(None, None)?,
-                        true => {
-                            match transaction.get_mode() {
-                                // for unacknowledged transactions.
-                                // this is the end
-                                TransmissionMode::Unacknowledged => transaction.shutdown(),
-                                TransmissionMode::Acknowledged => {}
-                            }
+                    if transaction.has_pdu_to_send() {
+                        if tx_select_id.is_none() {
+                            tx_select_id = Some(sel.send(&transport_tx));
                         }
-                    };
-                    // Handle any messages that are waiting to be processed
-                    match transaction_rx.try_recv() {
-                        Ok(command) => {
-                            match command {
-                                Command::Pdu(pdu) => {
-                                    match transaction.process_pdu(pdu) {
-                                        Ok(()) => {}
-                                        Err(err @ TransactionError::UnexpectedPDU(..)) => {
-                                            info!("Recieved Unexpected PDU: {err}");
-                                            // log some info on the unexpected PDU?
-                                        }
-                                        Err(err) => {
-                                            return Err(err);
+                    } else if let Some(idx) = tx_select_id {
+                        sel.remove(idx);
+                        tx_select_id = None;
+                    }
+
+                    let timeout = transaction.until_timeout();
+                    let oper = sel.ready_timeout(timeout);
+                    match oper {
+                        Err(_) => {
+                            transaction.handle_timeout()?;
+                        }
+                        Ok(id) => {
+                            if tx_select_id == Some(id) {
+                                transaction.send_pdu(&transport_tx)?;
+                            } else if id == rx_select_id {
+                                match transaction_rx.try_recv() {
+                                    Ok(command) => {
+                                        match command {
+                                            Command::Pdu(pdu) => {
+                                                match transaction.process_pdu(pdu) {
+                                                    Ok(()) => {}
+                                                    Err(
+                                                        err @ TransactionError::UnexpectedPDU(..),
+                                                    ) => {
+                                                        info!("Recieved Unexpected PDU: {err}");
+                                                        // log some info on the unexpected PDU?
+                                                    }
+                                                    Err(err) => {
+                                                        return Err(err);
+                                                    }
+                                                }
+                                            }
+                                            Command::Resume => transaction.resume(),
+                                            Command::Cancel => transaction.cancel()?,
+                                            Command::Suspend => transaction.suspend(),
+                                            Command::Abandon => transaction.shutdown(),
+                                            Command::Report(sender) => {
+                                                sender.send(transaction.generate_report())?
+                                            }
                                         }
                                     }
-                                }
-                                Command::Resume => transaction.resume(),
-                                Command::Cancel => transaction.cancel()?,
-                                Command::Suspend => transaction.suspend(),
-                                Command::Abandon => transaction.shutdown(),
-                                Command::Report(sender) => {
-                                    sender.send(transaction.generate_report())?
+                                    Err(TryRecvError::Empty) => {
+                                        // nothing for us at this time just sleep
+                                    }
+                                    Err(TryRecvError::Disconnected) => {
+                                        // Really do not expect to be in this situation
+                                        // probably the thread should exit
+                                        panic!(
+                                            "Connection to Daemon Severed for Transaction {:?}",
+                                            transaction.id()
+                                        )
+                                    }
                                 }
                             }
                         }
-                        Err(TryRecvError::Empty) => {
-                            // nothing for us at this time just sleep
-                        }
-                        Err(TryRecvError::Disconnected) => {
-                            // Really do not expect to be in this situation
-                            // probably the thread should exit
-                            panic!(
-                                "Connection to Daemon Severed for Transaction {:?}",
-                                transaction.id()
-                            )
-                        }
                     }
-                    thread::sleep(Duration::from_micros(1));
                 }
                 Ok(transaction.generate_report())
             })?;

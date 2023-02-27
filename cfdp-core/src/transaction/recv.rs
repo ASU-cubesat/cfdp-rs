@@ -328,7 +328,7 @@ impl<T: FileStore> RecvTransaction<T> {
     pub fn resume(&mut self) {
         self.timer.restart_inactivity();
         match self.waiting_on {
-            WaitingOn::AckEof | WaitingOn::AckFin => self.timer.restart_ack(),
+            WaitingOn::AckFin => self.timer.restart_ack(),
             WaitingOn::Nak => self.timer.restart_nak(),
             _ => {}
         }
@@ -1323,7 +1323,7 @@ mod test {
         assert!(!transaction.timer.ack.is_ticking());
         assert!(!transaction.timer.nak.is_ticking());
 
-        transaction.waiting_on = WaitingOn::AckEof;
+        transaction.waiting_on = WaitingOn::AckFin;
         transaction.resume();
         assert!(transaction.timer.ack.is_ticking());
 

@@ -17,7 +17,6 @@ pub type TransactionID = (EntityID, TransactionSeqNum);
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum WaitingOn {
     None,
-    AckEof,
     AckFin,
     Nak,
     MissingData,

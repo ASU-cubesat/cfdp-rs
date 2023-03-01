@@ -1,4 +1,4 @@
-use std::{fs::OpenOptions, sync::Arc, thread, time::Duration};
+use std::{fs::OpenOptions, sync::Arc, time::Duration};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use cfdp_core::{
@@ -16,6 +16,10 @@ use rstest::rstest;
 mod common;
 use common::get_filestore;
 
+#[rstest]
+#[cfg_attr(target_os = "windows", ignore)]
+#[timeout(Duration::from_secs(10))]
+#[tokio::test(flavor = "multi_thread")]
 // Series F3
 // Sequence 1 Test
 // Test goal:
@@ -24,10 +28,7 @@ use common::get_filestore;
 //  - Acknowledged
 //  - File Size: Medium
 //  - Execute remote put from remote. File should exist on remote
-#[rstest]
-#[cfg_attr(target_os = "windows", ignore)]
-#[timeout(Duration::from_secs(10))]
-fn f3s01(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
+async fn f3s01(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
     let (local_path, filestore) = get_filestore;
 
     let mut user_remote = User::new(Some(
@@ -37,6 +38,7 @@ fn f3s01(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
             .join("cfdp_remote.socket")
             .as_str(),
     ))
+    .await
     .expect("Cannot connect to remote user.");
 
     let out_file: Utf8PathBuf = "remote/small_f3s1.txt".into();
@@ -62,14 +64,19 @@ fn f3s01(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
                 )),
             ],
         })
+        .await
         .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        tokio::time::sleep(Duration::from_millis(10)).await
     }
     assert!(path_to_out.exists())
 }
 
+#[rstest]
+#[cfg_attr(target_os = "windows", ignore)]
+#[timeout(Duration::from_secs(5))]
+#[tokio::test(flavor = "multi_thread")]
 // Series F3
 // Sequence 2 Test
 // Test goal:
@@ -77,13 +84,12 @@ fn f3s01(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 // Configuration:
 //  - Acknowledged
 //  - Create New file on remote
-#[rstest]
-#[cfg_attr(target_os = "windows", ignore)]
-#[timeout(Duration::from_secs(5))]
-fn f3s02(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
+async fn f3s02(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
     let (local_path, filestore) = get_filestore;
 
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let mut user = User::new(Some(local_path))
+        .await
+        .expect("User Cannot connect to Daemon.");
 
     let out_file: Utf8PathBuf = "remote/f3s2.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
@@ -100,14 +106,18 @@ fn f3s02(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         }],
         message_to_user: vec![],
     })
+    .await
     .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert!(path_to_out.exists())
 }
-
+#[rstest]
+#[cfg_attr(target_os = "windows", ignore)]
+#[timeout(Duration::from_secs(5))]
+#[tokio::test(flavor = "multi_thread")]
 // Series F3
 // Sequence 3 Test
 // Test goal:
@@ -115,13 +125,12 @@ fn f3s02(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 // Configuration:
 //  - Acknowledged
 //  - Create New file on remote, then delete it with another transaction
-#[rstest]
-#[cfg_attr(target_os = "windows", ignore)]
-#[timeout(Duration::from_secs(5))]
-fn f3s03(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
+async fn f3s03(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
     let (local_path, filestore) = get_filestore;
 
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let mut user = User::new(Some(local_path))
+        .await
+        .expect("User Cannot connect to Daemon.");
 
     let out_file: Utf8PathBuf = "remote/f3s3.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
@@ -138,10 +147,11 @@ fn f3s03(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         }],
         message_to_user: vec![],
     })
+    .await
     .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert!(path_to_out.exists());
 
@@ -158,30 +168,39 @@ fn f3s03(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
             }],
             message_to_user: vec![],
         })
+        .await
         .expect("unable to send put request.");
+
     while user
         .report(id)
+        .await
         .expect("Unable to send Report Request.")
         .is_none()
     {
-        thread::sleep(Duration::from_millis(5))
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 
     let mut report = user
         .report(id)
+        .await
         .expect("Unable to send Report Request.")
         .unwrap();
 
     while report.state != TransactionState::Terminated {
-        thread::sleep(Duration::from_millis(5));
+        tokio::time::sleep(Duration::from_millis(5)).await;
         report = user
             .report(id)
+            .await
             .expect("Unable to send Report Request.")
             .unwrap();
     }
     assert!(!path_to_out.exists());
 }
 
+#[rstest]
+#[cfg_attr(target_os = "windows", ignore)]
+#[timeout(Duration::from_secs(5))]
+#[tokio::test(flavor = "multi_thread")]
 // Series F3
 // Sequence 4 Test
 // Test goal:
@@ -189,13 +208,12 @@ fn f3s03(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 // Configuration:
 //  - Acknowledged
 //  - Create New file on remote, then Rename it in another transaction
-#[rstest]
-#[cfg_attr(target_os = "windows", ignore)]
-#[timeout(Duration::from_secs(5))]
-fn f3s04(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
+async fn f3s04(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
     let (local_path, filestore) = get_filestore;
 
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let mut user = User::new(Some(local_path))
+        .await
+        .expect("User Cannot connect to Daemon.");
 
     let out_file: Utf8PathBuf = "remote/f3s4.txt".into();
     let new_file: Utf8PathBuf = "remote/f3s4_new.txt".into();
@@ -214,10 +232,11 @@ fn f3s04(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         }],
         message_to_user: vec![],
     })
+    .await
     .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert!(path_to_out.exists());
 
@@ -234,25 +253,29 @@ fn f3s04(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
             }],
             message_to_user: vec![],
         })
+        .await
         .expect("unable to send put request.");
 
     while user
         .report(id)
+        .await
         .expect("Unable to send Report Request.")
         .is_none()
     {
-        thread::sleep(Duration::from_millis(5))
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 
     let mut report = user
         .report(id)
+        .await
         .expect("Unable to send Report Request.")
         .unwrap();
 
     while report.state != TransactionState::Terminated {
-        thread::sleep(Duration::from_millis(5));
+        tokio::time::sleep(Duration::from_millis(5)).await;
         report = user
             .report(id)
+            .await
             .expect("Unable to send Report Request.")
             .unwrap();
     }
@@ -261,6 +284,10 @@ fn f3s04(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
     assert!(path_to_new.exists())
 }
 
+#[rstest]
+#[cfg_attr(target_os = "windows", ignore)]
+#[timeout(Duration::from_secs(5))]
+#[tokio::test(flavor = "multi_thread")]
 // Series F3
 // Sequence 5 Test
 // Test goal:
@@ -270,13 +297,12 @@ fn f3s04(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 //  - Create blank file at remote
 //  - Transfer M file
 //  - Append new file to first file
-#[rstest]
-#[cfg_attr(target_os = "windows", ignore)]
-#[timeout(Duration::from_secs(5))]
-fn f3s05(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
+async fn f3s05(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
     let (local_path, filestore) = get_filestore;
 
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let mut user = User::new(Some(local_path))
+        .await
+        .expect("User Cannot connect to Daemon.");
 
     let out_file: Utf8PathBuf = "remote/f3s5.txt".into();
     let new_file: Utf8PathBuf = "remote/medium_f3s5.txt".into();
@@ -296,15 +322,29 @@ fn f3s05(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
             }],
             message_to_user: vec![],
         })
+        .await
         .expect("unable to send put request.");
 
-    while user.report(id).expect("unable to get report.").is_none() {
-        thread::sleep(Duration::from_millis(150))
+    while user
+        .report(id)
+        .await
+        .expect("unable to get report.")
+        .is_none()
+    {
+        tokio::time::sleep(Duration::from_millis(150)).await;
     }
-    let mut report = user.report(id).expect("unable to get report.").unwrap();
+    let mut report = user
+        .report(id)
+        .await
+        .expect("unable to get report.")
+        .unwrap();
     while report.state != TransactionState::Terminated {
-        thread::sleep(Duration::from_millis(150));
-        report = user.report(id).expect("unable to get report.").unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        report = user
+            .report(id)
+            .await
+            .expect("unable to get report.")
+            .unwrap();
     }
 
     assert!(path_to_out.exists());
@@ -323,15 +363,18 @@ fn f3s05(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
             }],
             message_to_user: vec![],
         })
+        .await
         .expect("unable to send put request.");
+
     while user
         .report(id)
+        .await
         .expect("Unable to obtain report.")
         .unwrap()
         .state
         != TransactionState::Terminated
     {
-        thread::sleep(Duration::from_millis(5))
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 
     let checksum1 = filestore
@@ -348,6 +391,10 @@ fn f3s05(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
     assert_eq!(checksum1, checksum2)
 }
 
+#[rstest]
+#[cfg_attr(target_os = "windows", ignore)]
+#[timeout(Duration::from_secs(5))]
+#[tokio::test(flavor = "multi_thread")]
 // Series F3
 // Sequence 6 Test
 // Test goal:
@@ -357,13 +404,12 @@ fn f3s05(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 //  - Send small file to remote
 //  - Transfer M file
 //  - Replace small file with medium file
-#[rstest]
-#[cfg_attr(target_os = "windows", ignore)]
-#[timeout(Duration::from_secs(5))]
-fn f3s06(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
+async fn f3s06(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
     let (local_path, filestore) = get_filestore;
 
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let mut user = User::new(Some(local_path))
+        .await
+        .expect("User Cannot connect to Daemon.");
 
     let out_file: Utf8PathBuf = "remote/f3s6.txt".into();
     let new_file: Utf8PathBuf = "remote/medium_f3s6.txt".into();
@@ -378,10 +424,11 @@ fn f3s06(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         filestore_requests: vec![],
         message_to_user: vec![],
     })
+    .await
     .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert!(path_to_out.exists());
 
@@ -398,25 +445,29 @@ fn f3s06(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
             }],
             message_to_user: vec![],
         })
+        .await
         .expect("unable to send put request.");
 
     while user
         .report(id)
+        .await
         .expect("Unable to send Report Request.")
         .is_none()
     {
-        thread::sleep(Duration::from_millis(5))
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 
     let mut report = user
         .report(id)
+        .await
         .expect("Unable to send Report Request.")
         .unwrap();
 
     while report.state != TransactionState::Terminated {
-        thread::sleep(Duration::from_millis(5));
+        tokio::time::sleep(Duration::from_millis(5)).await;
         report = user
             .report(id)
+            .await
             .expect("Unable to send Report Request.")
             .unwrap();
     }
@@ -437,6 +488,10 @@ fn f3s06(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
     assert_eq!(checksum1, checksum2)
 }
 
+#[rstest]
+#[cfg_attr(target_os = "windows", ignore)]
+#[timeout(Duration::from_secs(5))]
+#[tokio::test(flavor = "multi_thread")]
 // Series F3
 // Sequence 7 Test
 // Test goal:
@@ -444,13 +499,12 @@ fn f3s06(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 // Configuration:
 //  - Acknowledged
 //  - Create new directory
-#[rstest]
-#[cfg_attr(target_os = "windows", ignore)]
-#[timeout(Duration::from_secs(5))]
-fn f3s07(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
+async fn f3s07(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
     let (local_path, filestore) = get_filestore;
 
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let mut user = User::new(Some(local_path))
+        .await
+        .expect("User Cannot connect to Daemon.");
 
     let out_file: Utf8PathBuf = "remote/data".into();
     let path_to_out = filestore.get_native_path(&out_file);
@@ -467,16 +521,21 @@ fn f3s07(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         }],
         message_to_user: vec![],
     })
+    .await
     .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        tokio::time::sleep(Duration::from_millis(5)).await
     }
 
     assert!(path_to_out.exists());
     assert!(path_to_out.is_dir())
 }
 
+#[rstest]
+#[cfg_attr(target_os = "windows", ignore)]
+#[timeout(Duration::from_secs(5))]
+#[tokio::test(flavor = "multi_thread")]
 // Series F3
 // Sequence 8 Test
 // Test goal:
@@ -485,13 +544,12 @@ fn f3s07(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 //  - Acknowledged
 //  - Create new directory
 //  - Then remove it
-#[rstest]
-#[cfg_attr(target_os = "windows", ignore)]
-#[timeout(Duration::from_secs(5))]
-fn f3s08(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
+async fn f3s08(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
     let (local_path, filestore) = get_filestore;
 
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let mut user = User::new(Some(local_path))
+        .await
+        .expect("User Cannot connect to Daemon.");
 
     let out_file: Utf8PathBuf = "remote/data_f3s8".into();
     let path_to_out = filestore.get_native_path(&out_file);
@@ -508,10 +566,11 @@ fn f3s08(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         }],
         message_to_user: vec![],
     })
+    .await
     .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 
     assert!(path_to_out.exists());
@@ -529,15 +588,20 @@ fn f3s08(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         }],
         message_to_user: vec![],
     })
+    .await
     .expect("unable to send put request.");
 
     while path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 
     assert!(!path_to_out.exists())
 }
 
+#[rstest]
+#[cfg_attr(target_os = "windows", ignore)]
+#[timeout(Duration::from_secs(5))]
+#[tokio::test(flavor = "multi_thread")]
 // Series F3
 // Sequence 9 Test
 // Test goal:
@@ -546,13 +610,12 @@ fn f3s08(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 //  - Acknowledged
 //  - Send M file
 //  - Then DenyFile and verify it is removed
-#[rstest]
-#[cfg_attr(target_os = "windows", ignore)]
-#[timeout(Duration::from_secs(5))]
-fn f3s09(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
+async fn f3s09(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
     let (local_path, filestore) = get_filestore;
 
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let mut user = User::new(Some(local_path))
+        .await
+        .expect("User Cannot connect to Daemon.");
 
     let out_file: Utf8PathBuf = "remote/medium_f3s9.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
@@ -565,10 +628,11 @@ fn f3s09(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         filestore_requests: vec![],
         message_to_user: vec![],
     })
+    .await
     .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 
     assert!(path_to_out.exists());
@@ -586,15 +650,20 @@ fn f3s09(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         }],
         message_to_user: vec![],
     })
+    .await
     .expect("unable to send put request.");
 
     while path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 
     assert!(!path_to_out.exists())
 }
 
+#[rstest]
+#[cfg_attr(target_os = "windows", ignore)]
+#[timeout(Duration::from_secs(5))]
+#[tokio::test(flavor = "multi_thread")]
 // Series F3
 // Sequence 9 Test
 // Test goal:
@@ -603,13 +672,12 @@ fn f3s09(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 //  - Acknowledged
 //  - Send Directory listing request
 //  - verify the listing file is created
-#[rstest]
-#[cfg_attr(target_os = "windows", ignore)]
-#[timeout(Duration::from_secs(5))]
-fn f3s10(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
+async fn f3s10(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
     let (local_path, filestore) = get_filestore;
 
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let mut user = User::new(Some(local_path))
+        .await
+        .expect("User Cannot connect to Daemon.");
 
     let out_file: Utf8PathBuf = "/local/remote.listing".into();
     let path_to_out = filestore.get_native_path(out_file);
@@ -627,10 +695,11 @@ fn f3s10(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
             }),
         ))],
     })
+    .await
     .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 
     assert!(path_to_out.exists());

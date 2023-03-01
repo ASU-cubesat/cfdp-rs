@@ -97,6 +97,9 @@ impl TestUserHalf {
         }
     }
 
+    // this function is actually used in series_f1 but series_f2 and f3 generate an unused warning
+    // apparently related https://github.com/rust-lang/rust/issues/46379
+    #[allow(unused)]
     pub fn cancel(&self, transaction: TransactionID) -> Result<(), IoError> {
         let primitive = UserPrimitive::Cancel(transaction.0, transaction.1);
         let (send, _recv) = bounded(0);

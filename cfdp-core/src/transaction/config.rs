@@ -14,15 +14,6 @@ use crate::{
 pub type TransactionID = (EntityID, TransactionSeqNum);
 
 #[repr(u8)]
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum WaitingOn {
-    None,
-    AckFin,
-    Nak,
-    MissingData,
-}
-
-#[repr(u8)]
 #[derive(Debug, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum TransactionState {
     Active,

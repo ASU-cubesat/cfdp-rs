@@ -340,6 +340,25 @@ impl Report {
     }
 }
 
+/// The way the Nak procedure is implemented is the following:
+///  - In Immediate mode, upon reception of each file data PDU, if the received segment is at the end of the file and there is a gab
+///    between the previously received segment and the new segment, a nak is sent with the new gap.
+///    If the NAK timer has timed out, the nak sent covers the gaps from the entire file, not only the last gap.
+///    After the EOF is received, the procedure is the same as in deferred mode.
+///  - In Deferred mode, a nak covering the gaps from the entire file is sent immediately after EOF and each time the nak timer times out.
+///  - at any time a Prompt NAK can trigger the sending of the complete Nak list.
+///
+/// NAK timer:
+/// - In Immediate mode the NAK timer is started at the beginning of the transaction.
+/// - In Deferred mode  the NAK timer is started after EOF is received.
+/// - If the NAK timer times out and it is determined that new data has been received since the last nak sending, the timer counter is reset to 0.
+/// - If the NAK timer expired more than the predefined limit (without any new data being received), the NakLimitReached fault will be raised.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum NakProcedure {
+    Immediate,
+    Deferred,
+}
+
 #[derive(Clone)]
 /// Configuration parameters for transactions which may change based on the receiving entity.
 pub struct EntityConfig {
@@ -361,6 +380,8 @@ pub struct EntityConfig {
     pub closure_requested: bool,
     /// The default ChecksumType to use for file transfers
     pub checksum_type: ChecksumType,
+    // for recv transactions - when to send the NAKs (immediately when detected or after EOF)
+    pub nak_procedure: NakProcedure,
 }
 
 type SpawnerTuple = (
@@ -620,54 +641,70 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             "({:?}, {:?})",
             &config.source_entity_id, &config.sequence_number
         );
-        let mut transaction = RecvTransaction::new(config, filestore, transport_tx, message_tx);
+        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
         let id = transaction.id();
 
         let handle = thread::Builder::new().name(name).spawn(move || {
+            let mut sel = Select::new();
+            let rx_select_id = sel.recv(&transaction_rx);
+
+            let mut tx_select_id = Option::<usize>::None;
+
             while transaction.get_state() != &TransactionState::Terminated {
-                thread::sleep(Duration::from_millis(1));
-                // this function handles any timeouts and resends
-                transaction.monitor_timeout()?;
-                // if instant mode send naks
+                if transaction.has_pdu_to_send() {
+                    tx_select_id.get_or_insert_with(||sel.send(&transport_tx));
+                } else if let Some(idx) = tx_select_id.take() {
+                    sel.remove(idx);
+                }
 
-                // if outside prompt send naks
-
-                match transaction_rx.try_recv() {
-                    Ok(command) => {
-                        match command {
-                            Command::Pdu(pdu) => {
-                                match transaction.process_pdu(pdu) {
-                                    Ok(()) => {}
-                                    Err(err @ TransactionError::UnexpectedPDU(..)) => {
-                                        info!("Recieved Unexpected PDU: {err}");
-                                        // log some info on the unexpected PDU?
+                let timeout = transaction.until_timeout();
+                let oper = sel.ready_timeout(timeout);
+                match oper {
+                    Err(_) => {
+                        transaction.handle_timeout()?;
+                    }
+                    Ok(id) => {
+                        if tx_select_id == Some(id) {
+                            transaction.send_pdu(&transport_tx)?;
+                        } else if id == rx_select_id {
+                            match transaction_rx.try_recv() {
+                                Ok(command) => {
+                                    match command {
+                                        Command::Pdu(pdu) => {
+                                            match transaction.process_pdu(pdu) {
+                                                Ok(()) => {}
+                                                Err(err @ TransactionError::UnexpectedPDU(..)) => {
+                                                    info!("Transaction {:?} Received Unexpected PDU: {err}", transaction.id());
+                                                    // log some info on the unexpected PDU?
+                                                }
+                                                Err(err) => return Err(err),
+                                            }
+                                        }
+                                        Command::Resume => transaction.resume(),
+                                        Command::Cancel => transaction.cancel()?,
+                                        Command::Suspend => transaction.suspend(),
+                                        Command::Abandon => transaction.shutdown(),
+                                        Command::Report(sender) => {
+                                            sender.send(transaction.generate_report())?
+                                        }
                                     }
-                                    Err(err) => return Err(err),
                                 }
-                            }
-                            Command::Resume => transaction.resume(),
-                            Command::Cancel => transaction.cancel()?,
-                            Command::Suspend => transaction.suspend(),
-                            Command::Abandon => transaction.shutdown(),
-                            Command::Report(sender) => {
-                                sender.send(transaction.generate_report())?
-                            }
+                                Err(TryRecvError::Empty) => {
+                                    // this normally should not happen
+                                }
+                                Err(TryRecvError::Disconnected) => {
+                                    // Really do not expect to be in this situation
+                                    // probably the thread should exit
+                                    info!(
+                                        "Connection to Daemon Severed for Transaction {:?}",
+                                        transaction.id()
+                                    )
+                                }
+                            };
                         }
                     }
-                    Err(TryRecvError::Empty) => {
-                        // nothing for us at this time just sleep
-                    }
-                    Err(TryRecvError::Disconnected) => {
-                        // Really do not expect to be in this situation
-                        // probably the thread should exit
-                        info!(
-                            "Connection to Daemon Severed for Transaction {:?}",
-                            transaction.id()
-                        )
-                    }
-                };
+                }
             }
-
             Ok(transaction.generate_report())
         })?;
 
@@ -756,6 +793,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
 
                     let timeout = transaction.until_timeout();
                     let oper = sel.ready_timeout(timeout);
+
                     match oper {
                         Err(_) => {
                             transaction.handle_timeout()?;

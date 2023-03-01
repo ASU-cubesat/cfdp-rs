@@ -3,28 +3,40 @@ use std::{
     fs::File,
     io::{self, Seek, SeekFrom, Write},
     sync::Arc,
+    time::Duration,
 };
 
 use crossbeam_channel::Sender;
 use log::{debug, warn};
 
 use super::{
-    config::{Metadata, TransactionConfig, TransactionID, TransactionState, WaitingOn},
+    config::{Metadata, TransactionConfig, TransactionID, TransactionState},
     error::{TransactionError, TransactionResult},
 };
 use crate::{
-    daemon::Report,
+    daemon::{NakProcedure, Report},
     filestore::{FileChecksum, FileStore, FileStoreError},
     pdu::{
         ACKSubDirective, Condition, DeliveryCode, Direction, FaultHandlerAction, FileDataPDU,
         FileStatusCode, FileStoreResponse, Finished, KeepAlivePDU, MessageToUser, MetadataTLV,
         NakOrKeepAlive, NegativeAcknowledgmentPDU, Operations, PDUDirective, PDUHeader, PDUPayload,
-        PDUType, PositiveAcknowledgePDU, SegmentRequestForm, SegmentationControl,
+        PDUType, PositiveAcknowledgePDU, PromptPDU, SegmentRequestForm, SegmentationControl,
         TransactionSeqNum, TransactionStatus, TransmissionMode, VariableID, PDU, U3,
     },
     segments,
     timer::Timer,
 };
+
+#[derive(PartialEq, Debug)]
+enum RecvState {
+    // initial state
+    // received data, missing data and EOF
+    ReceiveData,
+    // send Finished and wait for ack
+    Finished,
+    // send Finished and wait for ack
+    Cancelled,
+}
 
 pub struct RecvTransaction<T: FileStore> {
     /// The current status of the Transaction. See [TransactionStatus]
@@ -33,18 +45,14 @@ pub struct RecvTransaction<T: FileStore> {
     config: TransactionConfig,
     /// The [FileStore] implementation used to interact with files on disk.
     filestore: Arc<T>,
-    /// Channel used to send outgoing PDUs through the Transport layer.
-    transport_tx: Sender<(VariableID, PDU)>,
     /// Channel for message to users to propagate back up
     message_tx: Sender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
     /// The current file being worked by this Transaction.
     file_handle: Option<File>,
-    /// A sorted list of contiguous (start offset, end offset) to monitor progress.
-    /// For a Receiver, these are the received segments.
-    /// For a Sender, these are the sent segments.
+    /// A sorted list of contiguous (start offset, end offset) non overlapping received segments to monitor progress and detect NAKs.
     saved_segments: Vec<(u64, u64)>,
-    /// The list of all missing information
-    naks: VecDeque<SegmentRequestForm>,
+    /// when to send NAKs - immediately after detection or after EOF
+    nak_procedure: NakProcedure,
     /// Flag to check if metadata on the file has been received
     pub(crate) metadata: Option<Metadata>,
     /// Measurement of how large of a file has been received so far
@@ -66,12 +74,25 @@ pub struct RecvTransaction<T: FileStore> {
     // checksum cache to reduce I/0
     // doubles as stored checksum in received mode
     checksum: Option<u32>,
-    // tracker to know what to do when a timeout occurs
-    waiting_on: WaitingOn,
     // The current state of the transaction.
     // Used to determine when the thread should be killed
     state: TransactionState,
+    // recv sub-state, applicable when state = Active
+    recv_state: RecvState,
+    // File size received in the EOF, used also as an indication that EOF has been received
+    file_size: Option<u64>,
+    // EOF ack prepared to be sent at the next opportunity
+    ack: Option<PositiveAcknowledgePDU>,
+    // Finished PDU prepared to be sent at the next opportunity, if the bool is true
+    finished: Option<(Finished, bool)>,
+    // Prompt PDU to be processed at the next opportunity
+    prompt: Option<PromptPDU>,
+    // the list of gaps to include in the next NAK
+    naks: VecDeque<SegmentRequestForm>,
+    // the received_file_size measured when the previous nak has been sent
+    nak_received_file_size: u64,
 }
+
 impl<T: FileStore> RecvTransaction<T> {
     /// Start a new SendTransaction with the given [configuration](TransactionConfig)
     /// and [Filestore Implementation](FileStore)
@@ -80,8 +101,6 @@ impl<T: FileStore> RecvTransaction<T> {
         config: TransactionConfig,
         // Connection to the local FileStore implementation.
         filestore: Arc<T>,
-        // Sender channel connected to the Transport thread to send PDUs.
-        transport_tx: Sender<(VariableID, PDU)>,
         // Sender channel used to propagate Message To User back up to the Daemon Thread.
         message_tx: Sender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
     ) -> Self {
@@ -99,11 +118,10 @@ impl<T: FileStore> RecvTransaction<T> {
             status: TransactionStatus::Undefined,
             config,
             filestore,
-            transport_tx,
             message_tx,
             file_handle: None,
             saved_segments: Vec::new(),
-            naks: VecDeque::new(),
+            nak_procedure: NakProcedure::Deferred,
             metadata: None,
             received_file_size,
             header: None,
@@ -113,11 +131,157 @@ impl<T: FileStore> RecvTransaction<T> {
             filestore_response: Vec::new(),
             timer,
             checksum: None,
-            waiting_on: WaitingOn::None,
             state: TransactionState::Active,
+            recv_state: RecvState::ReceiveData,
+            ack: None,
+            finished: None,
+            file_size: None,
+            prompt: None,
+            naks: VecDeque::new(),
+            nak_received_file_size: received_file_size,
         };
         transaction.timer.restart_inactivity();
         transaction
+    }
+
+    pub(crate) fn has_pdu_to_send(&self) -> bool {
+        match self.recv_state {
+            RecvState::ReceiveData => {
+                self.ack.is_some() || self.prompt.is_some() || !self.naks.is_empty()
+            }
+            RecvState::Finished | RecvState::Cancelled => {
+                self.finished.as_ref().map_or(false, |x| x.1)
+            }
+        }
+    }
+
+    // returns the time until the first timeout (inactivity or ack)
+    pub(crate) fn until_timeout(&self) -> Duration {
+        self.timer.until_timeout()
+    }
+
+    pub(crate) fn send_pdu(
+        &mut self,
+        transport_tx: &Sender<(VariableID, PDU)>,
+    ) -> TransactionResult<()> {
+        if self.prompt.is_some() {
+            self.answer_prompt(transport_tx)?;
+        } else {
+            match self.recv_state {
+                RecvState::ReceiveData => {
+                    if self.ack.is_some() {
+                        self.send_ack_eof(transport_tx)?;
+                    } else if !self.naks.is_empty() {
+                        self.send_naks(transport_tx)?;
+                    }
+                }
+                RecvState::Finished | RecvState::Cancelled => {
+                    if self.ack.is_some() {
+                        self.send_ack_eof(transport_tx)?;
+                    } else if self.finished.as_ref().map_or(false, |x| x.1) {
+                        self.send_finished(transport_tx)?;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn handle_timeout(&mut self) -> TransactionResult<()> {
+        if self.timer.inactivity.limit_reached() {
+            if self.recv_state == RecvState::Cancelled {
+                warn!("Transaction {:?} Inactivity timeout limit reached in Cancelled state, abandoning", self.id());
+                self.abandon();
+            } else {
+                self.handle_fault(Condition::InactivityDetected)?;
+            }
+        } else if self.timer.inactivity.timeout_occured() {
+            self.timer.restart_inactivity();
+        }
+
+        match self.recv_state {
+            RecvState::ReceiveData => {
+                if self.timer.nak.timeout_occured() {
+                    self.naks = self.get_all_naks();
+                }
+            }
+            RecvState::Finished => {
+                if self.timer.ack.limit_reached() {
+                    self.handle_fault(Condition::PositiveLimitReached)?;
+                } else if self.timer.ack.timeout_occured() {
+                    self.set_finished_flag(true);
+                    self.timer.restart_ack();
+                }
+            }
+            RecvState::Cancelled => {
+                if self.timer.ack.limit_reached() {
+                    warn!(
+                        "Transaction {:?} ACK timeout limit reached in Cancelled state, abandoning",
+                        self.id()
+                    );
+                    self.abandon();
+                } else if self.timer.ack.timeout_occured() {
+                    self.set_finished_flag(true);
+                    self.timer.restart_ack();
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn answer_prompt(&mut self, transport_tx: &Sender<(VariableID, PDU)>) -> TransactionResult<()> {
+        if let Some(prompt) = self.prompt.take() {
+            match prompt.nak_or_keep_alive {
+                NakOrKeepAlive::Nak => {
+                    self.naks = self.get_all_naks();
+                    self.send_naks(transport_tx)?;
+                }
+                NakOrKeepAlive::KeepAlive => {
+                    let progress = self.get_progress();
+                    let data = KeepAlivePDU { progress };
+
+                    let payload = PDUPayload::Directive(Operations::KeepAlive(data));
+                    let payload_len =
+                        payload.clone().encode(self.config.file_size_flag).len() as u16;
+
+                    let header = self.get_header(
+                        Direction::ToSender,
+                        PDUType::FileDirective,
+                        payload_len,
+                        SegmentationControl::NotPreserved,
+                    );
+
+                    let destination = header.source_entity_id;
+
+                    let pdu = PDU { header, payload };
+                    transport_tx.send((destination, pdu))?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+    // return true if:
+    // - metadata has not been received
+    // - there is a gap in the data received
+    // - EOF has been received and either no data has been received
+    //   or there is a gap between the last segment received and the end of file according to the file_size received in the EOF
+    fn has_naks(&self) -> bool {
+        self.metadata.is_none() || {
+            if let Some(file_size) = self.file_size {
+                //eof received
+                self.saved_segments.len() != 1 || self.saved_segments[0].1 != file_size
+            } else {
+                //eof not received
+                self.saved_segments.len() > 1
+            }
+        }
+    }
+
+    fn eof_received(&self) -> bool {
+        self.file_size.is_some()
     }
 
     pub fn get_status(&self) -> &TransactionStatus {
@@ -225,35 +389,6 @@ impl<T: FileStore> RecvTransaction<T> {
         Ok((offset, length))
     }
 
-    fn update_naks(&mut self, file_size: Option<u64>) {
-        let mut naks: VecDeque<SegmentRequestForm> = VecDeque::new();
-        let mut pointer = 0_u64;
-
-        if self.metadata.is_none() {
-            naks.push_back((0_u64, 0_u64).into());
-        }
-        self.saved_segments.iter().for_each(|(start, end)| {
-            if start > &pointer {
-                naks.push_back(SegmentRequestForm {
-                    start_offset: pointer,
-                    end_offset: *start,
-                });
-            }
-            pointer = *end;
-        });
-
-        if let Some(size) = file_size {
-            if pointer < size {
-                naks.push_back(SegmentRequestForm {
-                    start_offset: pointer,
-                    end_offset: size,
-                });
-            }
-        }
-
-        self.naks = naks
-    }
-
     fn finalize_file(&mut self) -> TransactionResult<FileStatusCode> {
         let id = self.id();
         {
@@ -295,12 +430,16 @@ impl<T: FileStore> RecvTransaction<T> {
     pub fn cancel(&mut self) -> TransactionResult<()> {
         debug!("Transaction {0:?} canceling.", self.id());
         self.condition = Condition::CancelReceived;
-        self._cancel()
+        self._cancel();
+        Ok(())
     }
 
-    fn _cancel(&mut self) -> TransactionResult<()> {
+    fn _cancel(&mut self) {
+        self.recv_state = RecvState::Cancelled;
+        self.timer.nak.pause();
+
         match &self.config.transmission_mode {
-            TransmissionMode::Acknowledged => self.send_finished(None),
+            TransmissionMode::Acknowledged => self.prepare_finished(None),
             TransmissionMode::Unacknowledged => {
                 if self
                     .metadata
@@ -309,10 +448,9 @@ impl<T: FileStore> RecvTransaction<T> {
                     .unwrap_or(false)
                 {
                     // need to check on fault_location
-                    self.send_finished(None)?;
+                    self.prepare_finished(None);
                 }
                 self.shutdown();
-                Ok(())
             }
         }
         // make some kind of log/indication
@@ -326,22 +464,24 @@ impl<T: FileStore> RecvTransaction<T> {
     }
 
     pub fn resume(&mut self) {
-        self.timer.restart_inactivity();
-        match self.waiting_on {
-            WaitingOn::AckFin => self.timer.restart_ack(),
-            WaitingOn::Nak => self.timer.restart_nak(),
-            _ => {}
+        self.timer.reset_inactivity();
+        match self.recv_state {
+            RecvState::ReceiveData => {
+                if self.nak_procedure == NakProcedure::Immediate || self.eof_received() {
+                    self.timer.reset_nak();
+                    self.naks = self.get_all_naks();
+                }
+            }
+            RecvState::Finished | RecvState::Cancelled => self.timer.reset_ack(),
         }
         self.state = TransactionState::Active;
-
-        // what to do about the other timers?
-        // We need to track if one is needed?
     }
 
     /// Take action according to the defined handler mapping.
     /// Returns a boolean indicating if the calling function should continue (true) or not (false.)
-    fn proceed_despite_fault(&mut self, condition: Condition) -> TransactionResult<bool> {
+    fn handle_fault(&mut self, condition: Condition) -> TransactionResult<bool> {
         self.condition = condition;
+        warn!("Transaction {:?} Handling fault {:?}", self.id(), condition);
         match self
             .config
             .fault_handler_override
@@ -353,7 +493,7 @@ impl<T: FileStore> RecvTransaction<T> {
                 Ok(true)
             }
             FaultHandlerAction::Cancel => {
-                self._cancel()?;
+                self._cancel();
                 Ok(false)
             }
 
@@ -368,35 +508,42 @@ impl<T: FileStore> RecvTransaction<T> {
         }
     }
 
-    fn send_ack_eof(&mut self) -> TransactionResult<()> {
-        let ack = PositiveAcknowledgePDU {
+    fn prepare_ack_eof(&mut self) {
+        self.ack = Some(PositiveAcknowledgePDU {
             directive: PDUDirective::EoF,
             directive_subtype_code: ACKSubDirective::Other,
             condition: self.condition,
             transaction_status: self.status.clone(),
-        };
-        let payload = PDUPayload::Directive(Operations::Ack(ack));
-        let payload_len = payload.clone().encode(self.config.file_size_flag).len();
+        });
+    }
+    fn send_ack_eof(&mut self, transport_tx: &Sender<(VariableID, PDU)>) -> TransactionResult<()> {
+        if let Some(ack) = self.ack.take() {
+            let payload = PDUPayload::Directive(Operations::Ack(ack));
+            let payload_len = payload.clone().encode(self.config.file_size_flag).len();
 
-        let header = self.get_header(
-            Direction::ToSender,
-            PDUType::FileDirective,
-            payload_len as u16,
-            // TODO add semgentation Control ability
-            SegmentationControl::NotPreserved,
-        );
+            let header = self.get_header(
+                Direction::ToSender,
+                PDUType::FileDirective,
+                payload_len as u16,
+                // TODO add semgentation Control ability
+                SegmentationControl::NotPreserved,
+            );
 
-        let destination = header.source_entity_id;
-        let pdu = PDU { header, payload };
-        self.transport_tx.send((destination, pdu))?;
-
+            let destination = header.source_entity_id;
+            let pdu = PDU { header, payload };
+            transport_tx.send((destination, pdu))?;
+        }
         Ok(())
     }
 
     fn check_file_size(&mut self, file_size: u64) -> TransactionResult<()> {
         if self.received_file_size > file_size {
+            warn!(
+                "EOF file size {} is smaller than file size received in file data {}",
+                file_size, self.received_file_size
+            );
             // we will always exit here anyway
-            self.proceed_despite_fault(Condition::FilesizeError)?;
+            self.handle_fault(Condition::FilesizeError)?;
         }
         Ok(())
     }
@@ -407,56 +554,99 @@ impl<T: FileStore> RecvTransaction<T> {
             .fold(0_u64, |size, (start, end)| size + (end - start))
     }
 
-    fn send_finished(&mut self, fault_location: Option<VariableID>) -> TransactionResult<()> {
+    fn prepare_finished(&mut self, fault_location: Option<VariableID>) {
+        self.finished = Some((
+            Finished {
+                condition: self.condition,
+                delivery_code: self.delivery_code.clone(),
+                file_status: self.file_status.clone(),
+                filestore_response: self.filestore_response.clone(),
+                fault_location,
+            },
+            true,
+        ));
+    }
+
+    fn send_finished(&mut self, transport_tx: &Sender<(VariableID, PDU)>) -> TransactionResult<()> {
         self.timer.restart_ack();
-        self.waiting_on = WaitingOn::AckFin;
-        //  if is lazily evaluated so the fault is only handled if the limit is reached
-        if self.timer.ack.limit_reached()
-            && !self.proceed_despite_fault(Condition::PositiveLimitReached)?
-        {
-            return Ok(());
+        if let Some((finished, true)) = &self.finished {
+            let payload = PDUPayload::Directive(Operations::Finished(finished.clone()));
+
+            let payload_len = payload.clone().encode(self.config.file_size_flag).len() as u16;
+
+            let header = self.get_header(
+                Direction::ToSender,
+                PDUType::FileDirective,
+                payload_len,
+                SegmentationControl::NotPreserved,
+            );
+
+            let destination = header.source_entity_id;
+            let pdu = PDU { header, payload };
+
+            transport_tx.send((destination, pdu))?;
+            debug!("Transaction {0:?} sent Finished", self.id());
+            self.set_finished_flag(false);
         }
-        let finished = Finished {
-            condition: self.condition,
-            delivery_code: self.delivery_code.clone(),
-            file_status: self.file_status.clone(),
-            filestore_response: self.filestore_response.clone(),
-            fault_location,
-        };
-
-        let payload = PDUPayload::Directive(Operations::Finished(finished));
-
-        let payload_len = payload.clone().encode(self.config.file_size_flag).len() as u16;
-
-        let header = self.get_header(
-            Direction::ToSender,
-            PDUType::FileDirective,
-            payload_len,
-            SegmentationControl::NotPreserved,
-        );
-
-        let destination = header.source_entity_id;
-        let pdu = PDU { header, payload };
-
-        self.transport_tx.send((destination, pdu))?;
         Ok(())
     }
 
-    pub fn send_naks(&mut self) -> TransactionResult<()> {
-        self.timer.restart_nak();
-        self.waiting_on = WaitingOn::Nak;
-        //  if is lazily evaluated so the fault is only handled if the limit is reached
-        if self.timer.nak.limit_reached()
-            && !self.proceed_despite_fault(Condition::NakLimitReached)?
-        {
-            return Ok(());
+    // set the true flag on the fin such that it is sent at the next opportunity
+    fn set_finished_flag(&mut self, flag: bool) {
+        if let Some(x) = self.finished.as_mut() {
+            x.1 = flag;
+        }
+    }
+
+    fn get_all_naks(&self) -> VecDeque<SegmentRequestForm> {
+        let mut naks: VecDeque<SegmentRequestForm> = VecDeque::new();
+        let mut pointer = 0_u64;
+
+        if self.metadata.is_none() {
+            naks.push_back((0_u64, 0_u64).into());
+        }
+        self.saved_segments.iter().for_each(|(start, end)| {
+            if start > &pointer {
+                naks.push_back(SegmentRequestForm {
+                    start_offset: pointer,
+                    end_offset: *start,
+                });
+            }
+            pointer = *end;
+        });
+
+        if let Some(file_size) = self.file_size {
+            if pointer < file_size {
+                naks.push_back(SegmentRequestForm {
+                    start_offset: pointer,
+                    end_offset: file_size,
+                });
+            }
+        }
+        naks
+    }
+
+    fn send_naks(&mut self, transport_tx: &Sender<(VariableID, PDU)>) -> TransactionResult<()> {
+        if self.nak_received_file_size == self.received_file_size {
+            if self.timer.nak.limit_reached() {
+                self.handle_fault(Condition::NakLimitReached)?;
+                return Ok(());
+            }
+            self.timer.restart_nak();
+        } else {
+            // new data has been received since last NAK was send; reset the counter to 0
+            self.timer.reset_nak();
+            self.nak_received_file_size = self.received_file_size;
         }
 
+        // TODO: do not exceed the maximum size of the PDU if there are many naks (some should be left to be sent next time)
+        let segment_requests = self.naks.drain(..).collect();
         let nak = NegativeAcknowledgmentPDU {
             start_of_scope: 0_u64,
             end_of_scope: self.received_file_size,
-            segment_requests: self.naks.clone().into(),
+            segment_requests,
         };
+        self.naks.clear();
 
         let payload = PDUPayload::Directive(Operations::Nak(nak));
         let payload_len = payload.clone().encode(self.config.file_size_flag).len();
@@ -469,7 +659,8 @@ impl<T: FileStore> RecvTransaction<T> {
         );
         let destination = header.source_entity_id;
         let pdu = PDU { header, payload };
-        self.transport_tx.send((destination, pdu))?;
+
+        transport_tx.send((destination, pdu))?;
 
         Ok(())
     }
@@ -493,9 +684,8 @@ impl<T: FileStore> RecvTransaction<T> {
         self.delivery_code = DeliveryCode::Complete;
 
         self.file_status = if self.is_file_transfer() {
-            // proceed_despite_fault returns false if we should exit immediately
             if !self.verify_checksum(checksum)?
-                && !self.proceed_despite_fault(Condition::FileChecksumFailure)?
+                && !self.handle_fault(Condition::FileChecksumFailure)?
             {
                 return Ok(());
             }
@@ -506,7 +696,7 @@ impl<T: FileStore> RecvTransaction<T> {
         };
         // A filestore rejection is a failure mode for the entire transaction.
         if self.file_status == FileStatusCode::FileStoreRejection
-            && !self.proceed_despite_fault(Condition::FileStoreRejection)?
+            && !self.handle_fault(Condition::FileStoreRejection)?
         {
             return Ok(());
         }
@@ -533,22 +723,6 @@ impl<T: FileStore> RecvTransaction<T> {
         Ok(())
     }
 
-    pub fn monitor_timeout(&mut self) -> TransactionResult<()> {
-        if self.timer.inactivity.timeout_occured()
-            && self.timer.inactivity.limit_reached()
-            && !self.proceed_despite_fault(Condition::InactivityDetected)?
-        {
-            return Ok(());
-        }
-        if self.timer.nak.timeout_occured() && self.waiting_on == WaitingOn::Nak {
-            return self.send_naks();
-        }
-        if self.timer.ack.timeout_occured() && self.waiting_on == WaitingOn::AckFin {
-            return self.send_finished(None);
-        }
-        Ok(())
-    }
-
     pub fn process_pdu(&mut self, pdu: PDU) -> TransactionResult<()> {
         self.timer.restart_inactivity();
         let PDU {
@@ -559,76 +733,56 @@ impl<T: FileStore> RecvTransaction<T> {
             TransmissionMode::Acknowledged => {
                 match payload {
                     PDUPayload::FileData(filedata) => {
-                        // if we're getting data but have sent a nak
-                        // restart the timer.
-                        if self.waiting_on == WaitingOn::Nak {
-                            self.timer.restart_nak();
-                        }
-                        // Issue notice of recieved? Log it.
+                        //the end of the last segment
+                        let prev_end = self.saved_segments.last().map(|(_, end)| *end);
+
                         let (offset, length) = self.store_file_data(filedata)?;
                         // update the total received size if appropriate.
                         let size = offset + length as u64;
                         if self.received_file_size < size {
                             self.received_file_size = size;
                         }
-
-                        // need a block here for if we have sent naks
-                        // in deferred mode. a second EoF is not sent
-                        // so we should check if we have the whole thing?
-                        if self.waiting_on == WaitingOn::Nak {
-                            self.update_naks(self.metadata.as_ref().map(|meta| meta.file_size));
-                            match self.naks.is_empty() {
-                                false => self.send_naks()?,
-                                true => {
-                                    self.finalize_receive()?;
-                                    self.timer.nak.pause();
-                                    self.waiting_on = WaitingOn::None;
-                                    self.send_finished(if self.condition == Condition::NoError {
-                                        None
-                                    } else {
-                                        Some(self.config.destination_entity_id)
-                                    })?
+                        if self.nak_procedure == NakProcedure::Immediate && !self.eof_received() {
+                            if self.timer.nak.timeout_occured() {
+                                //send all gaps at the next opportunity
+                                self.naks = self.get_all_naks();
+                                self.timer.restart_nak();
+                            } else if let Some(prev_end) = prev_end {
+                                if offset > prev_end {
+                                    //new gap -> send it at the next opportunity
+                                    self.naks.push_back(SegmentRequestForm {
+                                        start_offset: prev_end,
+                                        end_offset: offset,
+                                    });
                                 }
-                            };
+                            }
                         }
+                        self.check_finished()?;
 
                         Ok(())
                     }
                     PDUPayload::Directive(operation) => {
                         match operation {
                             Operations::EoF(eof) => {
-                                debug!("Trasaction {0:?} received EndOfFile.", self.id());
+                                debug!("Transaction {0:?} received EndOfFile.", self.id());
                                 self.condition = eof.condition;
-                                self.send_ack_eof()?;
+                                self.prepare_ack_eof();
                                 self.checksum = Some(eof.checksum);
-                                self.waiting_on = WaitingOn::MissingData;
 
                                 if self.condition == Condition::NoError {
-                                    self.update_naks(Some(eof.file_size));
-
                                     self.check_file_size(eof.file_size)?;
-                                    match self.naks.is_empty() {
-                                        true => {
-                                            self.finalize_receive()?;
-                                            self.timer.nak.pause();
-                                            self.waiting_on = WaitingOn::None;
-                                            self.send_finished(
-                                                if self.condition == Condition::NoError {
-                                                    None
-                                                } else {
-                                                    Some(self.config.destination_entity_id)
-                                                },
-                                            )
-                                        }
-                                        false => self.send_naks(),
-                                    }
+                                    self.file_size = Some(eof.file_size);
+
+                                    //send all gaps (if any) at the next opportunity
+                                    self.naks = self.get_all_naks();
+
+                                    self.check_finished()?;
                                 } else {
                                     // Any other condition is essentially a
                                     // CANCEL operation
-                                    self._cancel()
-                                    // issue finished log
-                                    // shutdown?
+                                    self._cancel();
                                 }
+                                Ok(())
                             }
                             Operations::Finished(_finished) => {
                                 Err(TransactionError::UnexpectedPDU(
@@ -638,16 +792,18 @@ impl<T: FileStore> RecvTransaction<T> {
                                 ))
                             }
                             Operations::Ack(ack) => {
-                                if ack.directive == PDUDirective::Finished
+                                if (self.recv_state == RecvState::Finished
+                                    || self.recv_state == RecvState::Cancelled)
+                                    && ack.directive == PDUDirective::Finished
                                     && ack.directive_subtype_code == ACKSubDirective::Finished
                                     && ack.condition == Condition::NoError
                                 {
                                     debug!(
-                                        "Transaction {0:?} received Acknowledge Finished.",
-                                        self.id()
+                                        "Transaction {0:?} received ACK Finished({1:?}).",
+                                        self.id(),
+                                        ack.condition
                                     );
                                     self.timer.ack.pause();
-                                    self.waiting_on = WaitingOn::None;
                                     self.shutdown();
                                     Ok(())
                                 } else {
@@ -703,27 +859,7 @@ impl<T: FileStore> RecvTransaction<T> {
                                             .collect(),
                                         message_to_user: message_to_user.collect(),
                                     });
-                                    // need a block here for if we have sent naks
-                                    // in deferred mode. a second EoF is not sent
-                                    // so we should check if we have the whole thing?
-                                    if self.waiting_on == WaitingOn::Nak {
-                                        self.update_naks(Some(metadata.file_size));
-                                        match self.naks.is_empty() {
-                                            false => self.send_naks()?,
-                                            true => {
-                                                self.finalize_receive()?;
-                                                self.timer.nak.pause();
-                                                self.waiting_on = WaitingOn::None;
-                                                return self.send_finished(
-                                                    if self.condition == Condition::NoError {
-                                                        None
-                                                    } else {
-                                                        Some(self.config.destination_entity_id)
-                                                    },
-                                                );
-                                            }
-                                        };
-                                    }
+                                    self.check_finished()?;
                                 }
                                 Ok(())
                             }
@@ -732,37 +868,11 @@ impl<T: FileStore> RecvTransaction<T> {
                                 self.config.transmission_mode,
                                 "NAK PDU".to_owned(),
                             )),
-                            Operations::Prompt(prompt) => match prompt.nak_or_keep_alive {
-                                NakOrKeepAlive::Nak => {
-                                    self.update_naks(
-                                        self.metadata.as_ref().map(|meta| meta.file_size),
-                                    );
-                                    self.send_naks()
-                                }
-                                NakOrKeepAlive::KeepAlive => {
-                                    let progress = self.get_progress();
-                                    let data = KeepAlivePDU { progress };
-
-                                    let payload =
-                                        PDUPayload::Directive(Operations::KeepAlive(data));
-                                    let payload_len =
-                                        payload.clone().encode(self.config.file_size_flag).len()
-                                            as u16;
-
-                                    let header = self.get_header(
-                                        Direction::ToSender,
-                                        PDUType::FileDirective,
-                                        payload_len,
-                                        SegmentationControl::NotPreserved,
-                                    );
-
-                                    let destination = header.source_entity_id;
-
-                                    let pdu = PDU { header, payload };
-                                    self.transport_tx.send((destination, pdu))?;
-                                    Ok(())
-                                }
-                            },
+                            Operations::Prompt(prompt) => {
+                                // remember the prompt PDU - it will be answered at the next opportunity
+                                self.prompt.replace(prompt);
+                                Ok(())
+                            }
                             Operations::KeepAlive(_keepalive) => {
                                 Err(TransactionError::UnexpectedPDU(
                                     self.config.sequence_number,
@@ -824,23 +934,21 @@ impl<T: FileStore> RecvTransaction<T> {
                                         .map(|meta| meta.closure_requested)
                                         .unwrap_or(false)
                                     {
-                                        self.send_finished(
+                                        self.recv_state = RecvState::Finished;
+                                        self.prepare_finished(
                                             if self.condition == Condition::NoError {
                                                 None
                                             } else {
                                                 Some(self.config.destination_entity_id)
                                             },
-                                        )?;
+                                        );
                                     }
-
-                                    Ok(())
                                 } else {
                                     // Any other condition is essentially a
                                     // CANCEL operation
                                     self._cancel()
-                                    // issue finished log
-                                    // shutdown?
                                 }
+                                Ok(())
                             }
                             Operations::Metadata(metadata) => {
                                 if self.metadata.is_none() {
@@ -916,6 +1024,20 @@ impl<T: FileStore> RecvTransaction<T> {
             }
         }
     }
+
+    // go to the Finished state if the file is complete (used only in acknowledged mode)
+    fn check_finished(&mut self) -> TransactionResult<()> {
+        if self.metadata.is_some()
+            && self.eof_received()
+            && !(self.is_file_transfer() && self.has_naks())
+        {
+            self.finalize_receive()?;
+            self.recv_state = RecvState::Finished;
+            self.prepare_finished(None);
+            self.timer.nak.pause();
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -948,14 +1070,13 @@ mod test {
 
     #[rstest]
     fn header(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (transport_tx, _) = unbounded();
         let (message_tx, _) = unbounded();
         let config = default_config.clone();
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
-        let mut transaction = RecvTransaction::new(config, filestore, transport_tx, message_tx);
+        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
         let payload_len = 12;
         let expected = PDUHeader {
             version: U3::One,
@@ -984,14 +1105,13 @@ mod test {
 
     #[rstest]
     fn test_if_file_transfer(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (transport_tx, _) = unbounded();
         let (message_tx, _) = unbounded();
         let config = default_config.clone();
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
-        let mut transaction = RecvTransaction::new(config, filestore, transport_tx, message_tx);
+        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
         assert_eq!(
             TransactionStatus::Undefined,
             transaction.get_status().clone()
@@ -1014,14 +1134,13 @@ mod test {
 
     #[rstest]
     fn store_filedata(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (transport_tx, _) = unbounded();
         let (message_tx, _) = unbounded();
         let config = default_config.clone();
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
-        let mut transaction = RecvTransaction::new(config, filestore, transport_tx, message_tx);
+        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
 
         let input = vec![0, 5, 255, 99];
         let data = FileDataPDU::Unsegmented(UnsegmentedFileData {
@@ -1045,7 +1164,6 @@ mod test {
 
     #[rstest]
     fn finalize_file(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (transport_tx, _) = unbounded();
         let (message_tx, _) = unbounded();
         let config = default_config.clone();
         let filestore = Arc::new(NativeFileStore::new(
@@ -1059,8 +1177,7 @@ mod test {
             temp_buff
         };
 
-        let mut transaction =
-            RecvTransaction::new(config, filestore.clone(), transport_tx, message_tx);
+        let mut transaction = RecvTransaction::new(config, filestore.clone(), message_tx);
         transaction.metadata = Some(Metadata {
             closure_requested: false,
             file_size: input.len() as u64,
@@ -1100,7 +1217,7 @@ mod test {
     }
 
     #[rstest]
-    fn update_naks(
+    fn test_naks(
         default_config: &TransactionConfig,
         tempdir_fixture: &TempDir,
         #[values(FileSizeFlag::Small, FileSizeFlag::Large)] file_size_flag: FileSizeFlag,
@@ -1117,7 +1234,7 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let mut transaction = RecvTransaction::new(config, filestore, transport_tx, message_tx);
+        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
 
         let input = vec![0, 5, 255, 99];
         let data = FileDataPDU::Unsegmented(UnsegmentedFileData {
@@ -1130,7 +1247,8 @@ mod test {
 
         assert_eq!(6, offset);
         assert_eq!(4, length);
-        transaction.update_naks(Some(file_size));
+
+        transaction.file_size = Some(file_size);
         transaction.received_file_size = file_size;
 
         let expected: VecDeque<SegmentRequestForm> = vec![
@@ -1140,7 +1258,7 @@ mod test {
         ]
         .into();
 
-        assert_eq!(expected, transaction.naks);
+        assert_eq!(expected, transaction.get_all_naks());
 
         let payload = PDUPayload::Directive(Operations::Nak(NegativeAcknowledgmentPDU {
             start_of_scope: 0,
@@ -1164,7 +1282,8 @@ mod test {
         // now that naks are created correctly
         // test the right PDU is sent
         thread::spawn(move || {
-            transaction.send_naks().unwrap();
+            transaction.naks = transaction.get_all_naks();
+            transaction.send_naks(&transport_tx).unwrap();
         });
 
         let (destination_id, received_pdu) = transport_rx.recv().unwrap();
@@ -1189,8 +1308,7 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let mut transaction =
-            RecvTransaction::new(config.clone(), filestore, transport_tx, message_tx);
+        let mut transaction = RecvTransaction::new(config.clone(), filestore, message_tx);
 
         let path = {
             let mut buf = Utf8PathBuf::new();
@@ -1233,6 +1351,7 @@ mod test {
             if transaction.config.transmission_mode == TransmissionMode::Unacknowledged {
                 assert_eq!(TransactionStatus::Terminated, transaction.status);
             }
+            transaction.send_pdu(&transport_tx).unwrap();
         });
 
         if config.transmission_mode == TransmissionMode::Acknowledged {
@@ -1246,14 +1365,13 @@ mod test {
 
     #[rstest]
     fn suspend(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (transport_tx, _) = unbounded();
         let (message_tx, _) = unbounded();
         let config = default_config.clone();
 
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let mut transaction = RecvTransaction::new(config, filestore, transport_tx, message_tx);
+        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
 
         transaction.timer.restart_ack();
         transaction.timer.restart_inactivity();
@@ -1283,14 +1401,13 @@ mod test {
 
     #[rstest]
     fn resume(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (transport_tx, _) = unbounded();
         let (message_tx, _) = unbounded();
         let config = default_config.clone();
 
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let mut transaction = RecvTransaction::new(config, filestore, transport_tx, message_tx);
+        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
 
         transaction.timer.restart_ack();
         transaction.timer.restart_inactivity();
@@ -1323,11 +1440,12 @@ mod test {
         assert!(!transaction.timer.ack.is_ticking());
         assert!(!transaction.timer.nak.is_ticking());
 
-        transaction.waiting_on = WaitingOn::AckFin;
+        transaction.recv_state = RecvState::Finished;
         transaction.resume();
         assert!(transaction.timer.ack.is_ticking());
 
-        transaction.waiting_on = WaitingOn::Nak;
+        transaction.recv_state = RecvState::ReceiveData;
+        transaction.nak_procedure = NakProcedure::Immediate;
         transaction.resume();
         assert!(transaction.timer.nak.is_ticking());
     }
@@ -1341,8 +1459,7 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let mut transaction =
-            RecvTransaction::new(config.clone(), filestore, transport_tx, message_tx);
+        let mut transaction = RecvTransaction::new(config.clone(), filestore, message_tx);
 
         let path = {
             let mut buf = Utf8PathBuf::new();
@@ -1380,7 +1497,8 @@ mod test {
         let pdu = PDU { header, payload };
 
         thread::spawn(move || {
-            transaction.send_ack_eof().unwrap();
+            transaction.prepare_ack_eof();
+            transaction.send_ack_eof(&transport_tx).unwrap();
         });
 
         let (destination_id, received_pdu) = transport_rx.recv().unwrap();
@@ -1392,15 +1510,13 @@ mod test {
 
     #[rstest]
     fn finalize_receive(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (transport_tx, _) = unbounded();
         let (message_tx, _) = unbounded();
         let config = default_config.clone();
 
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let mut transaction =
-            RecvTransaction::new(config, filestore.clone(), transport_tx, message_tx);
+        let mut transaction = RecvTransaction::new(config, filestore.clone(), message_tx);
 
         let path = {
             let mut buf = Utf8PathBuf::new();
@@ -1492,7 +1608,6 @@ mod test {
         )]
         operation: Operations,
     ) {
-        let (transport_tx, _) = unbounded();
         let (message_tx, _) = unbounded();
         let mut config = default_config.clone();
         config.transmission_mode = TransmissionMode::Unacknowledged;
@@ -1500,7 +1615,7 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let mut transaction = RecvTransaction::new(config, filestore, transport_tx, message_tx);
+        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
 
         let path = {
             let mut path = Utf8PathBuf::new();
@@ -1580,7 +1695,6 @@ mod test {
         )]
         operation: Operations,
     ) {
-        let (transport_tx, _) = unbounded();
         let (message_tx, _) = unbounded();
         let mut config = default_config.clone();
         config.transmission_mode = TransmissionMode::Acknowledged;
@@ -1588,7 +1702,7 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let mut transaction = RecvTransaction::new(config, filestore, transport_tx, message_tx);
+        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
 
         let path = {
             let mut path = Utf8PathBuf::new();
@@ -1638,7 +1752,6 @@ mod test {
         #[values(TransmissionMode::Unacknowledged, TransmissionMode::Acknowledged)]
         transmission_mode: TransmissionMode,
     ) {
-        let (transport_tx, _) = unbounded();
         let (message_tx, _) = unbounded();
         let mut config = default_config.clone();
         config.transmission_mode = transmission_mode;
@@ -1646,7 +1759,7 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let mut transaction = RecvTransaction::new(config, filestore, transport_tx, message_tx);
+        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
 
         let path = {
             let mut path = Utf8PathBuf::new();
@@ -1703,7 +1816,6 @@ mod test {
         #[values(TransmissionMode::Unacknowledged, TransmissionMode::Acknowledged)]
         transmission_mode: TransmissionMode,
     ) {
-        let (transport_tx, _) = unbounded();
         let (message_tx, message_rx) = unbounded();
         let mut config = default_config.clone();
         config.transmission_mode = transmission_mode;
@@ -1711,7 +1823,7 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let mut transaction = RecvTransaction::new(config, filestore, transport_tx, message_tx);
+        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
 
         let path = {
             let mut path = Utf8PathBuf::new();
@@ -1788,7 +1900,7 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let mut transaction = RecvTransaction::new(config, filestore, transport_tx, message_tx);
+        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
 
         let path = {
             let mut path = Utf8PathBuf::new();
@@ -1887,8 +1999,10 @@ mod test {
             transaction.process_pdu(file_pdu).unwrap();
 
             transaction.process_pdu(input_pdu).unwrap();
+            transaction.send_pdu(&transport_tx).unwrap();
 
             if transaction.config.transmission_mode == TransmissionMode::Acknowledged {
+                transaction.send_pdu(&transport_tx).unwrap();
                 assert!(transaction.timer.ack.is_ticking());
 
                 let ack_fin = {
@@ -1969,7 +2083,7 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let mut transaction = RecvTransaction::new(config, filestore, transport_tx, message_tx);
+        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
         let path = {
             let mut buf = Utf8PathBuf::new();
             buf.push("test_file");
@@ -1984,6 +2098,11 @@ mod test {
             filestore_requests: vec![],
             checksum_type: ChecksumType::Modular,
         });
+
+        //this simulates effectively the EOF reception
+        //it is required because, according to spec, unless EOF has been received, the NAK sequence
+        // will not include the last part of the file (even though the file_size is known from the metadata)
+        transaction.file_size = Some(600);
 
         let prompt_pdu = {
             let payload = PDUPayload::Directive(Operations::Prompt(PromptPDU {
@@ -2048,6 +2167,8 @@ mod test {
         };
         thread::spawn(move || {
             transaction.process_pdu(prompt_pdu).unwrap();
+            assert!(transaction.has_pdu_to_send());
+            transaction.send_pdu(&transport_tx).unwrap();
         });
 
         let (destination_id, received_pdu) = transport_rx.recv().unwrap();

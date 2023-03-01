@@ -15,7 +15,7 @@ use std::{
 
 use camino::Utf8PathBuf;
 use cfdp_core::{
-    daemon::{Daemon, EntityConfig, PutRequest, Report, UserPrimitive},
+    daemon::{Daemon, EntityConfig, PutRequest, Report, UserPrimitive, NakProcedure},
     filestore::{ChecksumType, FileStore, NativeFileStore},
     pdu::{
         CRCFlag, Condition, EntityID, FaultHandlerAction, PDUDirective, PDUEncode, PDUPayload,
@@ -265,6 +265,7 @@ pub(crate) fn create_daemons<T: FileStore + Sync + Send + 'static>(
         crc_flag: CRCFlag::NotPresent,
         closure_requested: false,
         checksum_type: ChecksumType::Modular,
+        nak_procedure: NakProcedure::Deferred,
     };
 
     let remote_config = HashMap::from([

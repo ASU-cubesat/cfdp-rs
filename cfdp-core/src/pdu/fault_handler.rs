@@ -1,7 +1,9 @@
-use std::{io::Read, str::FromStr};
+use std::str::FromStr;
 
+use async_trait::async_trait;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
+use tokio::io::AsyncReadExt;
 
 use super::{
     error::{PDUError, PDUResult},
@@ -44,6 +46,7 @@ pub enum HandlerCode {
 pub struct FaultHandlerOverride {
     pub fault_handler_code: HandlerCode,
 }
+#[async_trait]
 impl PDUEncode for FaultHandlerOverride {
     type PDUType = Self;
 
@@ -51,11 +54,11 @@ impl PDUEncode for FaultHandlerOverride {
         vec![self.fault_handler_code as u8]
     }
 
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let mut u8_buff = [0u8; 1];
-        buffer.read_exact(&mut u8_buff)?;
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
         let fault_handler_code = {
-            let possible_code = u8_buff[0];
+            let possible_code = buffer.read_u8().await?;
             HandlerCode::from_u8(possible_code)
                 .ok_or(PDUError::InvalidFaultHandlerCode(possible_code))?
         };

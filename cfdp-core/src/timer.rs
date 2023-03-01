@@ -54,7 +54,7 @@ impl Counter {
         self.get_count() == self.max_count
     }
 
-    pub fn timeout_occured(&self) -> bool {
+    pub fn timeout_occurred(&self) -> bool {
         let value = *self.occurred.lock().unwrap();
         if value {
             // reset to see if another timout occurred next time
@@ -120,7 +120,7 @@ mod test {
         timer.inactivity.pause();
         assert_eq!(timer.inactivity.get_count(), 2);
         assert!(!timer.inactivity.limit_reached());
-        assert!(timer.inactivity.timeout_occured())
+        assert!(timer.inactivity.timeout_occurred())
     }
 
     #[test]
@@ -129,10 +129,10 @@ mod test {
         timer.restart_inactivity();
         thread::sleep(Duration::from_secs_f32(1.1_f32));
         timer.inactivity.pause();
-        assert!(!timer.inactivity.timeout_occured());
+        assert!(!timer.inactivity.timeout_occurred());
         // sleep again but make sure to cross the threshold from the original time out
         thread::sleep(Duration::from_secs_f32(1.5_f32));
-        assert!(!timer.inactivity.timeout_occured());
+        assert!(!timer.inactivity.timeout_occurred());
 
         assert_eq!(timer.inactivity.get_count(), 0)
     }
@@ -154,12 +154,12 @@ mod test {
         let mut timer = Timer::new(2_i64, 5, 1_i64, 5, 1_i64, 5);
         timer.restart_inactivity();
         thread::sleep(Duration::from_secs_f32(1.5));
-        assert!(!timer.inactivity.timeout_occured());
+        assert!(!timer.inactivity.timeout_occurred());
         timer.restart_inactivity();
         thread::sleep(Duration::from_secs_f32(2.2));
         timer.inactivity.pause();
 
-        assert!(timer.inactivity.timeout_occured())
+        assert!(timer.inactivity.timeout_occurred())
     }
 
     #[test]
@@ -169,9 +169,9 @@ mod test {
         timer.restart_ack();
         timer.restart_nak();
         thread::sleep(Duration::from_secs_f32(1.5));
-        assert!(timer.inactivity.timeout_occured());
-        assert!(timer.ack.timeout_occured());
-        assert!(timer.nak.timeout_occured());
+        assert!(timer.inactivity.timeout_occurred());
+        assert!(timer.ack.timeout_occurred());
+        assert!(timer.nak.timeout_occurred());
         assert_eq!(timer.inactivity.get_count(), 1);
         assert_eq!(timer.ack.get_count(), 1);
         assert_eq!(timer.nak.get_count(), 1);

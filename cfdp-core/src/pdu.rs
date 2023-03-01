@@ -1,5 +1,6 @@
+use async_trait::async_trait;
 use log::error;
-use std::io::Read;
+use tokio::io::AsyncReadExt;
 
 pub(crate) mod error;
 mod fault_handler;
@@ -29,21 +30,19 @@ impl PDUPayload {
         }
     }
 
-    pub fn decode<T: std::io::Read>(
+    pub async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
         buffer: &mut T,
         pdu_type: PDUType,
         file_size_flag: FileSizeFlag,
         segmentation_flag: SegmentedData,
     ) -> error::PDUResult<Self> {
         match pdu_type {
-            PDUType::FileDirective => {
-                Ok(Self::Directive(Operations::decode(buffer, file_size_flag)?))
-            }
-            PDUType::FileData => Ok(Self::FileData(FileDataPDU::decode(
-                buffer,
-                segmentation_flag,
-                file_size_flag,
-            )?)),
+            PDUType::FileDirective => Ok(Self::Directive(
+                Operations::decode(buffer, file_size_flag).await?,
+            )),
+            PDUType::FileData => Ok(Self::FileData(
+                FileDataPDU::decode(buffer, segmentation_flag, file_size_flag).await?,
+            )),
         }
     }
 }
@@ -53,6 +52,7 @@ pub struct PDU {
     pub header: PDUHeader,
     pub payload: PDUPayload,
 }
+#[async_trait]
 impl PDUEncode for PDU {
     type PDUType = Self;
 
@@ -69,12 +69,14 @@ impl PDUEncode for PDU {
         buffer
     }
 
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let header = PDUHeader::decode(buffer)?;
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
+        let header = PDUHeader::decode(buffer).await?;
 
         let mut remaining_msg = vec![0_u8; header.pdu_data_field_length as usize];
 
-        buffer.read_exact(remaining_msg.as_mut_slice())?;
+        buffer.read_exact(remaining_msg.as_mut_slice()).await?;
         let remaining_buffer = &mut remaining_msg.as_slice();
 
         let payload = PDUPayload::decode(
@@ -82,7 +84,8 @@ impl PDUEncode for PDU {
             header.pdu_type.clone(),
             header.large_file_flag,
             header.segment_metadata_flag.clone(),
-        )?;
+        )
+        .await?;
 
         let received_pdu = Self { header, payload };
 
@@ -90,9 +93,7 @@ impl PDUEncode for PDU {
         match &received_pdu.header.crc_flag {
             CRCFlag::NotPresent => {}
             CRCFlag::Present => {
-                let mut u16_buffer = [0_u8; 2];
-                buffer.read_exact(&mut u16_buffer)?;
-                let crc16 = u16::from_be_bytes(u16_buffer);
+                let crc16 = buffer.read_u16().await?;
                 let tmp_buffer = {
                     let input_pdu = received_pdu.clone();
 
@@ -175,7 +176,8 @@ mod test {
             file_data: "test some information".as_bytes().to_vec(),
         }))
     )]
-    fn pdu_encoding(
+    #[tokio::test]
+    async fn pdu_encoding(
         #[case] payload: PDUPayload,
         #[values(CRCFlag::NotPresent, CRCFlag::Present)] crc_flag: CRCFlag,
     ) -> PDUResult<()> {
@@ -203,7 +205,7 @@ mod test {
             payload,
         };
         let buffer = expected.clone().encode();
-        let recovered = PDU::decode(&mut buffer.as_slice())?;
+        let recovered = PDU::decode(&mut buffer.as_slice()).await?;
         assert_eq!(expected, recovered);
         Ok(())
     }

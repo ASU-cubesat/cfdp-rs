@@ -5,8 +5,8 @@ use std::{
     sync::Arc,
 };
 
-use crossbeam_channel::Sender;
 use log::{debug, warn};
+use tokio::sync::mpsc::UnboundedSender;
 
 use super::{
     config::{Metadata, TransactionConfig, TransactionID, TransactionState, WaitingOn},
@@ -34,9 +34,9 @@ pub struct RecvTransaction<T: FileStore> {
     /// The [FileStore] implementation used to interact with files on disk.
     filestore: Arc<T>,
     /// Channel used to send outgoing PDUs through the Transport layer.
-    transport_tx: Sender<(VariableID, PDU)>,
+    transport_tx: UnboundedSender<(VariableID, PDU)>,
     /// Channel for message to users to propagate back up
-    message_tx: Sender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
+    message_tx: UnboundedSender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
     /// The current file being worked by this Transaction.
     file_handle: Option<File>,
     /// A sorted list of contiguous (start offset, end offset) to monitor progress.
@@ -60,7 +60,7 @@ pub struct RecvTransaction<T: FileStore> {
     // the responses of any filestore actions
     filestore_response: Vec<FileStoreResponse>,
     // Timer used to track if the Nak limit has been reached
-    // inactivity has occured
+    // inactivity has occurred
     // or the ACK limit is reached
     timer: Timer,
     // checksum cache to reduce I/0
@@ -81,9 +81,9 @@ impl<T: FileStore> RecvTransaction<T> {
         // Connection to the local FileStore implementation.
         filestore: Arc<T>,
         // Sender channel connected to the Transport thread to send PDUs.
-        transport_tx: Sender<(VariableID, PDU)>,
+        transport_tx: UnboundedSender<(VariableID, PDU)>,
         // Sender channel used to propagate Message To User back up to the Daemon Thread.
-        message_tx: Sender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
+        message_tx: UnboundedSender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
     ) -> Self {
         let received_file_size = 0_u64;
         let timer = Timer::new(
@@ -443,6 +443,7 @@ impl<T: FileStore> RecvTransaction<T> {
     }
 
     pub fn send_naks(&mut self) -> TransactionResult<()> {
+        println!("Sending some naks.");
         self.timer.restart_nak();
         self.waiting_on = WaitingOn::Nak;
         //  if is lazily evaluated so the fault is only handled if the limit is reached
@@ -534,16 +535,16 @@ impl<T: FileStore> RecvTransaction<T> {
     }
 
     pub fn monitor_timeout(&mut self) -> TransactionResult<()> {
-        if self.timer.inactivity.timeout_occured()
+        if self.timer.inactivity.timeout_occurred()
             && self.timer.inactivity.limit_reached()
             && !self.proceed_despite_fault(Condition::InactivityDetected)?
         {
             return Ok(());
         }
-        if self.timer.nak.timeout_occured() && self.waiting_on == WaitingOn::Nak {
+        if self.timer.nak.timeout_occurred() && self.waiting_on == WaitingOn::Nak {
             return self.send_naks();
         }
-        if self.timer.ack.timeout_occured() && self.waiting_on == WaitingOn::AckFin {
+        if self.timer.ack.timeout_occurred() && self.waiting_on == WaitingOn::AckFin {
             return self.send_finished(None);
         }
         Ok(())
@@ -935,10 +936,10 @@ mod test {
     use super::*;
 
     use camino::{Utf8Path, Utf8PathBuf};
-    use crossbeam_channel::unbounded;
     use rstest::{fixture, rstest};
     use std::thread;
     use tempfile::TempDir;
+    use tokio::sync::mpsc::unbounded_channel;
 
     #[fixture]
     #[once]
@@ -948,8 +949,8 @@ mod test {
 
     #[rstest]
     fn header(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (transport_tx, _) = unbounded();
-        let (message_tx, _) = unbounded();
+        let (transport_tx, _) = unbounded_channel();
+        let (message_tx, _) = unbounded_channel();
         let config = default_config.clone();
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
@@ -984,8 +985,8 @@ mod test {
 
     #[rstest]
     fn test_if_file_transfer(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (transport_tx, _) = unbounded();
-        let (message_tx, _) = unbounded();
+        let (transport_tx, _) = unbounded_channel();
+        let (message_tx, _) = unbounded_channel();
         let config = default_config.clone();
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
@@ -1014,8 +1015,8 @@ mod test {
 
     #[rstest]
     fn store_filedata(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (transport_tx, _) = unbounded();
-        let (message_tx, _) = unbounded();
+        let (transport_tx, _) = unbounded_channel();
+        let (message_tx, _) = unbounded_channel();
         let config = default_config.clone();
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
@@ -1045,8 +1046,8 @@ mod test {
 
     #[rstest]
     fn finalize_file(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (transport_tx, _) = unbounded();
-        let (message_tx, _) = unbounded();
+        let (transport_tx, _) = unbounded_channel();
+        let (message_tx, _) = unbounded_channel();
         let config = default_config.clone();
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
@@ -1100,13 +1101,14 @@ mod test {
     }
 
     #[rstest]
-    fn update_naks(
+    #[tokio::test]
+    async fn update_naks(
         default_config: &TransactionConfig,
         tempdir_fixture: &TempDir,
         #[values(FileSizeFlag::Small, FileSizeFlag::Large)] file_size_flag: FileSizeFlag,
     ) {
-        let (transport_tx, transport_rx) = unbounded();
-        let (message_tx, _) = unbounded();
+        let (transport_tx, mut transport_rx) = unbounded_channel();
+        let (message_tx, _) = unbounded_channel();
         let mut config = default_config.clone();
         config.file_size_flag = file_size_flag;
         let file_size = match &file_size_flag {
@@ -1167,7 +1169,7 @@ mod test {
             transaction.send_naks().unwrap();
         });
 
-        let (destination_id, received_pdu) = transport_rx.recv().unwrap();
+        let (destination_id, received_pdu) = transport_rx.recv().await.unwrap();
         let expected_id = default_config.source_entity_id;
 
         assert_eq!(expected_id, destination_id);
@@ -1175,14 +1177,15 @@ mod test {
     }
 
     #[rstest]
-    fn cancel_receive(
+    #[tokio::test]
+    async fn cancel_receive(
         default_config: &TransactionConfig,
         tempdir_fixture: &TempDir,
         #[values(TransmissionMode::Unacknowledged, TransmissionMode::Acknowledged)]
         transmission_mode: TransmissionMode,
     ) {
-        let (transport_tx, transport_rx) = unbounded();
-        let (message_tx, _) = unbounded();
+        let (transport_tx, mut transport_rx) = unbounded_channel();
+        let (message_tx, _) = unbounded_channel();
         let mut config = default_config.clone();
         config.transmission_mode = transmission_mode;
 
@@ -1236,7 +1239,7 @@ mod test {
         });
 
         if config.transmission_mode == TransmissionMode::Acknowledged {
-            let (destination_id, received_pdu) = transport_rx.recv().unwrap();
+            let (destination_id, received_pdu) = transport_rx.recv().await.unwrap();
             let expected_id = default_config.source_entity_id;
 
             assert_eq!(expected_id, destination_id);
@@ -1246,8 +1249,8 @@ mod test {
 
     #[rstest]
     fn suspend(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (transport_tx, _) = unbounded();
-        let (message_tx, _) = unbounded();
+        let (transport_tx, _) = unbounded_channel();
+        let (message_tx, _) = unbounded_channel();
         let config = default_config.clone();
 
         let filestore = Arc::new(NativeFileStore::new(
@@ -1283,8 +1286,8 @@ mod test {
 
     #[rstest]
     fn resume(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (transport_tx, _) = unbounded();
-        let (message_tx, _) = unbounded();
+        let (transport_tx, _) = unbounded_channel();
+        let (message_tx, _) = unbounded_channel();
         let config = default_config.clone();
 
         let filestore = Arc::new(NativeFileStore::new(
@@ -1333,9 +1336,10 @@ mod test {
     }
 
     #[rstest]
-    fn send_ack_eof(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (transport_tx, transport_rx) = unbounded();
-        let (message_tx, _) = unbounded();
+    #[tokio::test]
+    async fn send_ack_eof(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
+        let (transport_tx, mut transport_rx) = unbounded_channel();
+        let (message_tx, _) = unbounded_channel();
         let config = default_config.clone();
 
         let filestore = Arc::new(NativeFileStore::new(
@@ -1383,7 +1387,7 @@ mod test {
             transaction.send_ack_eof().unwrap();
         });
 
-        let (destination_id, received_pdu) = transport_rx.recv().unwrap();
+        let (destination_id, received_pdu) = transport_rx.recv().await.unwrap();
         let expected_id = default_config.source_entity_id;
 
         assert_eq!(expected_id, destination_id);
@@ -1392,8 +1396,8 @@ mod test {
 
     #[rstest]
     fn finalize_receive(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (transport_tx, _) = unbounded();
-        let (message_tx, _) = unbounded();
+        let (transport_tx, _) = unbounded_channel();
+        let (message_tx, _) = unbounded_channel();
         let config = default_config.clone();
 
         let filestore = Arc::new(NativeFileStore::new(
@@ -1492,8 +1496,8 @@ mod test {
         )]
         operation: Operations,
     ) {
-        let (transport_tx, _) = unbounded();
-        let (message_tx, _) = unbounded();
+        let (transport_tx, _) = unbounded_channel();
+        let (message_tx, _) = unbounded_channel();
         let mut config = default_config.clone();
         config.transmission_mode = TransmissionMode::Unacknowledged;
 
@@ -1580,8 +1584,8 @@ mod test {
         )]
         operation: Operations,
     ) {
-        let (transport_tx, _) = unbounded();
-        let (message_tx, _) = unbounded();
+        let (transport_tx, _) = unbounded_channel();
+        let (message_tx, _) = unbounded_channel();
         let mut config = default_config.clone();
         config.transmission_mode = TransmissionMode::Acknowledged;
 
@@ -1638,8 +1642,8 @@ mod test {
         #[values(TransmissionMode::Unacknowledged, TransmissionMode::Acknowledged)]
         transmission_mode: TransmissionMode,
     ) {
-        let (transport_tx, _) = unbounded();
-        let (message_tx, _) = unbounded();
+        let (transport_tx, _) = unbounded_channel();
+        let (message_tx, _) = unbounded_channel();
         let mut config = default_config.clone();
         config.transmission_mode = transmission_mode;
 
@@ -1697,14 +1701,15 @@ mod test {
     }
 
     #[rstest]
-    fn recv_store_metadata(
+    #[tokio::test]
+    async fn recv_store_metadata(
         default_config: &TransactionConfig,
         tempdir_fixture: &TempDir,
         #[values(TransmissionMode::Unacknowledged, TransmissionMode::Acknowledged)]
         transmission_mode: TransmissionMode,
     ) {
-        let (transport_tx, _) = unbounded();
-        let (message_tx, message_rx) = unbounded();
+        let (transport_tx, _) = unbounded_channel();
+        let (message_tx, mut message_rx) = unbounded_channel();
         let mut config = default_config.clone();
         config.transmission_mode = transmission_mode;
 
@@ -1766,20 +1771,21 @@ mod test {
             assert_eq!(expected, transaction.metadata);
         });
 
-        let (_, _, user_msg) = message_rx.recv().unwrap();
+        let (_, _, user_msg) = message_rx.recv().await.unwrap();
         assert_eq!(1, user_msg.len());
         assert_eq!(expected_msg, user_msg[0])
     }
 
     #[rstest]
-    fn recv_eof_all_data(
+    #[tokio::test]
+    async fn recv_eof_all_data(
         default_config: &TransactionConfig,
         tempdir_fixture: &TempDir,
         #[values(TransmissionMode::Unacknowledged, TransmissionMode::Acknowledged)]
         transmission_mode: TransmissionMode,
     ) {
-        let (transport_tx, transport_rx) = unbounded();
-        let (message_tx, _) = unbounded();
+        let (transport_tx, mut transport_rx) = unbounded_channel();
+        let (message_tx, _) = unbounded_channel();
         let mut config = default_config.clone();
         config.transmission_mode = transmission_mode;
 
@@ -1941,26 +1947,27 @@ mod test {
 
                 PDU { header, payload }
             };
-            let (destination_id, end_of_file) = transport_rx.recv().unwrap();
+            let (destination_id, end_of_file) = transport_rx.recv().await.unwrap();
 
             assert_eq!(expected_id, destination_id);
             assert_eq!(eof_pdu, end_of_file)
         }
 
-        let (destination_id, finished_pdu) = transport_rx.recv().unwrap();
+        let (destination_id, finished_pdu) = transport_rx.recv().await.unwrap();
 
         assert_eq!(expected_id, destination_id);
         assert_eq!(expected_pdu, finished_pdu)
     }
 
     #[rstest]
-    fn recv_prompt(
+    #[tokio::test]
+    async fn recv_prompt(
         default_config: &TransactionConfig,
         tempdir_fixture: &TempDir,
         #[values(NakOrKeepAlive::Nak, NakOrKeepAlive::KeepAlive)] nak_or_keep_alive: NakOrKeepAlive,
     ) {
-        let (transport_tx, transport_rx) = unbounded();
-        let (message_tx, _) = unbounded();
+        let (transport_tx, mut transport_rx) = unbounded_channel();
+        let (message_tx, _) = unbounded_channel();
         let mut config = default_config.clone();
         config.transmission_mode = TransmissionMode::Acknowledged;
 
@@ -2050,7 +2057,7 @@ mod test {
             transaction.process_pdu(prompt_pdu).unwrap();
         });
 
-        let (destination_id, received_pdu) = transport_rx.recv().unwrap();
+        let (destination_id, received_pdu) = transport_rx.recv().await.unwrap();
         assert_eq!(expected_id, destination_id);
         assert_eq!(expected_pdu, received_pdu)
     }

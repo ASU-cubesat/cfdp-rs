@@ -1,7 +1,7 @@
+use async_trait::async_trait;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
-
-use std::io::Read;
+use tokio::io::AsyncReadExt;
 
 use super::{
     error::{PDUError, PDUResult},
@@ -60,13 +60,14 @@ pub enum TransmissionMode {
     Acknowledged = 0,
     Unacknowledged = 1,
 }
+#[async_trait]
 impl PDUEncode for TransmissionMode {
     type PDUType = Self;
 
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let mut u8_buff = [0u8; 1];
-        buffer.read_exact(&mut u8_buff)?;
-        let possible_mode = u8_buff[0];
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
+        let possible_mode = buffer.read_u8().await?;
         Self::from_u8(possible_mode).ok_or(PDUError::InvalidTransmissionMode(possible_mode))
     }
 
@@ -174,23 +175,30 @@ pub enum MessageType {
     SFOReport = 0x45,
     SFOFileStoreResponse = 0x46,
 }
-
+#[async_trait]
 pub trait PDUEncode {
     type PDUType;
     fn encode(self) -> Vec<u8>;
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType>;
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType>;
 }
 
+#[async_trait]
 pub trait FSSEncode {
     type PDUType;
     fn encode(self, file_size_flag: FileSizeFlag) -> Vec<u8>;
-    fn decode<T: Read>(buffer: &mut T, file_size_flag: FileSizeFlag) -> PDUResult<Self::PDUType>;
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+        file_size_flag: FileSizeFlag,
+    ) -> PDUResult<Self::PDUType>;
 }
 
+#[async_trait]
 pub trait SegmentEncode {
     type PDUType;
     fn encode(self, file_size_flag: FileSizeFlag) -> Vec<u8>;
-    fn decode<T: Read>(
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
         buffer: &mut T,
         segmentation_flag: SegmentedData,
         file_size_flag: FileSizeFlag,
@@ -212,6 +220,7 @@ pub struct PDUHeader {
     pub transaction_sequence_number: VariableID,
     pub destination_entity_id: VariableID,
 }
+#[async_trait]
 impl PDUEncode for PDUHeader {
     type PDUType = Self;
 
@@ -240,87 +249,87 @@ impl PDUEncode for PDUHeader {
         buffer
     }
 
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let mut u8_buff = [0_u8; 1];
-        buffer.read_exact(&mut u8_buff)?;
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
+        let first_bytes = buffer.read_u8().await?;
 
         let version = {
-            let possible = (u8_buff[0] & 0xE0) >> 5;
+            let possible = (first_bytes & 0xE0) >> 5;
             U3::from_u8(possible).ok_or(PDUError::InvalidVersion(possible))?
         };
 
         let pdu_type = {
-            let possible = (u8_buff[0] & 0x10) >> 4;
+            let possible = (first_bytes & 0x10) >> 4;
             PDUType::from_u8(possible).ok_or(PDUError::InvalidVersion(possible))?
         };
 
         let direction = {
-            let possible = (u8_buff[0] & 0x8) >> 3;
+            let possible = (first_bytes & 0x8) >> 3;
             Direction::from_u8(possible).ok_or(PDUError::InvalidDirection(possible))?
         };
 
         let transmission_mode = {
-            let possible = (u8_buff[0] & 0x4) >> 2;
+            let possible = (first_bytes & 0x4) >> 2;
             TransmissionMode::from_u8(possible)
                 .ok_or(PDUError::InvalidTransmissionMode(possible))?
         };
 
         let crc_flag = {
-            let possible = (u8_buff[0] & 0x2) >> 1;
+            let possible = (first_bytes & 0x2) >> 1;
             CRCFlag::from_u8(possible).ok_or(PDUError::InvalidCRCFlag(possible))?
         };
 
         let large_file_flag = {
-            let possible = u8_buff[0] & 0x1;
+            let possible = first_bytes & 0x1;
             FileSizeFlag::from_u8(possible).ok_or(PDUError::InvalidFileSizeFlag(possible))?
         };
 
         let pdu_data_field_length = {
-            let mut u16_buff = [0_u8; 2];
-            buffer.read_exact(&mut u16_buff)?;
+            let init_len = buffer.read_u16().await?;
             // CRC length is _included_ in the data_field_length
             // but it is not actually part of the message.
             // strip the crc length to preserve the original message
             match &crc_flag {
-                CRCFlag::NotPresent => u16::from_be_bytes(u16_buff),
-                CRCFlag::Present => u16::from_be_bytes(u16_buff) - 2,
+                CRCFlag::NotPresent => init_len,
+                CRCFlag::Present => init_len - 2,
             }
         };
 
-        buffer.read_exact(&mut u8_buff)?;
+        let next_byte = buffer.read_u8().await?;
 
         let segmentation_control = {
-            let possible = (u8_buff[0] & 0x80) >> 7;
+            let possible = (next_byte & 0x80) >> 7;
             SegmentationControl::from_u8(possible)
                 .ok_or(PDUError::InvalidSegmentControl(possible))?
         };
 
         let segment_metadata_flag = {
-            let possible = (u8_buff[0] & 8) >> 3;
+            let possible = (next_byte & 8) >> 3;
             SegmentedData::from_u8(possible)
                 .ok_or(PDUError::InvalidSegmentMetadataFlag(possible))?
         };
 
         // CCSDS defines the lengths to be encoded as length - 1.
         // add one back to get actual value.
-        let entity_id_length = ((u8_buff[0] & 0x70) >> 4) + 1;
-        let transaction_sequence_length = (u8_buff[0] & 0x7) + 1;
+        let entity_id_length = ((next_byte & 0x70) >> 4) + 1;
+        let transaction_sequence_length = (next_byte & 0x7) + 1;
 
         let source_entity_id = {
             let mut buff = vec![0_u8; entity_id_length as usize];
-            buffer.read_exact(buff.as_mut_slice())?;
+            buffer.read_exact(buff.as_mut_slice()).await?;
             VariableID::try_from(buff.to_vec())?
         };
 
         let transaction_sequence_number = {
             let mut buff = vec![0_u8; transaction_sequence_length as usize];
-            buffer.read_exact(buff.as_mut_slice())?;
+            buffer.read_exact(buff.as_mut_slice()).await?;
             VariableID::try_from(buff.to_vec())?
         };
 
         let destination_entity_id = {
             let mut buff = vec![0_u8; entity_id_length as usize];
-            buffer.read_exact(buff.as_mut_slice())?;
+            buffer.read_exact(buff.as_mut_slice()).await?;
             VariableID::try_from(buff.to_vec())?
         };
 
@@ -341,24 +350,26 @@ impl PDUEncode for PDUHeader {
     }
 }
 
-pub fn read_length_value_pair<T: Read>(buffer: &mut T) -> PDUResult<Vec<u8>> {
-    let mut u8_buff = [0u8; 1];
-    buffer.read_exact(&mut u8_buff)?;
-    let length = u8_buff[0];
+pub async fn read_length_value_pair<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+    buffer: &mut T,
+) -> PDUResult<Vec<u8>> {
+    let length = buffer.read_u8().await?;
     let mut vector = vec![0u8; length as usize];
-    buffer.read_exact(vector.as_mut_slice())?;
+    buffer.read_exact(vector.as_mut_slice()).await?;
     Ok(vector)
 }
 
-pub fn read_type<T: Read>(buffer: &mut T) -> PDUResult<u8> {
-    let mut u8_buff = [0u8];
-    buffer.read_exact(&mut u8_buff)?;
-    Ok(u8_buff[0])
+pub async fn read_type<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+    buffer: &mut T,
+) -> PDUResult<u8> {
+    Ok(buffer.read_u8().await?)
 }
 
-pub fn read_type_length_value<T: Read>(buffer: &mut T) -> PDUResult<(u8, Vec<u8>)> {
-    let message_type = read_type(buffer)?;
-    let vector = read_length_value_pair(buffer)?;
+pub async fn read_type_length_value<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+    buffer: &mut T,
+) -> PDUResult<(u8, Vec<u8>)> {
+    let message_type = read_type(buffer).await?;
+    let vector = read_length_value_pair(buffer).await?;
 
     Ok((message_type, vector))
 }
@@ -373,7 +384,8 @@ mod test {
     use rstest::rstest;
 
     #[rstest]
-    fn read_lv(
+    #[tokio::test]
+    async fn read_lv(
         #[values(
             "Hello World",
             "Goodbye world!>",
@@ -386,12 +398,13 @@ mod test {
         buffer.extend_from_slice(input_message.as_bytes());
         let mut input_buffer = &buffer[..];
         assert_ne!(0, input_buffer.len());
-        let recovered = read_length_value_pair(&mut input_buffer).unwrap();
+        let recovered = read_length_value_pair(&mut input_buffer).await.unwrap();
         assert_eq!(input_message.as_bytes(), recovered)
     }
 
     #[rstest]
-    fn read_tlv(
+    #[tokio::test]
+    async fn read_tlv(
         #[values(
             MessageType::ProxyPutCancel,
             MessageType::ProxyClosureRequest,
@@ -409,7 +422,7 @@ mod test {
         buffer.push(input_message.as_bytes().len() as u8);
         buffer.extend_from_slice(input_message.as_bytes());
         let mut input_buffer = &buffer[..];
-        let (msg_type, message) = read_type_length_value(&mut input_buffer).unwrap();
+        let (msg_type, message) = read_type_length_value(&mut input_buffer).await.unwrap();
         assert_eq!(message_type, MessageType::from_u8(msg_type).unwrap());
         assert_eq!(input_message.as_bytes(), message)
     }
@@ -433,7 +446,8 @@ mod test {
         VariableID::from(5673452001_u64),
         VariableID::from(5_u64)
     )]
-    fn pdu_header(
+    #[tokio::test]
+    async fn pdu_header(
         #[values(U3::One, U3::Seven)] version: U3,
         #[values(PDUType::FileDirective, PDUType::FileData)] pdu_type: PDUType,
         #[values(Direction::ToReceiver, Direction::ToSender)] direction: Direction,
@@ -466,7 +480,7 @@ mod test {
             destination_entity_id,
         };
         let buffer = expected.clone().encode();
-        let recovered = PDUHeader::decode(&mut buffer.as_slice())?;
+        let recovered = PDUHeader::decode(&mut buffer.as_slice()).await?;
         assert_eq!(expected, recovered);
 
         Ok(())

@@ -1,7 +1,8 @@
-use byteorder::{BigEndian, ReadBytesExt};
+use async_trait::async_trait;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
-use std::{fmt::Display, io::Read};
+use std::fmt::Display;
+use tokio::io::AsyncReadExt;
 
 use super::{
     error::{PDUError, PDUResult},
@@ -101,6 +102,7 @@ impl VariableID {
         }
     }
 }
+#[async_trait]
 impl PDUEncode for VariableID {
     type PDUType = Self;
 
@@ -111,13 +113,12 @@ impl PDUEncode for VariableID {
         buffer
     }
 
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let mut u8_buff = [0u8; 1];
-        buffer.read_exact(&mut u8_buff)?;
-
-        let length: u8 = u8_buff[0] + 1;
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
+        let length: u8 = buffer.read_u8().await? + 1;
         let mut id = vec![0u8; length as usize];
-        buffer.read_exact(id.as_mut_slice())?;
+        buffer.read_exact(id.as_mut_slice()).await?;
         Self::try_from(id)
     }
 }
@@ -126,6 +127,7 @@ impl PDUEncode for VariableID {
 pub struct FlowLabel {
     pub value: Vec<u8>,
 }
+#[async_trait]
 impl PDUEncode for FlowLabel {
     type PDUType = Self;
     fn encode(self) -> Vec<u8> {
@@ -133,8 +135,10 @@ impl PDUEncode for FlowLabel {
         buffer.extend(self.value);
         buffer
     }
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let value = read_length_value_pair(buffer)?;
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
+        let value = read_length_value_pair(buffer).await?;
         Ok(Self { value })
     }
 }
@@ -143,6 +147,7 @@ impl PDUEncode for FlowLabel {
 pub struct MessageToUser {
     pub message_text: Vec<u8>,
 }
+#[async_trait]
 impl PDUEncode for MessageToUser {
     type PDUType = Self;
     fn encode(self) -> Vec<u8> {
@@ -150,8 +155,10 @@ impl PDUEncode for MessageToUser {
         buffer.extend(self.message_text);
         buffer
     }
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let message_text = read_length_value_pair(buffer)?;
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
+        let message_text = read_length_value_pair(buffer).await?;
         Ok(Self { message_text })
     }
 }
@@ -200,6 +207,7 @@ impl MetadataTLV {
         }
     }
 }
+#[async_trait]
 impl PDUEncode for MetadataTLV {
     type PDUType = Self;
 
@@ -217,24 +225,27 @@ impl PDUEncode for MetadataTLV {
         buffer
     }
 
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let mut u8_buff = [0u8];
-        buffer.read_exact(&mut u8_buff)?;
-        match MetadataTLVFieldCode::from_u8(u8_buff[0]).ok_or(PDUError::MessageType(u8_buff[0]))? {
-            MetadataTLVFieldCode::FileStoreRequest => {
-                Ok(Self::FileStoreRequest(FileStoreRequest::decode(buffer)?))
-            }
-            MetadataTLVFieldCode::FileStoreResponse => {
-                Ok(Self::FileStoreResponse(FileStoreResponse::decode(buffer)?))
-            }
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
+        let first_byte = buffer.read_u8().await?;
+        match MetadataTLVFieldCode::from_u8(first_byte).ok_or(PDUError::MessageType(first_byte))? {
+            MetadataTLVFieldCode::FileStoreRequest => Ok(Self::FileStoreRequest(
+                FileStoreRequest::decode(buffer).await?,
+            )),
+            MetadataTLVFieldCode::FileStoreResponse => Ok(Self::FileStoreResponse(
+                FileStoreResponse::decode(buffer).await?,
+            )),
             MetadataTLVFieldCode::MessageToUser => {
-                Ok(Self::MessageToUser(MessageToUser::decode(buffer)?))
+                Ok(Self::MessageToUser(MessageToUser::decode(buffer).await?))
             }
             MetadataTLVFieldCode::FaultHandlerOverride => Ok(Self::FaultHandlerOverride(
-                FaultHandlerOverride::decode(buffer)?,
+                FaultHandlerOverride::decode(buffer).await?,
             )),
-            MetadataTLVFieldCode::FlowLabel => Ok(Self::FlowLabel(FlowLabel::decode(buffer)?)),
-            MetadataTLVFieldCode::EntityID => Ok(Self::EntityID(VariableID::decode(buffer)?)),
+            MetadataTLVFieldCode::FlowLabel => {
+                Ok(Self::FlowLabel(FlowLabel::decode(buffer).await?))
+            }
+            MetadataTLVFieldCode::EntityID => Ok(Self::EntityID(VariableID::decode(buffer).await?)),
         }
     }
 }
@@ -271,6 +282,7 @@ pub struct UnsegmentedFileData {
     pub offset: u64,
     pub file_data: Vec<u8>,
 }
+#[async_trait]
 impl FSSEncode for UnsegmentedFileData {
     type PDUType = Self;
 
@@ -283,15 +295,18 @@ impl FSSEncode for UnsegmentedFileData {
         buffer
     }
 
-    fn decode<T: Read>(buffer: &mut T, file_size_flag: FileSizeFlag) -> PDUResult<Self::PDUType> {
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+        file_size_flag: FileSizeFlag,
+    ) -> PDUResult<Self::PDUType> {
         let offset = match file_size_flag {
-            FileSizeFlag::Large => buffer.read_u64::<BigEndian>()?,
-            FileSizeFlag::Small => buffer.read_u32::<BigEndian>()? as u64,
+            FileSizeFlag::Large => buffer.read_u64().await?,
+            FileSizeFlag::Small => buffer.read_u32().await? as u64,
         };
 
         let file_data: Vec<u8> = {
             let mut data: Vec<u8> = vec![];
-            buffer.read_to_end(&mut data)?;
+            buffer.read_to_end(&mut data).await?;
             data
         };
         Ok(Self { offset, file_data })
@@ -305,6 +320,7 @@ pub struct SegmentedFileData {
     pub offset: u64,
     pub file_data: Vec<u8>,
 }
+#[async_trait]
 impl FSSEncode for SegmentedFileData {
     type PDUType = Self;
 
@@ -323,25 +339,27 @@ impl FSSEncode for SegmentedFileData {
         buffer
     }
 
-    fn decode<T: Read>(buffer: &mut T, file_size_flag: FileSizeFlag) -> PDUResult<Self::PDUType> {
-        let mut u8_buff = [0_u8; 1];
-        buffer.read_exact(&mut u8_buff)?;
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+        file_size_flag: FileSizeFlag,
+    ) -> PDUResult<Self::PDUType> {
+        let first_byte = buffer.read_u8().await?;
         let record_continuation_state =
-            RecordContinuationState::from_u8((u8_buff[0] & 0xC0) >> 6).unwrap();
+            RecordContinuationState::from_u8((first_byte & 0xC0) >> 6).unwrap();
         let segment_metadata = {
-            let metadata_len = u8_buff[0] & 0x3F;
+            let metadata_len = first_byte & 0x3F;
             let mut data = vec![0_u8; metadata_len as usize];
-            buffer.read_exact(&mut data)?;
+            buffer.read_exact(&mut data).await?;
             data
         };
 
         let offset = match file_size_flag {
-            FileSizeFlag::Large => buffer.read_u64::<BigEndian>()?,
-            FileSizeFlag::Small => buffer.read_u32::<BigEndian>()? as u64,
+            FileSizeFlag::Large => buffer.read_u64().await?,
+            FileSizeFlag::Small => buffer.read_u32().await? as u64,
         };
         let file_data: Vec<u8> = {
             let mut data: Vec<u8> = vec![];
-            buffer.read_to_end(&mut data)?;
+            buffer.read_to_end(&mut data).await?;
             data
         };
         Ok(Self {
@@ -358,6 +376,7 @@ pub enum FileDataPDU {
     Unsegmented(UnsegmentedFileData),
     Segmented(SegmentedFileData),
 }
+#[async_trait]
 impl SegmentEncode for FileDataPDU {
     type PDUType = Self;
 
@@ -368,20 +387,18 @@ impl SegmentEncode for FileDataPDU {
         }
     }
 
-    fn decode<T: Read>(
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
         buffer: &mut T,
         segmentation_flag: SegmentedData,
         file_size_flag: FileSizeFlag,
     ) -> PDUResult<Self::PDUType> {
         match segmentation_flag {
-            SegmentedData::Present => Ok(Self::Segmented(SegmentedFileData::decode(
-                buffer,
-                file_size_flag,
-            )?)),
-            SegmentedData::NotPresent => Ok(Self::Unsegmented(UnsegmentedFileData::decode(
-                buffer,
-                file_size_flag,
-            )?)),
+            SegmentedData::Present => Ok(Self::Segmented(
+                SegmentedFileData::decode(buffer, file_size_flag).await?,
+            )),
+            SegmentedData::NotPresent => Ok(Self::Unsegmented(
+                UnsegmentedFileData::decode(buffer, file_size_flag).await?,
+            )),
         }
     }
 }
@@ -409,6 +426,7 @@ impl Operations {
         }
     }
 }
+#[async_trait]
 impl FSSEncode for Operations {
     type PDUType = Self;
 
@@ -427,23 +445,24 @@ impl FSSEncode for Operations {
         buffer
     }
 
-    fn decode<T: Read>(buffer: &mut T, file_size_flag: FileSizeFlag) -> PDUResult<Self::PDUType> {
-        let mut u8_buff = [0_u8; 1];
-        buffer.read_exact(&mut u8_buff)?;
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+        file_size_flag: FileSizeFlag,
+    ) -> PDUResult<Self::PDUType> {
+        let first_byte = buffer.read_u8().await?;
 
-        match PDUDirective::from_u8(u8_buff[0]).ok_or(PDUError::InvalidDirective(u8_buff[0]))? {
-            PDUDirective::EoF => Ok(Self::EoF(EndOfFile::decode(buffer, file_size_flag)?)),
-            PDUDirective::Finished => Ok(Self::Finished(Finished::decode(buffer)?)),
-            PDUDirective::Ack => Ok(Self::Ack(AckPDU::decode(buffer)?)),
-            PDUDirective::Metadata => {
-                Ok(Self::Metadata(MetadataPDU::decode(buffer, file_size_flag)?))
-            }
-            PDUDirective::Nak => Ok(Self::Nak(NakPDU::decode(buffer, file_size_flag)?)),
-            PDUDirective::Prompt => Ok(Self::Prompt(PromptPDU::decode(buffer)?)),
-            PDUDirective::KeepAlive => Ok(Self::KeepAlive(KeepAlivePDU::decode(
-                buffer,
-                file_size_flag,
-            )?)),
+        match PDUDirective::from_u8(first_byte).ok_or(PDUError::InvalidDirective(first_byte))? {
+            PDUDirective::EoF => Ok(Self::EoF(EndOfFile::decode(buffer, file_size_flag).await?)),
+            PDUDirective::Finished => Ok(Self::Finished(Finished::decode(buffer).await?)),
+            PDUDirective::Ack => Ok(Self::Ack(AckPDU::decode(buffer).await?)),
+            PDUDirective::Metadata => Ok(Self::Metadata(
+                MetadataPDU::decode(buffer, file_size_flag).await?,
+            )),
+            PDUDirective::Nak => Ok(Self::Nak(NakPDU::decode(buffer, file_size_flag).await?)),
+            PDUDirective::Prompt => Ok(Self::Prompt(PromptPDU::decode(buffer).await?)),
+            PDUDirective::KeepAlive => Ok(Self::KeepAlive(
+                KeepAlivePDU::decode(buffer, file_size_flag).await?,
+            )),
         }
     }
 }
@@ -455,6 +474,7 @@ pub struct EndOfFile {
     pub file_size: u64,
     pub fault_location: Option<VariableID>,
 }
+#[async_trait]
 impl FSSEncode for EndOfFile {
     type PDUType = Self;
 
@@ -474,23 +494,21 @@ impl FSSEncode for EndOfFile {
         buffer
     }
 
-    fn decode<T: Read>(buffer: &mut T, file_size_flag: FileSizeFlag) -> PDUResult<Self::PDUType> {
-        let mut u8_buff = [0_u8; 1];
-        buffer.read_exact(&mut u8_buff)?;
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+        file_size_flag: FileSizeFlag,
+    ) -> PDUResult<Self::PDUType> {
+        let first_byte = buffer.read_u8().await?;
         let condition = {
-            let possible_conditon = (u8_buff[0] & 0xF0) >> 4;
+            let possible_conditon = (first_byte & 0xF0) >> 4;
             Condition::from_u8(possible_conditon)
                 .ok_or(PDUError::InvalidCondition(possible_conditon))?
         };
-        let checksum = {
-            let mut u32_buff = [0_u8; 4];
-            buffer.read_exact(&mut u32_buff)?;
-            u32::from_be_bytes(u32_buff)
-        };
+        let checksum = buffer.read_u32().await?;
 
         let file_size = match file_size_flag {
-            FileSizeFlag::Large => buffer.read_u64::<BigEndian>()?,
-            FileSizeFlag::Small => buffer.read_u32::<BigEndian>()? as u64,
+            FileSizeFlag::Large => buffer.read_u64().await?,
+            FileSizeFlag::Small => buffer.read_u32().await? as u64,
         };
 
         let fault_location = match &condition {
@@ -498,13 +516,13 @@ impl FSSEncode for EndOfFile {
             _ => {
                 let type_code = {
                     let mut u8_buff = [0_u8; 1];
-                    buffer.read_exact(&mut u8_buff)?;
+                    buffer.read_exact(&mut u8_buff).await?;
                     u8_buff[0]
                 };
                 match MetadataTLVFieldCode::from_u8(type_code)
                     .ok_or(PDUError::MessageType(type_code))?
                 {
-                    MetadataTLVFieldCode::EntityID => Ok(Some(VariableID::decode(buffer)?)),
+                    MetadataTLVFieldCode::EntityID => Ok(Some(VariableID::decode(buffer).await?)),
                     code => Err(PDUError::UnexpectedMessage(
                         MetadataTLVFieldCode::EntityID.to_string(),
                         code.to_string(),
@@ -530,6 +548,7 @@ pub struct Finished {
     pub filestore_response: Vec<FileStoreResponse>,
     pub fault_location: Option<VariableID>,
 }
+#[async_trait]
 impl PDUEncode for Finished {
     type PDUType = Self;
 
@@ -553,23 +572,24 @@ impl PDUEncode for Finished {
         buffer
     }
 
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let mut u8_buff = [0_u8; 1];
-        buffer.read_exact(&mut u8_buff)?;
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
+        let first_byte = buffer.read_u8().await?;
         let condition = {
-            let possible_conditon = (u8_buff[0] & 0xF0) >> 4;
+            let possible_conditon = (first_byte & 0xF0) >> 4;
             Condition::from_u8(possible_conditon)
                 .ok_or(PDUError::InvalidCondition(possible_conditon))?
         };
 
         let delivery_code = {
-            let possible_delivery = (u8_buff[0] & 0x4) >> 2;
+            let possible_delivery = (first_byte & 0x4) >> 2;
             DeliveryCode::from_u8(possible_delivery)
                 .ok_or(PDUError::InvalidDeliveryCode(possible_delivery))?
         };
 
         let file_status = {
-            let possible_status = u8_buff[0] & 0x3;
+            let possible_status = first_byte & 0x3;
             FileStatusCode::from_u8(possible_status)
                 .ok_or(PDUError::InvalidFileStatus(possible_status))?
         };
@@ -578,23 +598,19 @@ impl PDUEncode for Finished {
         let mut filestore_response = vec![];
         let mut fault_location = None;
 
-        buffer.read_to_end(&mut remaining_msg)?;
+        buffer.read_to_end(&mut remaining_msg).await?;
         let remaining_buffer = &mut remaining_msg.as_slice();
 
         while !remaining_buffer.is_empty() {
-            let type_code = {
-                let mut u8_buff = [0_u8; 1];
-                remaining_buffer.read_exact(&mut u8_buff)?;
-                u8_buff[0]
-            };
+            let type_code = remaining_buffer.read_u8().await?;
             match (
                 &condition,
                 MetadataTLVFieldCode::from_u8(type_code).ok_or(PDUError::MessageType(type_code))?,
             ) {
                 // When no error is present, the only TLVS will be FileStoreResponses
                 (Condition::NoError, MetadataTLVFieldCode::FileStoreResponse) => {
-                    let value = read_length_value_pair(remaining_buffer)?;
-                    filestore_response.push(FileStoreResponse::decode(&mut value.as_slice())?)
+                    let value = read_length_value_pair(remaining_buffer).await?;
+                    filestore_response.push(FileStoreResponse::decode(&mut value.as_slice()).await?)
                 }
                 // Any other TLV code is unexpectd. Probably a bit flip error.
                 (Condition::NoError, code) => {
@@ -605,12 +621,12 @@ impl PDUEncode for Finished {
                 }
                 // Otherwise look for FileStore Responses first
                 (_, MetadataTLVFieldCode::FileStoreResponse) => {
-                    let value = read_length_value_pair(remaining_buffer)?;
-                    filestore_response.push(FileStoreResponse::decode(&mut value.as_slice())?)
+                    let value = read_length_value_pair(remaining_buffer).await?;
+                    filestore_response.push(FileStoreResponse::decode(&mut value.as_slice()).await?)
                 }
                 // Then a Fault Entity ID
                 (_, MetadataTLVFieldCode::EntityID) => {
-                    fault_location = Some(VariableID::decode(remaining_buffer)?)
+                    fault_location = Some(VariableID::decode(remaining_buffer).await?)
                 }
                 // Any other combination of TLV codes is unexpected
                 (_, code) => {
@@ -643,6 +659,7 @@ pub struct PositiveAcknowledgePDU {
     pub transaction_status: TransactionStatus,
 }
 type AckPDU = PositiveAcknowledgePDU;
+#[async_trait]
 impl PDUEncode for PositiveAcknowledgePDU {
     type PDUType = Self;
 
@@ -653,13 +670,14 @@ impl PDUEncode for PositiveAcknowledgePDU {
         vec![first_byte, second_byte]
     }
 
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let mut u8_buff = [0_u8; 1];
-        buffer.read_exact(&mut u8_buff)?;
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
+        let first_byte = buffer.read_u8().await?;
 
         let (directive, directive_subtype_code) = {
-            let possible_major = (u8_buff[0] & 0xF0) >> 4;
-            let possible_minor = u8_buff[0] & 0xF;
+            let possible_major = (first_byte & 0xF0) >> 4;
+            let possible_minor = first_byte & 0xF;
             match (
                 PDUDirective::from_u8(possible_major)
                     .ok_or(PDUError::InvalidDirective(possible_major))?,
@@ -679,16 +697,16 @@ impl PDUEncode for PositiveAcknowledgePDU {
             }
         };
 
-        buffer.read_exact(&mut u8_buff)?;
+        let second_byte = buffer.read_u8().await?;
 
         let condition = {
-            let possible_conditon = (u8_buff[0] & 0xF0) >> 4;
+            let possible_conditon = (second_byte & 0xF0) >> 4;
             Condition::from_u8(possible_conditon)
                 .ok_or(PDUError::InvalidCondition(possible_conditon))?
         };
 
         let transaction_status = {
-            let status = u8_buff[0] & 0x3;
+            let status = second_byte & 0x3;
             TransactionStatus::from_u8(status).ok_or(PDUError::InvalidTransactionStatus(status))?
         };
 
@@ -710,6 +728,7 @@ pub struct MetadataPDU {
     pub destination_filename: Vec<u8>,
     pub options: Vec<MetadataTLV>,
 }
+#[async_trait]
 impl FSSEncode for MetadataPDU {
     type PDUType = Self;
 
@@ -734,10 +753,11 @@ impl FSSEncode for MetadataPDU {
         buffer
     }
 
-    fn decode<T: Read>(buffer: &mut T, file_size_flag: FileSizeFlag) -> PDUResult<Self::PDUType> {
-        let mut u8_buff = [0_u8; 1];
-        buffer.read_exact(&mut u8_buff)?;
-        let first_byte = u8_buff[0];
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+        file_size_flag: FileSizeFlag,
+    ) -> PDUResult<Self::PDUType> {
+        let first_byte = buffer.read_u8().await?;
         let closure_requested = ((first_byte & 0x40) >> 6) != 0;
         let checksum_type = {
             let possible = first_byte & 0xF;
@@ -745,21 +765,21 @@ impl FSSEncode for MetadataPDU {
         };
 
         let file_size = match file_size_flag {
-            FileSizeFlag::Large => buffer.read_u64::<BigEndian>()?,
-            FileSizeFlag::Small => buffer.read_u32::<BigEndian>()? as u64,
+            FileSizeFlag::Large => buffer.read_u64().await?,
+            FileSizeFlag::Small => buffer.read_u32().await? as u64,
         };
 
-        let source_filename = read_length_value_pair(buffer)?;
-        let destination_filename = read_length_value_pair(buffer)?;
+        let source_filename = read_length_value_pair(buffer).await?;
+        let destination_filename = read_length_value_pair(buffer).await?;
 
         let mut options = vec![];
         let mut options_vec = vec![];
 
-        buffer.read_to_end(&mut options_vec)?;
+        buffer.read_to_end(&mut options_vec).await?;
         let remaining_buffer = &mut options_vec.as_slice();
 
         while !remaining_buffer.is_empty() {
-            options.push(MetadataTLV::decode(remaining_buffer)?);
+            options.push(MetadataTLV::decode(remaining_buffer).await?);
         }
 
         Ok(Self {
@@ -794,6 +814,7 @@ impl From<(u64, u64)> for SegmentRequestForm {
         }
     }
 }
+#[async_trait]
 impl FSSEncode for SegmentRequestForm {
     type PDUType = Self;
 
@@ -812,14 +833,16 @@ impl FSSEncode for SegmentRequestForm {
         }
     }
 
-    fn decode<T: Read>(buffer: &mut T, file_size_flag: FileSizeFlag) -> PDUResult<Self::PDUType> {
-        let start_offset = match file_size_flag {
-            FileSizeFlag::Large => buffer.read_u64::<BigEndian>()?,
-            FileSizeFlag::Small => buffer.read_u32::<BigEndian>()? as u64,
-        };
-        let end_offset = match file_size_flag {
-            FileSizeFlag::Large => buffer.read_u64::<BigEndian>()?,
-            FileSizeFlag::Small => buffer.read_u32::<BigEndian>()? as u64,
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+        file_size_flag: FileSizeFlag,
+    ) -> PDUResult<Self::PDUType> {
+        let (start_offset, end_offset) = match file_size_flag {
+            FileSizeFlag::Large => (buffer.read_u64().await?, buffer.read_u64().await?),
+            FileSizeFlag::Small => (
+                buffer.read_u32().await? as u64,
+                buffer.read_u32().await? as u64,
+            ),
         };
         Ok(Self {
             start_offset,
@@ -836,6 +859,7 @@ pub struct NegativeAcknowledgmentPDU {
     pub segment_requests: Vec<SegmentRequestForm>,
 }
 type NakPDU = NegativeAcknowledgmentPDU;
+#[async_trait]
 impl FSSEncode for NegativeAcknowledgmentPDU {
     type PDUType = Self;
 
@@ -859,27 +883,27 @@ impl FSSEncode for NegativeAcknowledgmentPDU {
         buffer
     }
 
-    fn decode<T: Read>(buffer: &mut T, file_size_flag: FileSizeFlag) -> PDUResult<Self::PDUType> {
-        let start_of_scope = match file_size_flag {
-            FileSizeFlag::Large => buffer.read_u64::<BigEndian>()?,
-            FileSizeFlag::Small => buffer.read_u32::<BigEndian>()? as u64,
-        };
-        let end_of_scope = match file_size_flag {
-            FileSizeFlag::Large => buffer.read_u64::<BigEndian>()?,
-            FileSizeFlag::Small => buffer.read_u32::<BigEndian>()? as u64,
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+        file_size_flag: FileSizeFlag,
+    ) -> PDUResult<Self::PDUType> {
+        let (start_of_scope, end_of_scope) = match file_size_flag {
+            FileSizeFlag::Large => (buffer.read_u64().await?, buffer.read_u64().await?),
+            FileSizeFlag::Small => (
+                buffer.read_u32().await? as u64,
+                buffer.read_u32().await? as u64,
+            ),
         };
 
         let mut segment_requests = vec![];
 
         let mut remaining_vec = vec![];
-        buffer.read_to_end(&mut remaining_vec)?;
+        buffer.read_to_end(&mut remaining_vec).await?;
         let remaining_buffer = &mut remaining_vec.as_slice();
 
         while !remaining_buffer.is_empty() {
-            segment_requests.push(SegmentRequestForm::decode(
-                remaining_buffer,
-                file_size_flag,
-            )?)
+            segment_requests
+                .push(SegmentRequestForm::decode(remaining_buffer, file_size_flag).await?)
         }
 
         Ok(Self {
@@ -894,6 +918,7 @@ impl FSSEncode for NegativeAcknowledgmentPDU {
 pub struct PromptPDU {
     pub nak_or_keep_alive: NakOrKeepAlive,
 }
+#[async_trait]
 impl PDUEncode for PromptPDU {
     type PDUType = Self;
 
@@ -901,11 +926,12 @@ impl PDUEncode for PromptPDU {
         vec![(self.nak_or_keep_alive as u8) << 7]
     }
 
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let mut u8_buff = [0_u8; 1];
-        buffer.read_exact(&mut u8_buff)?;
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
+        let first_byte = buffer.read_u8().await?;
         let nak_or_keep_alive = {
-            let possible = (u8_buff[0] & 0x80) >> 7;
+            let possible = (first_byte & 0x80) >> 7;
             NakOrKeepAlive::from_u8(possible).ok_or(PDUError::InvalidPrompt(possible))?
         };
         Ok(Self { nak_or_keep_alive })
@@ -915,6 +941,7 @@ impl PDUEncode for PromptPDU {
 pub struct KeepAlivePDU {
     pub progress: u64,
 }
+#[async_trait]
 impl FSSEncode for KeepAlivePDU {
     type PDUType = Self;
 
@@ -925,11 +952,14 @@ impl FSSEncode for KeepAlivePDU {
         }
     }
 
-    fn decode<T: Read>(buffer: &mut T, file_size_flag: FileSizeFlag) -> PDUResult<Self::PDUType> {
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+        file_size_flag: FileSizeFlag,
+    ) -> PDUResult<Self::PDUType> {
         Ok(Self {
             progress: match file_size_flag {
-                FileSizeFlag::Large => buffer.read_u64::<BigEndian>()?,
-                FileSizeFlag::Small => buffer.read_u32::<BigEndian>()? as u64,
+                FileSizeFlag::Large => buffer.read_u64().await?,
+                FileSizeFlag::Small => buffer.read_u32().await? as u64,
             },
         })
     }
@@ -966,7 +996,8 @@ mod test {
     }
 
     #[rstest]
-    fn variableid_encode(
+    #[tokio::test]
+    async fn variableid_encode(
         #[values(
             VariableID::from(1_u8),
             VariableID::from(300_u16),
@@ -976,8 +1007,9 @@ mod test {
         id: VariableID,
     ) {
         let buff = id.encode();
-        let recovered =
-            VariableID::decode(&mut buff.as_slice()).expect("Unable to decode VariableID");
+        let recovered = VariableID::decode(&mut buff.as_slice())
+            .await
+            .expect("Unable to decode VariableID");
 
         assert_eq!(id, recovered)
     }
@@ -1007,7 +1039,8 @@ mod test {
             file_data: (0..255).step_by(2).collect::<Vec<u8>>()
         })
     )]
-    fn unsgemented_data(#[case] expected: FileDataPDU) {
+    #[tokio::test]
+    async fn unsgemented_data(#[case] expected: FileDataPDU) {
         let file_size_flag = match &expected {
             FileDataPDU::Unsegmented(UnsegmentedFileData { offset: val, .. })
                 if val <= &u32::MAX.into() =>
@@ -1024,6 +1057,7 @@ mod test {
             SegmentedData::NotPresent,
             file_size_flag,
         )
+        .await
         .unwrap();
 
         assert_eq!(expected, recovered)
@@ -1046,7 +1080,8 @@ mod test {
             file_data: (0..255).step_by(8).collect::<Vec<u8>>()
         }
     )]
-    fn segmented_data(
+    #[tokio::test]
+    async fn segmented_data(
         #[values(
             RecordContinuationState::First,
             RecordContinuationState::Last,
@@ -1071,13 +1106,15 @@ mod test {
             SegmentedData::Present,
             file_size_flag,
         )
+        .await
         .unwrap();
 
         assert_eq!(expected, recovered)
     }
 
     #[rstest]
-    fn end_of_file_no_error(#[values(7573910375_u64, 194885483_u64)] file_size: u64) {
+    #[tokio::test]
+    async fn end_of_file_no_error(#[values(7573910375_u64, 194885483_u64)] file_size: u64) {
         let file_size_flag = match file_size <= u32::MAX.into() {
             false => FileSizeFlag::Large,
             true => FileSizeFlag::Small,
@@ -1093,13 +1130,16 @@ mod test {
 
         let buffer = expected.clone().encode(file_size_flag);
 
-        let recovered = Operations::decode(&mut buffer.as_slice(), file_size_flag).unwrap();
+        let recovered = Operations::decode(&mut buffer.as_slice(), file_size_flag)
+            .await
+            .unwrap();
 
         assert_eq!(expected, recovered)
     }
 
     #[rstest]
-    fn end_of_file_with_error(
+    #[tokio::test]
+    async fn end_of_file_with_error(
         #[values(
             Condition::PositiveLimitReached,
             Condition::KeepAliveLimitReached,
@@ -1134,14 +1174,15 @@ mod test {
 
         let buffer = expected.clone().encode(file_size_flag);
 
-        let recovered = Operations::decode(&mut buffer.as_slice(), file_size_flag)?;
+        let recovered = Operations::decode(&mut buffer.as_slice(), file_size_flag).await?;
 
         assert_eq!(expected, recovered);
         Ok(())
     }
 
     #[rstest]
-    fn finished_no_error(
+    #[tokio::test]
+    async fn finished_no_error(
         #[values(DeliveryCode::Complete, DeliveryCode::Incomplete)] delivery_code: DeliveryCode,
         #[values(
             FileStatusCode::Discarded,
@@ -1181,14 +1222,15 @@ mod test {
         });
         let buffer = expected.clone().encode(FileSizeFlag::Small);
 
-        let recovered = Operations::decode(&mut buffer.as_slice(), FileSizeFlag::Large)?;
+        let recovered = Operations::decode(&mut buffer.as_slice(), FileSizeFlag::Large).await?;
 
         assert_eq!(expected, recovered);
         Ok(())
     }
 
     #[rstest]
-    fn finished_with_error(
+    #[tokio::test]
+    async fn finished_with_error(
         #[values(DeliveryCode::Complete, DeliveryCode::Incomplete)] delivery_code: DeliveryCode,
         #[values(
             FileStatusCode::Discarded,
@@ -1244,7 +1286,7 @@ mod test {
         });
         let buffer = expected.clone().encode(FileSizeFlag::Small);
 
-        let recovered = Operations::decode(&mut buffer.as_slice(), FileSizeFlag::Large)?;
+        let recovered = Operations::decode(&mut buffer.as_slice(), FileSizeFlag::Large).await?;
 
         assert_eq!(expected, recovered);
         Ok(())
@@ -1253,7 +1295,8 @@ mod test {
     #[rstest]
     #[case(PDUDirective::EoF, ACKSubDirective::Other)]
     #[case(PDUDirective::Finished, ACKSubDirective::Finished)]
-    fn ackpdu(
+    #[tokio::test]
+    async fn ackpdu(
         #[case] directive: PDUDirective,
         #[case] directive_subtype_code: ACKSubDirective,
         #[values(
@@ -1279,7 +1322,7 @@ mod test {
             transaction_status,
         });
         let buffer = expected.clone().encode(FileSizeFlag::Small);
-        let recovered = Operations::decode(&mut buffer.as_slice(), FileSizeFlag::Small)?;
+        let recovered = Operations::decode(&mut buffer.as_slice(), FileSizeFlag::Small).await?;
 
         assert_eq!(expected, recovered);
         Ok(())
@@ -1316,7 +1359,8 @@ mod test {
         ),
     ])]
     #[case(vec![MetadataTLV::EntityID(VariableID::from(18574_u16))])]
-    fn metadata_pdu(
+    #[tokio::test]
+    async fn metadata_pdu(
         #[values(true, false)] closure_requested: bool,
         #[values(ChecksumType::Null, ChecksumType::Modular)] checksum_type: ChecksumType,
         #[values(184574_u64, 7574839485_u64)] file_size: u64,
@@ -1336,7 +1380,7 @@ mod test {
             options,
         });
         let buffer = expected.clone().encode(file_size_flag);
-        let recovered = Operations::decode(&mut buffer.as_slice(), file_size_flag)?;
+        let recovered = Operations::decode(&mut buffer.as_slice(), file_size_flag).await?;
 
         assert_eq!(expected, recovered);
         Ok(())
@@ -1375,7 +1419,8 @@ mod test {
             },
         ]
     )]
-    fn nak_pdu(
+    #[tokio::test]
+    async fn nak_pdu(
         #[case] start_of_scope: u64,
         #[case] end_of_scope: u64,
         #[case] segment_requests: Vec<SegmentRequestForm>,
@@ -1387,33 +1432,35 @@ mod test {
             segment_requests,
         });
         let buffer = expected.clone().encode(file_size_flag);
-        let recovered = Operations::decode(&mut buffer.as_slice(), file_size_flag)?;
+        let recovered = Operations::decode(&mut buffer.as_slice(), file_size_flag).await?;
 
         assert_eq!(expected, recovered);
         Ok(())
     }
 
     #[rstest]
-    fn prompt_pdu(
+    #[tokio::test]
+    async fn prompt_pdu(
         #[values(NakOrKeepAlive::KeepAlive, NakOrKeepAlive::Nak)] nak_or_keep_alive: NakOrKeepAlive,
         #[values(FileSizeFlag::Small, FileSizeFlag::Large)] file_size_flag: FileSizeFlag,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let expected = Operations::Prompt(PromptPDU { nak_or_keep_alive });
         let buffer = expected.clone().encode(file_size_flag);
-        let recovered = Operations::decode(&mut buffer.as_slice(), file_size_flag)?;
+        let recovered = Operations::decode(&mut buffer.as_slice(), file_size_flag).await?;
 
         assert_eq!(expected, recovered);
         Ok(())
     }
 
     #[rstest]
-    fn keepalive_pdu(
+    #[tokio::test]
+    async fn keepalive_pdu(
         #[values(0_u64, 32_u64, 65532_u64, 12_u64, 65536_u64, 8573732_u64)] progress: u64,
         #[values(FileSizeFlag::Small, FileSizeFlag::Large)] file_size_flag: FileSizeFlag,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let expected = Operations::KeepAlive(KeepAlivePDU { progress });
         let buffer = expected.clone().encode(file_size_flag);
-        let recovered = Operations::decode(&mut buffer.as_slice(), file_size_flag)?;
+        let recovered = Operations::decode(&mut buffer.as_slice(), file_size_flag).await?;
 
         assert_eq!(expected, recovered);
         Ok(())

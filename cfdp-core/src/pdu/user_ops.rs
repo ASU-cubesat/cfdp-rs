@@ -1,8 +1,8 @@
-use std::io::Read;
-
+use async_trait::async_trait;
 use camino::Utf8PathBuf;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
+use tokio::io::AsyncReadExt;
 
 use super::{
     error::{PDUError, PDUResult},
@@ -167,6 +167,7 @@ impl UserOperation {
         }
     }
 }
+#[async_trait]
 impl PDUEncode for UserOperation {
     type PDUType = Self;
     fn encode(self) -> Vec<u8> {
@@ -197,9 +198,12 @@ impl PDUEncode for UserOperation {
         buffer.extend(message_buffer);
         buffer
     }
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
+
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
         let mut cfdp_buff = vec![0u8; 4];
-        buffer.read_exact(&mut cfdp_buff)?;
+        buffer.read_exact(&mut cfdp_buff).await?;
         if cfdp_buff != USER_OPS_IDENTIFIER.to_vec() {
             return Err(PDUError::UnexpectedIdentifier(
                 cfdp_buff,
@@ -207,99 +211,104 @@ impl PDUEncode for UserOperation {
             ));
         }
 
-        let mut u8_buff = [0u8];
-        buffer.read_exact(&mut u8_buff)?;
+        let first_byte = buffer.read_u8().await?;
         let message_type =
-            MessageType::from_u8(u8_buff[0]).ok_or(PDUError::MessageType(u8_buff[0]))?;
+            MessageType::from_u8(first_byte).ok_or(PDUError::MessageType(first_byte))?;
         match message_type {
             MessageType::ProxyPutRequest => Ok(Self::ProxyOperation(
-                ProxyOperation::ProxyPutRequest(ProxyPutRequest::decode(buffer)?),
+                ProxyOperation::ProxyPutRequest(ProxyPutRequest::decode(buffer).await?),
             )),
             MessageType::ProxyMessageToUser => Ok(Self::ProxyOperation(
-                ProxyOperation::ProxyMessageToUser(MessageToUser::decode(buffer)?),
+                ProxyOperation::ProxyMessageToUser(MessageToUser::decode(buffer).await?),
             )),
             MessageType::ProxyFileStoreRequest => {
-                let mut u8_buff = [0u8];
-                buffer.read_exact(&mut u8_buff)?;
+                // length is encoded first
+                buffer.read_u8().await?;
                 Ok(Self::ProxyOperation(ProxyOperation::ProxyFileStoreRequest(
-                    FileStoreRequest::decode(buffer)?,
+                    FileStoreRequest::decode(buffer).await?,
                 )))
             }
             MessageType::ProxyFileStoreResponse => {
-                let mut u8_buff = [0u8];
-                buffer.read_exact(&mut u8_buff)?;
+                // length is encoded first
+                buffer.read_u8().await?;
                 Ok(Self::Response(UserResponse::ProxyFileStore(
-                    FileStoreResponse::decode(buffer)?,
+                    FileStoreResponse::decode(buffer).await?,
                 )))
             }
 
             MessageType::ProxyFaultHandlerOverride => Ok(Self::ProxyOperation(
-                ProxyOperation::ProxyFaultHandlerOverride(FaultHandlerOverride::decode(buffer)?),
+                ProxyOperation::ProxyFaultHandlerOverride(
+                    FaultHandlerOverride::decode(buffer).await?,
+                ),
             )),
             MessageType::ProxyTransmissionMode => Ok(Self::ProxyOperation(
-                ProxyOperation::ProxyTransmissionMode(TransmissionMode::decode(buffer)?),
+                ProxyOperation::ProxyTransmissionMode(TransmissionMode::decode(buffer).await?),
             )),
             MessageType::ProxyFlowLabel => Ok(Self::ProxyOperation(
-                ProxyOperation::ProxyFlowLabel(FlowLabel::decode(buffer)?),
+                ProxyOperation::ProxyFlowLabel(FlowLabel::decode(buffer).await?),
             )),
 
             MessageType::ProxySegmentationControl => Ok(Self::ProxyOperation(
-                ProxyOperation::ProxySegmentationControl(ProxySegmentationControl::decode(buffer)?),
+                ProxyOperation::ProxySegmentationControl(
+                    ProxySegmentationControl::decode(buffer).await?,
+                ),
             )),
             MessageType::ProxyPutResponse => Ok(Self::Response(UserResponse::ProxyPut(
-                ProxyPutResponse::decode(buffer)?,
+                ProxyPutResponse::decode(buffer).await?,
             ))),
             MessageType::ProxyPutCancel => Ok(Self::ProxyOperation(ProxyOperation::ProxyPutCancel)),
             MessageType::OriginatingTransactionIDMessage => {
                 Ok(Self::OriginatingTransactionIDMessage(
-                    OriginatingTransactionIDMessage::decode(buffer)?,
+                    OriginatingTransactionIDMessage::decode(buffer).await?,
                 ))
             }
-            MessageType::ProxyClosureRequest => Err(PDUError::MessageType(u8_buff[0])),
+            MessageType::ProxyClosureRequest => Err(PDUError::MessageType(first_byte)),
             MessageType::DirectoryListingRequest => Ok(Self::Request(
-                UserRequest::DirectoryListing(DirectoryListingRequest::decode(buffer)?),
+                UserRequest::DirectoryListing(DirectoryListingRequest::decode(buffer).await?),
             )),
             MessageType::RemoteStatusReportRequest => Ok(Self::Request(
-                UserRequest::RemoteStatusReport(RemoteStatusReportRequest::decode(buffer)?),
+                UserRequest::RemoteStatusReport(RemoteStatusReportRequest::decode(buffer).await?),
             )),
             MessageType::RemoteSuspendRequest => Ok(Self::Request(UserRequest::RemoteSuspend(
-                RemoteSuspendRequest::decode(buffer)?,
+                RemoteSuspendRequest::decode(buffer).await?,
             ))),
             MessageType::RemoteResumeRequest => Ok(Self::Request(UserRequest::RemoteResume(
-                RemoteResumeRequest::decode(buffer)?,
+                RemoteResumeRequest::decode(buffer).await?,
             ))),
             MessageType::DirectoryListingResponse => Ok(Self::Response(
-                UserResponse::DirectoryListing(DirectoryListingResponse::decode(buffer)?),
+                UserResponse::DirectoryListing(DirectoryListingResponse::decode(buffer).await?),
             )),
             MessageType::RemoteStatusReportResponse => Ok(Self::Response(
-                UserResponse::RemoteStatusReport(RemoteStatusReportResponse::decode(buffer)?),
+                UserResponse::RemoteStatusReport(RemoteStatusReportResponse::decode(buffer).await?),
             )),
             MessageType::RemoteSuspendResponse => Ok(Self::Response(UserResponse::RemoteSuspend(
-                RemoteSuspendResponse::decode(buffer)?,
+                RemoteSuspendResponse::decode(buffer).await?,
             ))),
             MessageType::RemoteResumeResponse => Ok(Self::Response(UserResponse::RemoteResume(
-                RemoteResumeResponse::decode(buffer)?,
+                RemoteResumeResponse::decode(buffer).await?,
             ))),
-            MessageType::SFORequest => Ok(Self::SFORequest(SFORequest::decode(buffer)?)),
+            MessageType::SFORequest => Ok(Self::SFORequest(SFORequest::decode(buffer).await?)),
             MessageType::SFOMessageToUser => {
-                Ok(Self::SFOMessageToUser(MessageToUser::decode(buffer)?))
+                Ok(Self::SFOMessageToUser(MessageToUser::decode(buffer).await?))
             }
-            MessageType::SFOFlowLabel => Ok(Self::SFOFlowLabel(FlowLabel::decode(buffer)?)),
+            MessageType::SFOFlowLabel => Ok(Self::SFOFlowLabel(FlowLabel::decode(buffer).await?)),
             MessageType::SFOFaultHandlerOverride => Ok(Self::SFOFaultHandlerOverride(
-                FaultHandlerOverride::decode(buffer)?,
+                FaultHandlerOverride::decode(buffer).await?,
             )),
             MessageType::SFOFileStoreRequest => {
-                let mut u8_buff = [0u8];
-                buffer.read_exact(&mut u8_buff)?;
-                Ok(Self::SFOFileStoreRequest(FileStoreRequest::decode(buffer)?))
+                // length is encoded first
+                buffer.read_u8().await?;
+                Ok(Self::SFOFileStoreRequest(
+                    FileStoreRequest::decode(buffer).await?,
+                ))
             }
-            MessageType::SFOReport => Ok(Self::SFOReport(SFOReport::decode(buffer)?)),
+            MessageType::SFOReport => Ok(Self::SFOReport(SFOReport::decode(buffer).await?)),
             MessageType::SFOFileStoreResponse => {
-                let mut u8_buff = [0u8];
-                buffer.read_exact(&mut u8_buff)?;
-                Ok(Self::SFOFileStoreResponse(FileStoreResponse::decode(
-                    buffer,
-                )?))
+                // length is encoded first
+                buffer.read_u8().await?;
+                Ok(Self::SFOFileStoreResponse(
+                    FileStoreResponse::decode(buffer).await?,
+                ))
             }
         }
     }
@@ -318,6 +327,7 @@ pub struct OriginatingTransactionIDMessage {
     pub(crate) source_entity_id: EntityID,
     pub(crate) transaction_sequence_number: TransactionSeqNum,
 }
+#[async_trait]
 impl PDUEncode for OriginatingTransactionIDMessage {
     type PDUType = Self;
     fn encode(self) -> Vec<u8> {
@@ -331,23 +341,24 @@ impl PDUEncode for OriginatingTransactionIDMessage {
         buffer.extend(self.transaction_sequence_number.to_be_bytes());
         buffer
     }
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let mut u8_buff = [0u8; 1];
-        buffer.read_exact(&mut u8_buff)?;
-        let first_byte = u8_buff[0];
+
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
+        let first_byte = buffer.read_u8().await?;
 
         let entity_id_len = ((first_byte & 0x70) >> 4) + 1;
         let transaction_seq_len = (first_byte & 0x7) + 1;
 
         let source_entity_id = {
             let mut buff = vec![0u8; entity_id_len as usize];
-            buffer.read_exact(&mut buff)?;
+            buffer.read_exact(&mut buff).await?;
             EntityID::try_from(buff)?
         };
 
         let transaction_sequence_number = {
             let mut buff = vec![0u8; transaction_seq_len as usize];
-            buffer.read_exact(&mut buff)?;
+            buffer.read_exact(&mut buff).await?;
             TransactionSeqNum::try_from(buff)?
         };
 
@@ -364,6 +375,7 @@ pub struct ProxyPutRequest {
     pub source_filename: Utf8PathBuf,
     pub destination_filename: Utf8PathBuf,
 }
+#[async_trait]
 impl PDUEncode for ProxyPutRequest {
     type PDUType = Self;
     fn encode(self) -> Vec<u8> {
@@ -381,12 +393,14 @@ impl PDUEncode for ProxyPutRequest {
         buffer
     }
 
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let destination_entity_id = EntityID::try_from(read_length_value_pair(buffer)?)?;
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
+        let destination_entity_id = EntityID::try_from(read_length_value_pair(buffer).await?)?;
         let source_filename =
-            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer)?)?);
+            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer).await?)?);
         let destination_filename =
-            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer)?)?);
+            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer).await?)?);
 
         Ok(Self {
             destination_entity_id,
@@ -402,6 +416,7 @@ pub struct ProxyPutResponse {
     pub delivery_code: DeliveryCode,
     pub file_status: FileStatusCode,
 }
+#[async_trait]
 impl PDUEncode for ProxyPutResponse {
     type PDUType = Self;
     fn encode(self) -> Vec<u8> {
@@ -411,10 +426,10 @@ impl PDUEncode for ProxyPutResponse {
         vec![byte]
     }
 
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let mut u8_buff = [0u8; 1];
-        buffer.read_exact(&mut u8_buff)?;
-        let byte = u8_buff[0];
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
+        let byte = buffer.read_u8().await?;
         let condition = {
             let possible_condition = (byte & 0xF0) >> 4;
             Condition::from_u8(possible_condition)
@@ -445,17 +460,18 @@ impl PDUEncode for ProxyPutResponse {
 pub struct ProxySegmentationControl {
     control: SegmentationControl,
 }
+#[async_trait]
 impl PDUEncode for ProxySegmentationControl {
     type PDUType = Self;
     fn encode(self) -> Vec<u8> {
         vec![self.control as u8]
     }
 
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
         let control = {
-            let mut u8_buff = [0u8; 1];
-            buffer.read_exact(&mut u8_buff)?;
-            let possible_control = u8_buff[0];
+            let possible_control = buffer.read_u8().await?;
             SegmentationControl::from_u8(possible_control)
                 .ok_or(PDUError::InvalidSegmentControl(possible_control))?
         };
@@ -469,6 +485,7 @@ pub struct DirectoryListingRequest {
     pub directory_name: Utf8PathBuf,
     pub directory_filename: Utf8PathBuf,
 }
+#[async_trait]
 impl PDUEncode for DirectoryListingRequest {
     type PDUType = Self;
     fn encode(self) -> Vec<u8> {
@@ -483,10 +500,13 @@ impl PDUEncode for DirectoryListingRequest {
         buffer
     }
 
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let directory_name = Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer)?)?);
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
+        let directory_name =
+            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer).await?)?);
         let directory_filename =
-            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer)?)?);
+            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer).await?)?);
 
         Ok(Self {
             directory_name,
@@ -508,6 +528,7 @@ pub struct DirectoryListingResponse {
     pub directory_name: Utf8PathBuf,
     pub directory_filename: Utf8PathBuf,
 }
+#[async_trait]
 impl PDUEncode for DirectoryListingResponse {
     type PDUType = Self;
 
@@ -525,18 +546,19 @@ impl PDUEncode for DirectoryListingResponse {
         buffer
     }
 
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let mut u8_buff = [0u8; 1];
-        buffer.read_exact(&mut u8_buff)?;
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
         let response_code = {
-            let possible = u8_buff[0];
+            let possible = buffer.read_u8().await?;
             ListingResponseCode::from_u8(possible).ok_or(PDUError::InvalidListingCode(possible))?
         };
 
-        let directory_name = Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer)?)?);
+        let directory_name =
+            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer).await?)?);
 
         let directory_filename =
-            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer)?)?);
+            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer).await?)?);
 
         Ok(Self {
             response_code,
@@ -552,6 +574,7 @@ pub struct RemoteStatusReportRequest {
     pub transaction_sequence_number: TransactionSeqNum,
     pub report_filename: Utf8PathBuf,
 }
+#[async_trait]
 impl PDUEncode for RemoteStatusReportRequest {
     type PDUType = Self;
 
@@ -572,27 +595,27 @@ impl PDUEncode for RemoteStatusReportRequest {
         buffer
     }
 
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let mut u8_buff = [0u8; 1];
-        buffer.read_exact(&mut u8_buff)?;
-        let first_byte = u8_buff[0];
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
+        let first_byte = buffer.read_u8().await?;
 
         let entity_id_len = ((first_byte & 0x70) >> 4) + 1;
         let transaction_seq_len = (first_byte & 0x7) + 1;
 
         let source_entity_id = {
             let mut tmp_buffer = vec![0u8; entity_id_len as usize];
-            buffer.read_exact(&mut tmp_buffer)?;
+            buffer.read_exact(&mut tmp_buffer).await?;
             EntityID::try_from(tmp_buffer)?
         };
 
         let transaction_sequence_number = {
             let mut tmp_buffer = vec![0u8; transaction_seq_len as usize];
-            buffer.read_exact(&mut tmp_buffer)?;
+            buffer.read_exact(&mut tmp_buffer).await?;
             TransactionSeqNum::try_from(tmp_buffer)?
         };
         let report_filename =
-            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer)?)?);
+            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer).await?)?);
 
         Ok(Self {
             source_entity_id,
@@ -609,6 +632,7 @@ pub struct RemoteStatusReportResponse {
     pub source_entity_id: EntityID,
     pub transaction_sequence_number: TransactionSeqNum,
 }
+#[async_trait]
 impl PDUEncode for RemoteStatusReportResponse {
     type PDUType = Self;
 
@@ -628,10 +652,10 @@ impl PDUEncode for RemoteStatusReportResponse {
         buffer
     }
 
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let mut u8_buff = [0u8; 1];
-        buffer.read_exact(&mut u8_buff)?;
-        let first_byte = u8_buff[0];
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
+        let first_byte = buffer.read_u8().await?;
 
         let transaction_status = {
             let status = (first_byte & 0xC0) >> 6;
@@ -640,21 +664,20 @@ impl PDUEncode for RemoteStatusReportResponse {
 
         let response_code = (first_byte & 0x1) != 0;
 
-        buffer.read_exact(&mut u8_buff)?;
-        let second_byte = u8_buff[0];
+        let second_byte = buffer.read_u8().await?;
 
         let entity_id_len = ((second_byte & 0x70) >> 4) + 1;
         let transaction_seq_len = (second_byte & 0x7) + 1;
 
         let source_entity_id = {
             let mut tmp_buffer = vec![0u8; entity_id_len as usize];
-            buffer.read_exact(&mut tmp_buffer)?;
+            buffer.read_exact(&mut tmp_buffer).await?;
             EntityID::try_from(tmp_buffer)?
         };
 
         let transaction_sequence_number = {
             let mut tmp_buffer = vec![0u8; transaction_seq_len as usize];
-            buffer.read_exact(&mut tmp_buffer)?;
+            buffer.read_exact(&mut tmp_buffer).await?;
             TransactionSeqNum::try_from(tmp_buffer)?
         };
 
@@ -672,6 +695,7 @@ pub struct RemoteSuspendRequest {
     pub source_entity_id: EntityID,
     pub transaction_sequence_number: TransactionSeqNum,
 }
+#[async_trait]
 impl PDUEncode for RemoteSuspendRequest {
     type PDUType = Self;
 
@@ -688,23 +712,23 @@ impl PDUEncode for RemoteSuspendRequest {
         buffer
     }
 
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let mut u8_buff = [0u8; 1];
-        buffer.read_exact(&mut u8_buff)?;
-        let first_byte = u8_buff[0];
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
+        let first_byte = buffer.read_u8().await?;
 
         let entity_id_len = ((first_byte & 0x70) >> 4) + 1;
         let transaction_seq_len = (first_byte & 0x7) + 1;
 
         let source_entity_id = {
             let mut tmp_buffer = vec![0u8; entity_id_len as usize];
-            buffer.read_exact(&mut tmp_buffer)?;
+            buffer.read_exact(&mut tmp_buffer).await?;
             EntityID::try_from(tmp_buffer)?
         };
 
         let transaction_sequence_number = {
             let mut tmp_buffer = vec![0u8; transaction_seq_len as usize];
-            buffer.read_exact(&mut tmp_buffer)?;
+            buffer.read_exact(&mut tmp_buffer).await?;
             TransactionSeqNum::try_from(tmp_buffer)?
         };
 
@@ -722,6 +746,7 @@ pub struct RemoteSuspendResponse {
     pub source_entity_id: EntityID,
     pub transaction_sequence_number: TransactionSeqNum,
 }
+#[async_trait]
 impl PDUEncode for RemoteSuspendResponse {
     type PDUType = Self;
 
@@ -742,10 +767,10 @@ impl PDUEncode for RemoteSuspendResponse {
         buffer
     }
 
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let mut u8_buff = [0u8; 1];
-        buffer.read_exact(&mut u8_buff)?;
-        let first_byte = u8_buff[0];
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
+        let first_byte = buffer.read_u8().await?;
 
         let suspend_indication = ((first_byte & 0x80) >> 7) != 0;
         let transaction_status = {
@@ -753,21 +778,20 @@ impl PDUEncode for RemoteSuspendResponse {
             TransactionStatus::from_u8(status).ok_or(PDUError::InvalidTransactionStatus(status))?
         };
 
-        buffer.read_exact(&mut u8_buff)?;
-        let second_byte = u8_buff[0];
+        let second_byte = buffer.read_u8().await?;
 
         let entity_id_len = ((second_byte & 0x70) >> 4) + 1;
         let transaction_seq_len = (second_byte & 0x7) + 1;
 
         let source_entity_id = {
             let mut tmp_buffer = vec![0u8; entity_id_len as usize];
-            buffer.read_exact(&mut tmp_buffer)?;
+            buffer.read_exact(&mut tmp_buffer).await?;
             EntityID::try_from(tmp_buffer)?
         };
 
         let transaction_sequence_number = {
             let mut tmp_buffer = vec![0u8; transaction_seq_len as usize];
-            buffer.read_exact(&mut tmp_buffer)?;
+            buffer.read_exact(&mut tmp_buffer).await?;
             TransactionSeqNum::try_from(tmp_buffer)?
         };
 
@@ -785,6 +809,7 @@ pub struct RemoteResumeRequest {
     pub source_entity_id: EntityID,
     pub transaction_sequence_number: TransactionSeqNum,
 }
+#[async_trait]
 impl PDUEncode for RemoteResumeRequest {
     type PDUType = Self;
 
@@ -801,23 +826,23 @@ impl PDUEncode for RemoteResumeRequest {
         buffer
     }
 
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let mut u8_buff = [0u8; 1];
-        buffer.read_exact(&mut u8_buff)?;
-        let first_byte = u8_buff[0];
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
+        let first_byte = buffer.read_u8().await?;
 
         let entity_id_len = ((first_byte & 0x70) >> 4) + 1;
         let transaction_seq_len = (first_byte & 0x7) + 1;
 
         let source_entity_id = {
             let mut tmp_buffer = vec![0u8; entity_id_len as usize];
-            buffer.read_exact(&mut tmp_buffer)?;
+            buffer.read_exact(&mut tmp_buffer).await?;
             EntityID::try_from(tmp_buffer)?
         };
 
         let transaction_sequence_number = {
             let mut tmp_buffer = vec![0u8; transaction_seq_len as usize];
-            buffer.read_exact(&mut tmp_buffer)?;
+            buffer.read_exact(&mut tmp_buffer).await?;
             TransactionSeqNum::try_from(tmp_buffer)?
         };
         Ok(Self {
@@ -834,6 +859,7 @@ pub struct RemoteResumeResponse {
     pub source_entity_id: EntityID,
     pub transaction_sequence_number: TransactionSeqNum,
 }
+#[async_trait]
 impl PDUEncode for RemoteResumeResponse {
     type PDUType = Self;
 
@@ -854,32 +880,30 @@ impl PDUEncode for RemoteResumeResponse {
         buffer
     }
 
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let mut u8_buff = [0u8; 1];
-        buffer.read_exact(&mut u8_buff)?;
-        let first_byte = u8_buff[0];
-
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
+        let first_byte = buffer.read_u8().await?;
         let suspend_indication = ((first_byte & 0x80) >> 7) != 0;
         let transaction_status = {
             let status = (first_byte & 0x30) >> 5;
             TransactionStatus::from_u8(status).ok_or(PDUError::InvalidTransactionStatus(status))?
         };
 
-        buffer.read_exact(&mut u8_buff)?;
-        let second_byte = u8_buff[0];
+        let second_byte = buffer.read_u8().await?;
 
         let entity_id_len = ((second_byte & 0x70) >> 4) + 1;
         let transaction_seq_len = (second_byte & 0x7) + 1;
 
         let source_entity_id = {
             let mut tmp_buffer = vec![0u8; entity_id_len as usize];
-            buffer.read_exact(&mut tmp_buffer)?;
+            buffer.read_exact(&mut tmp_buffer).await?;
             EntityID::try_from(tmp_buffer)?
         };
 
         let transaction_sequence_number = {
             let mut tmp_buffer = vec![0u8; transaction_seq_len as usize];
-            buffer.read_exact(&mut tmp_buffer)?;
+            buffer.read_exact(&mut tmp_buffer).await?;
             TransactionSeqNum::try_from(tmp_buffer)?
         };
         Ok(Self {
@@ -904,6 +928,7 @@ pub struct SFORequest {
     source_filename: Vec<u8>,
     destination_filename: Vec<u8>,
 }
+#[async_trait]
 impl PDUEncode for SFORequest {
     type PDUType = Self;
 
@@ -934,10 +959,10 @@ impl PDUEncode for SFORequest {
         buffer
     }
 
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let mut u8_buff = [0u8; 1];
-        buffer.read_exact(&mut u8_buff)?;
-        let first_byte = u8_buff[0];
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
+        let first_byte = buffer.read_u8().await?;
 
         let trace_control = {
             let possible_control = (first_byte & 0xc0) >> 6;
@@ -959,14 +984,13 @@ impl PDUEncode for SFORequest {
 
         let closure_request = ((first_byte & 0x8) >> 3) != 0;
 
-        buffer.read_exact(&mut u8_buff)?;
-        let prior_waypoints_count = u8_buff[0];
+        let prior_waypoints_count = buffer.read_u8().await?;
 
-        let request_label = read_length_value_pair(buffer)?;
-        let source_entity_id = read_length_value_pair(buffer)?;
-        let destination_entity_id = read_length_value_pair(buffer)?;
-        let source_filename = read_length_value_pair(buffer)?;
-        let destination_filename = read_length_value_pair(buffer)?;
+        let request_label = read_length_value_pair(buffer).await?;
+        let source_entity_id = read_length_value_pair(buffer).await?;
+        let destination_entity_id = read_length_value_pair(buffer).await?;
+        let source_filename = read_length_value_pair(buffer).await?;
+        let destination_filename = read_length_value_pair(buffer).await?;
 
         Ok(Self {
             trace_control,
@@ -996,6 +1020,7 @@ pub struct SFOReport {
     delivery_code: DeliveryCode,
     file_status: FileStatusCode,
 }
+#[async_trait]
 impl PDUEncode for SFOReport {
     type PDUType = Self;
 
@@ -1018,21 +1043,19 @@ impl PDUEncode for SFOReport {
         buffer
     }
 
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let mut u8_buff = [0u8; 1];
-        let request_label = read_length_value_pair(buffer)?;
-        let source_entity_id = read_length_value_pair(buffer)?;
-        let destination_entity_id = read_length_value_pair(buffer)?;
-        let reporting_entity_id = read_length_value_pair(buffer)?;
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
+        let request_label = read_length_value_pair(buffer).await?;
+        let source_entity_id = read_length_value_pair(buffer).await?;
+        let destination_entity_id = read_length_value_pair(buffer).await?;
+        let reporting_entity_id = read_length_value_pair(buffer).await?;
 
-        buffer.read_exact(&mut u8_buff)?;
-        let prior_waypoints = u8_buff[0];
+        let prior_waypoints = buffer.read_u8().await?;
 
-        buffer.read_exact(&mut u8_buff)?;
-        let report_code = u8_buff[0];
+        let report_code = buffer.read_u8().await?;
 
-        buffer.read_exact(&mut u8_buff)?;
-        let last_byte = u8_buff[0];
+        let last_byte = buffer.read_u8().await?;
 
         let condition = {
             let possible_condition = (last_byte & 0xf0) >> 4;
@@ -1089,7 +1112,8 @@ mod test {
     #[rstest]
     #[case((0..5).collect(), vec![1u8, 3, 5, 7, 9], 3475392u32.to_be_bytes().to_vec(), 1948582103u64.to_be_bytes().to_vec(), 5, 255, Direction::ToReceiver, DeliveryCode::Complete,)]
     #[case((200..243).collect(), vec![2u8, 4, 12, 55, 192], 555184857u64.to_be_bytes().to_vec(), 128374u32.to_be_bytes().to_vec(), 153, 2, Direction::ToSender, DeliveryCode::Incomplete )]
-    fn sfo_report_roundtrip(
+    #[tokio::test]
+    async fn sfo_report_roundtrip(
         #[case] request_label: Vec<u8>,
         #[case] source_entity_id: Vec<u8>,
         #[case] destination_entity_id: Vec<u8>,
@@ -1124,16 +1148,16 @@ mod test {
             file_status,
         };
         let buffer = expected.clone().encode();
-        let recovered = SFOReport::decode(&mut buffer.as_slice()).unwrap();
+        let recovered = SFOReport::decode(&mut buffer.as_slice()).await.unwrap();
         assert_eq!(expected, recovered)
     }
 
-    #[test]
-    fn user_op_bad_sync() {
+    #[tokio::test]
+    async fn user_op_bad_sync() {
         let mut buffer = USER_OPS_IDENTIFIER.to_vec();
         buffer[0] -= 10;
         assert_err!(
-            UserOperation::decode(&mut &buffer[..]),
+            UserOperation::decode(&mut &buffer[..]).await,
             Err(PDUError::UnexpectedIdentifier(_, _))
         )
     }
@@ -1320,9 +1344,10 @@ mod test {
             file_status: FileStatusCode::FileStoreRejection
         }
     ))]
-    fn user_op_roundtrip(#[case] expected: UserOperation) {
+    #[tokio::test]
+    async fn user_op_roundtrip(#[case] expected: UserOperation) {
         let buffer = expected.clone().encode();
-        let recovered = UserOperation::decode(&mut &buffer[..]).unwrap();
+        let recovered = UserOperation::decode(&mut &buffer[..]).await.unwrap();
 
         assert_eq!(expected, recovered)
     }

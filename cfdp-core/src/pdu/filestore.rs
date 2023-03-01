@@ -1,8 +1,8 @@
+use async_trait::async_trait;
 use camino::Utf8PathBuf;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
-
-use std::io::Read;
+use tokio::io::AsyncReadExt;
 
 use super::{
     error::{PDUError, PDUResult},
@@ -244,6 +244,7 @@ pub struct FileStoreRequest {
     /// Only has non-zero length for rename, append, and replace actions.
     pub second_filename: Utf8PathBuf,
 }
+#[async_trait]
 impl PDUEncode for FileStoreRequest {
     type PDUType = Self;
     fn encode(self) -> Vec<u8> {
@@ -261,18 +262,20 @@ impl PDUEncode for FileStoreRequest {
         buffer
     }
 
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
         let action_code = {
-            let mut u8_buff = [0u8; 1];
-            buffer.read_exact(&mut u8_buff)?;
-            let possible_action = (u8_buff[0] & 0xF0) >> 4;
+            let possible_action = buffer.read_u8().await?;
+            let possible_action = (possible_action & 0xF0) >> 4;
             FileStoreAction::from_u8(possible_action)
                 .ok_or(PDUError::InvalidFileStoreAction(possible_action))?
         };
-        let first_filename = Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer)?)?);
+        let first_filename =
+            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer).await?)?);
 
         let second_filename =
-            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer)?)?);
+            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer).await?)?);
 
         Ok(Self {
             action_code,
@@ -303,6 +306,7 @@ impl FileStoreResponse {
         }
     }
 }
+#[async_trait]
 impl PDUEncode for FileStoreResponse {
     type PDUType = Self;
     fn encode(self) -> Vec<u8> {
@@ -322,10 +326,10 @@ impl PDUEncode for FileStoreResponse {
         buffer
     }
 
-    fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
-        let mut u8_buff = [0u8; 1];
-        buffer.read_exact(&mut u8_buff)?;
-        let first_byte = u8_buff[0];
+    async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PDUResult<Self::PDUType> {
+        let first_byte = buffer.read_u8().await?;
 
         let action_code = {
             let possible_action = (first_byte & 0xF0) >> 4;
@@ -335,12 +339,13 @@ impl PDUEncode for FileStoreResponse {
 
         let action_and_status = FileStoreStatus::get_status(&action_code, first_byte & 0xF)?;
 
-        let first_filename = Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer)?)?);
+        let first_filename =
+            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer).await?)?);
 
         let second_filename =
-            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer)?)?);
+            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer).await?)?);
 
-        let filestore_message = read_length_value_pair(buffer)?;
+        let filestore_message = read_length_value_pair(buffer).await?;
         Ok(Self {
             action_and_status,
             first_filename,
@@ -494,7 +499,8 @@ mod test {
     #[case("/b/longer/first/name", "")]
     #[case("/b/longer/first/name", "/a/longer/second/name")]
     #[case("", "")]
-    fn filestore_request(
+    #[tokio::test]
+    async fn filestore_request(
         #[values(
             FileStoreAction::CreateFile,
             FileStoreAction::DeleteFile,
@@ -516,7 +522,7 @@ mod test {
         };
 
         let buffer = expected.clone().encode();
-        let recovered = FileStoreRequest::decode(&mut &buffer[..]).unwrap();
+        let recovered = FileStoreRequest::decode(&mut &buffer[..]).await.unwrap();
 
         assert_eq!(expected, recovered)
     }
@@ -551,7 +557,8 @@ mod test {
     #[case("", "/b/longer/second/name", "")]
     #[case("", "/b/longer/second/name", "a non trivial message")]
     #[case("", "", "a non trivial message")]
-    fn filestore_response(
+    #[tokio::test]
+    async fn filestore_response(
         #[case] first_filename: Utf8PathBuf,
         #[case] second_filename: Utf8PathBuf,
         #[case] filestore_message: &str,
@@ -602,7 +609,7 @@ mod test {
         };
 
         let buffer = expected.clone().encode();
-        let recovered = FileStoreResponse::decode(&mut &buffer[..]).unwrap();
+        let recovered = FileStoreResponse::decode(&mut &buffer[..]).await.unwrap();
 
         assert_eq!(expected, recovered)
     }

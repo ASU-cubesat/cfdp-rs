@@ -1,24 +1,31 @@
 use std::{
-    collections::HashMap,
+    collections::{hash_map::Entry, HashMap},
     fs::{self, OpenOptions},
-    io::{Error as IOError, ErrorKind, Read, Write},
+    io::{Error as IOError, Write},
     path::Path,
     string::FromUtf8Error,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
 use camino::Utf8PathBuf;
-use crossbeam_channel::{bounded, unbounded, Receiver, Select, Sender, TryRecvError};
-use interprocess::local_socket::LocalSocketListener;
-use itertools::{Either, Itertools};
+use interprocess::local_socket::tokio::LocalSocketListener;
 use log::{error, info};
 use num_traits::FromPrimitive;
 use thiserror::Error;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    sync::{
+        mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
+        oneshot::Sender as OneSender,
+    },
+    task::JoinHandle,
+};
+use tokio::{runtime::Builder, sync::oneshot};
+use tokio_util::compat::FuturesAsyncReadCompatExt;
 
 use crate::{
     filestore::{ChecksumType, FileStore},
@@ -119,50 +126,49 @@ impl PutRequest {
         buffer
     }
 
-    pub(crate) fn decode<T: Read>(buffer: &mut T) -> PrimitiveResult<Self> {
-        let mut u8buff = [0_u8; 1];
-
+    pub(crate) async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PrimitiveResult<Self> {
         let source_filename = {
-            buffer.read_exact(&mut u8buff)?;
-            let mut vec = vec![0_u8; u8buff[0] as usize];
-            buffer.read_exact(vec.as_mut_slice())?;
+            let len = buffer.read_u8().await?;
+            let mut vec = vec![0_u8; len as usize];
+            buffer.read_exact(vec.as_mut_slice()).await?;
             Utf8PathBuf::from(String::from_utf8(vec)?)
         };
         let destination_filename = {
-            buffer.read_exact(&mut u8buff)?;
-            let mut vec = vec![0_u8; u8buff[0] as usize];
-            buffer.read_exact(vec.as_mut_slice())?;
+            let len = buffer.read_u8().await?;
+            let mut vec = vec![0_u8; len as usize];
+            buffer.read_exact(vec.as_mut_slice()).await?;
             Utf8PathBuf::from(String::from_utf8(vec)?)
         };
 
         let destination_entity_id = {
-            buffer.read_exact(&mut u8buff)?;
-            let mut vec = vec![0_u8; u8buff[0] as usize];
-            buffer.read_exact(vec.as_mut_slice())?;
+            let len = buffer.read_u8().await?;
+            let mut vec = vec![0_u8; len as usize];
+            buffer.read_exact(vec.as_mut_slice()).await?;
             EntityID::try_from(vec)?
         };
 
         let transmission_mode = {
-            buffer.read_exact(&mut u8buff)?;
-            let possible = u8buff[0];
+            let possible = buffer.read_u8().await?;
             TransmissionMode::from_u8(possible)
                 .ok_or(PDUError::InvalidTransmissionMode(possible))?
         };
 
         let filestore_requests = {
-            buffer.read_exact(&mut u8buff)?;
-            let mut vec = Vec::with_capacity(u8buff[0] as usize);
+            let len = buffer.read_u8().await?;
+            let mut vec = Vec::with_capacity(len as usize);
             for _ind in 0..vec.capacity() {
-                vec.push(FileStoreRequest::decode(buffer)?)
+                vec.push(FileStoreRequest::decode(buffer).await?)
             }
             vec
         };
 
         let message_to_user = {
-            buffer.read_exact(&mut u8buff)?;
-            let mut vec = Vec::with_capacity(u8buff[0] as usize);
+            let len = buffer.read_u8().await?;
+            let mut vec = Vec::with_capacity(len as usize);
             for _ind in 0..vec.capacity() {
-                vec.push(MessageToUser::decode(buffer)?)
+                vec.push(MessageToUser::decode(buffer).await?)
             }
             vec
         };
@@ -242,32 +248,34 @@ impl UserPrimitive {
         }
     }
 
-    pub fn decode<T: Read>(buffer: &mut T) -> PrimitiveResult<Self> {
+    pub async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> PrimitiveResult<Self> {
         let mut u8buff = [0_u8];
-        buffer.read_exact(&mut u8buff)?;
+        buffer.read_exact(&mut u8buff).await?;
         match u8buff[0] {
             0 => {
-                let request = PutRequest::decode(buffer)?;
+                let request = PutRequest::decode(buffer).await?;
                 Ok(Self::Put(request))
             }
             1 => {
-                let id = VariableID::decode(buffer)?;
-                let seq = VariableID::decode(buffer)?;
+                let id = VariableID::decode(buffer).await?;
+                let seq = VariableID::decode(buffer).await?;
                 Ok(Self::Cancel(id, seq))
             }
             2 => {
-                let id = VariableID::decode(buffer)?;
-                let seq = VariableID::decode(buffer)?;
+                let id = VariableID::decode(buffer).await?;
+                let seq = VariableID::decode(buffer).await?;
                 Ok(Self::Suspend(id, seq))
             }
             3 => {
-                let id = VariableID::decode(buffer)?;
-                let seq = VariableID::decode(buffer)?;
+                let id = VariableID::decode(buffer).await?;
+                let seq = VariableID::decode(buffer).await?;
                 Ok(Self::Resume(id, seq))
             }
             4 => {
-                let id = VariableID::decode(buffer)?;
-                let seq = VariableID::decode(buffer)?;
+                let id = VariableID::decode(buffer).await?;
+                let seq = VariableID::decode(buffer).await?;
                 Ok(Self::Report(id, seq))
             }
             _ => Err(PrimitiveError::UnexpextedPrimitive),
@@ -282,7 +290,7 @@ enum Command {
     Cancel,
     Suspend,
     Resume,
-    Report(Sender<Report>),
+    Report(OneSender<Report>),
     // may find a use for abandon in the future.
     #[allow(unused)]
     Abandon,
@@ -307,32 +315,29 @@ impl Report {
         buff
     }
 
-    pub fn decode<T: Read>(buffer: &mut T) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn decode<T: AsyncReadExt + std::marker::Unpin + std::marker::Send>(
+        buffer: &mut T,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let id = {
-            let entity_id = EntityID::decode(buffer)?;
-            let sequence_num = TransactionSeqNum::decode(buffer)?;
+            let entity_id = EntityID::decode(buffer).await?;
+            let sequence_num = TransactionSeqNum::decode(buffer).await?;
 
             (entity_id, sequence_num)
         };
 
-        let mut u8_buff = [0_u8; 1];
-
         let state = {
-            buffer.read_exact(&mut u8_buff)?;
-            let possible = u8_buff[0];
+            let possible = buffer.read_u8().await?;
             TransactionState::from_u8(possible).ok_or(TransactionError::InvalidStatus(possible))?
         };
 
         let status = {
-            buffer.read_exact(&mut u8_buff)?;
-            let possible = u8_buff[0];
+            let possible = buffer.read_u8().await?;
             TransactionStatus::from_u8(possible)
                 .ok_or(PDUError::InvalidTransactionStatus(possible))?
         };
 
         let condition = {
-            buffer.read_exact(&mut u8_buff)?;
-            let possible = u8_buff[0];
+            let possible = buffer.read_u8().await?;
             Condition::from_u8(possible).ok_or(PDUError::InvalidCondition(possible))?
         };
 
@@ -370,7 +375,7 @@ pub struct EntityConfig {
 
 type SpawnerTuple = (
     (EntityID, TransactionSeqNum),
-    Sender<Command>,
+    UnboundedSender<Command>,
     JoinHandle<Result<Report, TransactionError>>,
 );
 
@@ -445,17 +450,20 @@ type UserMessageCategories = (
     Vec<MessageToUser>,
 );
 
-fn categorize_user_msg(
+async fn categorize_user_msg(
     origin_id: &TransactionID,
     messages: Vec<MessageToUser>,
 ) -> UserMessageCategories {
-    let (user_ops, other_messages): (Vec<UserOperation>, Vec<MessageToUser>) =
-        messages.into_iter().partition_map(|msg| {
-            match UserOperation::decode(&mut msg.message_text.as_slice()) {
-                Ok(operation) => Either::Left(operation),
-                Err(_) => Either::Right(msg),
+    let (user_ops, other_messages): (Vec<UserOperation>, Vec<MessageToUser>) = {
+        let (mut left, mut right) = (vec![], vec![]);
+        for msg in messages.into_iter() {
+            match UserOperation::decode(&mut msg.message_text.as_slice()).await {
+                Ok(operation) => left.push(operation),
+                Err(_) => right.push(msg),
             }
-        });
+        }
+        (left, right)
+    };
 
     let cancel_id = user_ops
         .iter()
@@ -513,17 +521,17 @@ pub struct Daemon<T: FileStore + Send + 'static> {
     // The collection of all current transactions
     transaction_handles: Vec<JoinHandle<Result<Report, TransactionError>>>,
     // the vector of transportation tx channel connections
-    transport_tx_map: HashMap<EntityID, Sender<(VariableID, PDU)>>,
+    transport_tx_map: HashMap<EntityID, UnboundedSender<(VariableID, PDU)>>,
     // the vector of transportation rx channel connections
-    transport_rx_vec: Vec<Receiver<PDU>>,
+    transport_rx: UnboundedReceiver<PDU>,
     // // mapping of unique transaction ids to channels used to talk to each transaction
     // transaction_channels: HashMap<(EntityID, Vec<u8>), Sender<Command>>,
     // the underlying filestore used by this Daemon
     filestore: Arc<T>,
     // message reciept channel used to execute User Operations
-    message_rx: Receiver<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
+    message_rx: UnboundedReceiver<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
     // message sender channel used to execute User Operations by Transactions
-    message_tx: Sender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
+    message_tx: UnboundedSender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
     // a mapping of individual fault handler actions per remote entity
     entity_configs: HashMap<VariableID, EntityConfig>,
     // the default fault handling configuration
@@ -561,33 +569,32 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         }
 
         let listener = LocalSocketListener::bind(socket)?;
-        // setting to non-blocking lets us grab conections that are open
-        // without blocking the entire thread.
-        listener.set_nonblocking(true)?;
 
-        let (message_tx, message_rx) = unbounded();
+        let (message_tx, message_rx) = unbounded_channel();
 
-        let mut transport_tx_map: HashMap<EntityID, Sender<(VariableID, PDU)>> = HashMap::new();
-        let mut transport_rx_vec = vec![];
+        let mut transport_tx_map: HashMap<EntityID, UnboundedSender<(VariableID, PDU)>> =
+            HashMap::new();
 
+        let (pdu_send, transport_rx) = unbounded_channel();
         for (vec, mut transport) in transport_map.into_iter() {
-            let (pdu_send, pdu_receive) = unbounded();
-            let (remote_send, remote_receive) = unbounded();
+            let (remote_send, remote_receive) = unbounded_channel();
 
             vec.iter().for_each(|id| {
                 transport_tx_map.insert(*id, remote_send.clone());
             });
 
-            transport_rx_vec.push(pdu_receive);
-
             let signal = terminate.clone();
+            let sender = pdu_send.clone();
 
-            thread::spawn(move || transport.pdu_handler(signal, pdu_send, remote_receive));
+            let _handle =
+                tokio::spawn(
+                    async move { transport.pdu_handler(signal, sender, remote_receive).await },
+                );
         }
         Ok(Self {
             transaction_handles: vec![],
             transport_tx_map,
-            transport_rx_vec,
+            transport_rx,
             filestore,
             message_rx,
             message_tx,
@@ -601,14 +608,14 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             history: HashMap::new(),
         })
     }
-    fn spawn_receive_transaction(
+    async fn spawn_receive_transaction(
         header: &PDUHeader,
-        transport_tx: Sender<(VariableID, PDU)>,
+        transport_tx: UnboundedSender<(VariableID, PDU)>,
         entity_config: EntityConfig,
         filestore: Arc<T>,
-        message_tx: Sender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
+        message_tx: UnboundedSender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
     ) -> Result<SpawnerTuple, Box<dyn std::error::Error>> {
-        let (transaction_tx, transaction_rx) = unbounded();
+        let (transaction_tx, mut transaction_rx) = unbounded_channel();
 
         let config = TransactionConfig {
             source_entity_id: header.source_entity_id,
@@ -626,24 +633,31 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             nak_timeout: entity_config.nak_timeout,
             send_proxy_response: false,
         };
-        let name = format!(
+        // tokio does not have named tasks
+        let _name = format!(
             "({:?}, {:?})",
             &config.source_entity_id, &config.sequence_number
         );
         let mut transaction = RecvTransaction::new(config, filestore, transport_tx, message_tx);
         let id = transaction.id();
 
-        let handle = thread::Builder::new().name(name).spawn(move || {
+        let handle = tokio::task::spawn(async move {
+            // this will be used to periodically check to send missing data
+            // and do timeouts
+            // This is a band-aid solution until an async timeout
+            // and an async nak tester can be found
+            let mut interval = tokio::time::interval(Duration::from_millis(10));
+            // immediately let the first tick happen
+            interval.tick().await;
+            tokio::pin!(interval);
+
             while transaction.get_state() != &TransactionState::Terminated {
-                thread::sleep(Duration::from_millis(1));
-                // this function handles any timeouts and resends
-                transaction.monitor_timeout()?;
-                // if instant mode send naks
-
-                // if outside prompt send naks
-
-                match transaction_rx.try_recv() {
-                    Ok(command) => {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        // this function handles any timeouts and resends
+                         transaction.monitor_timeout()?
+                    }
+                    Some(command) = transaction_rx.recv() =>  {
                         match command {
                             Command::Pdu(pdu) => {
                                 match transaction.process_pdu(pdu) {
@@ -660,53 +674,56 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                             Command::Suspend => transaction.suspend(),
                             Command::Abandon => transaction.shutdown(),
                             Command::Report(sender) => {
-                                sender.send(transaction.generate_report())?
-                            }
+                                // ignore the possible error case here
+                                let _ = sender.send(transaction.generate_report());
                         }
-                    }
-                    Err(TryRecvError::Empty) => {
-                        // nothing for us at this time just sleep
-                    }
-                    Err(TryRecvError::Disconnected) => {
+                        };
+                    },
+                    else => {
                         // Really do not expect to be in this situation
                         // probably the thread should exit
                         info!(
                             "Connection to Daemon Severed for Transaction {:?}",
                             transaction.id()
-                        )
+                        );
+                        break
                     }
                 };
             }
-
             Ok(transaction.generate_report())
-        })?;
+        });
 
         Ok((id, transaction_tx, handle))
     }
 
-    fn get_report(
+    async fn get_report(
         id: (EntityID, TransactionSeqNum),
-        channels: &HashMap<(EntityID, TransactionSeqNum), Sender<Command>>,
+        channels: &HashMap<(EntityID, TransactionSeqNum), UnboundedSender<Command>>,
     ) -> Option<Report> {
-        channels
-            .get(&id)
-            .and_then(|chan| {
-                let (tx, rx) = bounded(1);
-                chan.send(Command::Report(tx)).map(|_| rx.recv().ok()).ok()
-            })
-            .flatten()
+        let channel = channels.get(&id);
+        match channel {
+            Some(chan) => {
+                let (tx, rx) = oneshot::channel();
+                match chan.send(Command::Report(tx)) {
+                    Ok(()) => rx.await.ok(),
+                    Err(_) => None,
+                }
+            }
+            None => None,
+        }
     }
+
     #[allow(clippy::too_many_arguments)]
     fn spawn_send_transaction(
         request: PutRequest,
         sequence_number: TransactionSeqNum,
         source_entity_id: EntityID,
-        transport_tx: Sender<(EntityID, PDU)>,
+        transport_tx: UnboundedSender<(EntityID, PDU)>,
         entity_config: EntityConfig,
         filestore: Arc<T>,
         send_proxy_response: bool,
     ) -> Result<SpawnerTuple, Box<dyn std::error::Error>> {
-        let (transaction_tx, transaction_rx) = unbounded();
+        let (transaction_tx, mut transaction_rx) = unbounded_channel();
         let id = (source_entity_id, sequence_number);
 
         let destination_entity_id = request.destination_entity_id;
@@ -729,120 +746,321 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         };
         let mut metadata = construct_metadata(request, entity_config, 0_u64);
 
-        let handle = thread::Builder::new()
-            .name(format!(
-                "({:?}, {:?})",
-                config.source_entity_id, config.sequence_number
-            ))
-            .spawn(move || {
-                let file_size = match &metadata.source_filename.file_name().is_none() {
-                    true => 0_u64,
-                    false => filestore.get_size(&metadata.source_filename)?,
-                };
+        let handle = tokio::task::spawn(async move {
+            let file_size = match &metadata.source_filename.file_name().is_none() {
+                true => 0_u64,
+                false => filestore.get_size(&metadata.source_filename)?,
+            };
 
-                metadata.file_size = file_size;
-                config.file_size_flag = match metadata.file_size <= u32::MAX.into() {
-                    true => FileSizeFlag::Small,
-                    false => FileSizeFlag::Large,
-                };
+            metadata.file_size = file_size;
+            config.file_size_flag = match metadata.file_size <= u32::MAX.into() {
+                true => FileSizeFlag::Small,
+                false => FileSizeFlag::Large,
+            };
 
-                let mut transaction =
-                    SendTransaction::new(config, metadata, filestore, transport_tx);
-                transaction.start()?;
+            let mut transaction = SendTransaction::new(config, metadata, filestore, transport_tx);
+            transaction.start()?;
 
-                while transaction.get_state() != &TransactionState::Terminated {
-                    // this function handles any timeouts and resends
-                    transaction.monitor_timeout()?;
-                    // if we have recieved a NAK send the missing data
-                    transaction.send_missing_data()?;
+            // this will be used to periodically check to send missing data
+            // and do timeouts
+            // This is a band-aid solution until an async timeout
+            // and an async nak tester can be found
+            let mut interval = tokio::time::interval(Duration::from_millis(10));
+            // immediately let the first tick happen
+            interval.tick().await;
+            tokio::pin!(interval);
+
+            while transaction.get_state() != &TransactionState::Terminated {
+                tokio::select! {
                     // send the next data segment for the first time
-                    match transaction.all_data_sent()? {
-                        false => transaction.send_file_segment(None, None)?,
-                        true => {
-                            match transaction.get_mode() {
-                                // for unacknowledged transactions.
-                                // this is the end
-                                TransmissionMode::Unacknowledged => transaction.shutdown(),
-                                TransmissionMode::Acknowledged => {}
+                    // periodically look for timeouts and missing data
+                    _ = interval.tick() => {
+                        match transaction.all_data_sent()? {
+                            false => {
+                                transaction.send_file_segment(None, None)?
+                            }
+                            true => {
+                                match transaction.get_mode() {
+                                    // for unacknowledged transactions.
+                                    // this is the end
+                                    TransmissionMode::Unacknowledged => transaction.shutdown(),
+                                    TransmissionMode::Acknowledged => {}
+                                }
                             }
                         }
-                    };
-                    // Handle any messages that are waiting to be processed
-                    match transaction_rx.try_recv() {
-                        Ok(command) => {
-                            match command {
-                                Command::Pdu(pdu) => {
-                                    match transaction.process_pdu(pdu) {
-                                        Ok(()) => {}
-                                        Err(err @ TransactionError::UnexpectedPDU(..)) => {
-                                            info!("Recieved Unexpected PDU: {err}");
-                                            // log some info on the unexpected PDU?
-                                        }
-                                        Err(err) => {
-                                            return Err(err);
-                                        }
+                        // if we have recieved a NAK send the missing data
+                        transaction.send_missing_data()?;
+                         // this function handles any timeouts and resends
+                        transaction.monitor_timeout()?;
+                    }
+                    Some(command) = transaction_rx.recv() => {
+
+                        match command {
+                            Command::Pdu(pdu) => {
+                                match transaction.process_pdu(pdu).await {
+                                    Ok(()) => {}
+                                    Err(err @ TransactionError::UnexpectedPDU(..)) => {
+                                        info!("Recieved Unexpected PDU: {err}");
+                                        // log some info on the unexpected PDU?
+                                    }
+                                    Err(err) => {
+                                        return Err(err);
                                     }
                                 }
-                                Command::Resume => transaction.resume(),
-                                Command::Cancel => transaction.cancel()?,
-                                Command::Suspend => transaction.suspend(),
-                                Command::Abandon => transaction.shutdown(),
-                                Command::Report(sender) => {
-                                    sender.send(transaction.generate_report())?
-                                }
                             }
-                        }
-                        Err(TryRecvError::Empty) => {
-                            // nothing for us at this time just sleep
-                        }
-                        Err(TryRecvError::Disconnected) => {
-                            // Really do not expect to be in this situation
-                            // probably the thread should exit
-                            panic!(
-                                "Connection to Daemon Severed for Transaction {:?}",
-                                transaction.id()
-                            )
-                        }
+                            Command::Resume => transaction.resume(),
+                            Command::Cancel => transaction.cancel()?,
+                            Command::Suspend => transaction.suspend(),
+                            Command::Abandon => transaction.shutdown(),
+                            Command::Report(sender) => {
+                                // ignore the possible error case here
+                                let _ = sender.send(transaction.generate_report());
+                            }
+                        };
+                    },
+                    else => {
+                        // Really do not expect to be in this situation
+                        // probably the thread should exit
+                        error!(
+                            "Connection to Daemon Severed for Transaction {:?}",
+                            transaction.id()
+                        );
+                        break
+
                     }
-                    thread::sleep(Duration::from_micros(1));
-                }
-                Ok(transaction.generate_report())
-            })?;
+                };
+            }
+            Ok(transaction.generate_report())
+        });
         Ok((id, transaction_tx, handle))
     }
 
-    /// This function will consist of the main logic loop in any daemon process.
-    pub fn manage_transactions(&mut self) -> Result<(), Box<dyn std::error::Error + '_>> {
+    pub async fn async_transaction_manager(
+        &mut self,
+    ) -> Result<(), Box<dyn std::error::Error + '_>> {
         let mut sequence_num = self.sequence_num;
 
         // Create the selection object to check if any messages are available.
         // the returned index will be used to determine which action to take.
-
-        let mut selector = Select::new();
-        selector.recv(&self.message_rx);
-
-        for rx in self.transport_rx_vec.iter() {
-            selector.recv(rx);
-        }
-
         // mapping of unique transaction ids to channels used to talk to each transaction
-        let mut transaction_channels: HashMap<(EntityID, TransactionSeqNum), Sender<Command>> =
-            HashMap::new();
+        let mut transaction_channels: HashMap<
+            (EntityID, TransactionSeqNum),
+            UnboundedSender<Command>,
+        > = HashMap::new();
 
         let mut cleanup = Instant::now();
 
         while !self.terminate.load(Ordering::Relaxed) {
-            match selector.select_timeout(Duration::from_micros(500)) {
-                Ok(oper) if oper.index() == 0 => {
-                    // this is a message to user
-                    match oper.recv(&self.message_rx) {
-                        Ok((origin_id, tx_mode, messages)) => {
-                            let (put_requests, user_reqs, responses, cancel_id, other_messages) =
-                                categorize_user_msg(&origin_id, messages);
+            tokio::select! {
+                Some((origin_id, tx_mode, messages)) = self.message_rx.recv() => {
+                    let (put_requests, user_reqs, responses, cancel_id, other_messages) =
+                        categorize_user_msg(&origin_id, messages).await;
 
-                            for request in put_requests {
+                    for request in put_requests {
+                        let sequence_number = sequence_num.get_and_increment();
+
+                        let entity_config = self
+                            .entity_configs
+                            .get(&request.destination_entity_id)
+                            .unwrap_or(&self.default_config)
+                            .clone();
+
+                        let transport_tx = self
+                            .transport_tx_map
+                            .get(&request.destination_entity_id)
+                            .expect("No transport for Entity ID.")
+                            .clone();
+
+                        let (id, sender, handle) = Self::spawn_send_transaction(
+                            request,
+                            sequence_number,
+                            self.entity_id,
+                            transport_tx,
+                            entity_config,
+                            self.filestore.clone(),
+                            true,
+                        )?;
+                        self.proxy_id_map.insert(origin_id, id);
+
+                        let response = Self::get_report(id, &transaction_channels).await;
+                        if let Some(report) = response {
+                            self.history.insert(id, report);
+                        }
+
+                        self.transaction_handles.push(handle);
+                        transaction_channels.insert(id, sender);
+                    }
+                    if let Some(id) = cancel_id {
+                        // Check if we have a running ID corresponding to the Originating ID in the cancel
+                        if let Some(running_id) = self.proxy_id_map.get(&id) {
+                            // If the channel is still open to that transaction send a cancel.
+                            if let Some(channel) = transaction_channels.get(running_id) {
+                                channel.send(Command::Cancel)?;
+                            }
+                        }
+                    }
+
+                    for req in user_reqs.into_iter() {
+                        match req {
+                            UserRequest::DirectoryListing(directory_request) => {
+                                let request = match self
+                                    .filestore
+                                    .list_directory(&directory_request.directory_name)
+                                {
+                                    Ok(listing) => {
+                                        let outfile = directory_request
+                                            .directory_name
+                                            .as_path()
+                                            .with_extension(".listing");
+
+                                        let response_code = match self
+                                            .filestore
+                                            .open(
+                                                &outfile,
+                                                OpenOptions::new().create(true).truncate(true).write(true),
+                                            )
+                                            .map(|mut handle| handle.write_all(listing.as_bytes()))
+                                        {
+                                            Ok(Ok(())) => ListingResponseCode::Successful,
+                                            _ => ListingResponseCode::Unsuccessful,
+                                        };
+                                        PutRequest {
+                                            source_filename: outfile,
+                                            destination_filename: directory_request.directory_filename.clone(),
+                                            destination_entity_id: origin_id.0,
+                                            transmission_mode: tx_mode,
+                                            filestore_requests: vec![],
+                                            message_to_user: vec![
+                                                MessageToUser::from(
+                                                    UserOperation::OriginatingTransactionIDMessage(
+                                                        OriginatingTransactionIDMessage {
+                                                            source_entity_id: origin_id.0,
+                                                            transaction_sequence_number: origin_id.1,
+                                                        },
+                                                    ),
+                                                ),
+                                                MessageToUser::from(UserOperation::Response(
+                                                    UserResponse::DirectoryListing(DirectoryListingResponse {
+                                                        response_code,
+                                                        directory_name: directory_request.directory_name,
+                                                        directory_filename: directory_request
+                                                            .directory_filename,
+                                                    }),
+                                                )),
+                                            ],
+                                        }
+                                    }
+                                    Err(_) => PutRequest {
+                                        source_filename: "".into(),
+                                        destination_filename: "".into(),
+                                        destination_entity_id: origin_id.0,
+                                        transmission_mode: tx_mode,
+                                        filestore_requests: vec![],
+                                        message_to_user: vec![
+                                            MessageToUser::from(
+                                                UserOperation::OriginatingTransactionIDMessage(
+                                                    OriginatingTransactionIDMessage {
+                                                        source_entity_id: origin_id.0,
+                                                        transaction_sequence_number: origin_id.1,
+                                                    },
+                                                ),
+                                            ),
+                                            MessageToUser::from(UserOperation::Response(
+                                                UserResponse::DirectoryListing(DirectoryListingResponse {
+                                                    response_code: ListingResponseCode::Unsuccessful,
+                                                    directory_name: directory_request.directory_name,
+                                                    directory_filename: directory_request.directory_filename,
+                                                }),
+                                            )),
+                                        ],
+                                    },
+                                };
+
+                                {
+                                    let sequence_number = sequence_num.get_and_increment();
+                                    let entity_config = self
+                                        .entity_configs
+                                        .get(&request.destination_entity_id)
+                                        .unwrap_or(&self.default_config)
+                                        .clone();
+
+                                    let transport_tx = self
+                                        .transport_tx_map
+                                        .get(&request.destination_entity_id)
+                                        .expect("No transport for Entity ID.")
+                                        .clone();
+
+                                    let (id, sender, handle) =
+                                        Self::spawn_send_transaction(
+                                            request,
+                                            sequence_number,
+                                            self.entity_id,
+                                            transport_tx,
+                                            entity_config,
+                                            self.filestore.clone(),
+                                            false,
+                                        )?;
+
+                                    let response =
+                                        Self::get_report(id, &transaction_channels).await;
+                                    if let Some(report) = response {
+                                        self.history.insert(id, report);
+                                    }
+                                    self.transaction_handles.push(handle);
+                                    transaction_channels.insert(id, sender);
+                                }
+                            }
+                            UserRequest::RemoteStatusReport(report_request) => {
+                                let report = Self::get_report(
+                                    (
+                                        report_request.source_entity_id,
+                                        report_request.transaction_sequence_number,
+                                    ),
+                                    &transaction_channels,
+                                ).await;
+
+                                let response = {
+                                    match report {
+                                        Some(data) => RemoteStatusReportResponse {
+                                            transaction_status: data.status,
+                                            source_entity_id: data.id.0,
+                                            transaction_sequence_number: data.id.1,
+                                            response_code: true,
+                                        },
+                                        None => RemoteStatusReportResponse {
+                                            transaction_status:
+                                                TransactionStatus::Unrecognized,
+                                            source_entity_id: report_request
+                                                .source_entity_id,
+                                            transaction_sequence_number: report_request
+                                                .transaction_sequence_number,
+                                            response_code: false,
+                                        },
+                                    }
+                                };
+                                let request = PutRequest {
+                                    source_filename: "".into(),
+                                    destination_filename: "".into(),
+                                    destination_entity_id: origin_id.0,
+                                    transmission_mode: tx_mode,
+                                    filestore_requests: vec![],
+                                    message_to_user: vec![
+                                        MessageToUser::from(
+                                            UserOperation::OriginatingTransactionIDMessage(
+                                                OriginatingTransactionIDMessage {
+                                                    source_entity_id: origin_id.0,
+                                                    transaction_sequence_number: origin_id
+                                                        .1,
+                                                },
+                                            ),
+                                        ),
+                                        MessageToUser::from(UserOperation::Response(
+                                            UserResponse::RemoteStatusReport(response),
+                                        )),
+                                    ],
+                                };
+
                                 let sequence_number = sequence_num.get_and_increment();
-
                                 let entity_config = self
                                     .entity_configs
                                     .get(&request.destination_entity_id)
@@ -862,511 +1080,268 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                     transport_tx,
                                     entity_config,
                                     self.filestore.clone(),
-                                    true,
+                                    false,
                                 )?;
-                                self.proxy_id_map.insert(origin_id, id);
 
-                                let response = Self::get_report(id, &transaction_channels);
+                                let response = Self::get_report(id, &transaction_channels).await;
                                 if let Some(report) = response {
                                     self.history.insert(id, report);
                                 }
-
                                 self.transaction_handles.push(handle);
                                 transaction_channels.insert(id, sender);
                             }
-                            if let Some(id) = cancel_id {
-                                // Check if we have a running ID corresponding to the Originating ID in the cancel
-                                if let Some(running_id) = self.proxy_id_map.get(&id) {
-                                    // If the channel is still open to that transaction send a cancel.
-                                    if let Some(channel) = transaction_channels.get(running_id) {
-                                        channel.send(Command::Cancel)?;
-                                    }
-                                }
-                            }
+                            UserRequest::RemoteSuspend(suspend_req) => {
+                                let suspend_indication = match transaction_channels.get(&(
+                                    suspend_req.source_entity_id,
+                                    suspend_req.transaction_sequence_number,
+                                )) {
+                                    Some(chan) => chan.send(Command::Suspend).is_ok(),
+                                    None => false,
+                                };
 
-                            for req in user_reqs.into_iter() {
-                                match req {
-                                    UserRequest::DirectoryListing(directory_request) => {
-                                        let request = match self
-                                            .filestore
-                                            .list_directory(&directory_request.directory_name)
-                                        {
-                                            Ok(listing) => {
-                                                let outfile = directory_request
-                                                    .directory_name
-                                                    .as_path()
-                                                    .with_extension(".listing");
-
-                                                let response_code = match self
-                                                    .filestore
-                                                    .open(
-                                                        &outfile,
-                                                        OpenOptions::new().create(true).truncate(true).write(true),
-                                                    )
-                                                    .map(|mut handle| handle.write_all(listing.as_bytes()))
-                                                {
-                                                    Ok(Ok(())) => ListingResponseCode::Successful,
-                                                    _ => ListingResponseCode::Unsuccessful,
-                                                };
-                                                PutRequest {
-                                                    source_filename: outfile,
-                                                    destination_filename: directory_request.directory_filename.clone(),
-                                                    destination_entity_id: origin_id.0,
-                                                    transmission_mode: tx_mode,
-                                                    filestore_requests: vec![],
-                                                    message_to_user: vec![
-                                                        MessageToUser::from(
-                                                            UserOperation::OriginatingTransactionIDMessage(
-                                                                OriginatingTransactionIDMessage {
-                                                                    source_entity_id: origin_id.0,
-                                                                    transaction_sequence_number: origin_id.1,
-                                                                },
-                                                            ),
-                                                        ),
-                                                        MessageToUser::from(UserOperation::Response(
-                                                            UserResponse::DirectoryListing(DirectoryListingResponse {
-                                                                response_code,
-                                                                directory_name: directory_request.directory_name,
-                                                                directory_filename: directory_request
-                                                                    .directory_filename,
-                                                            }),
-                                                        )),
-                                                    ],
-                                                }
-                                            }
-                                            Err(_) => PutRequest {
-                                                source_filename: "".into(),
-                                                destination_filename: "".into(),
-                                                destination_entity_id: origin_id.0,
-                                                transmission_mode: tx_mode,
-                                                filestore_requests: vec![],
-                                                message_to_user: vec![
-                                                    MessageToUser::from(
-                                                        UserOperation::OriginatingTransactionIDMessage(
-                                                            OriginatingTransactionIDMessage {
-                                                                source_entity_id: origin_id.0,
-                                                                transaction_sequence_number: origin_id.1,
-                                                            },
-                                                        ),
-                                                    ),
-                                                    MessageToUser::from(UserOperation::Response(
-                                                        UserResponse::DirectoryListing(DirectoryListingResponse {
-                                                            response_code: ListingResponseCode::Unsuccessful,
-                                                            directory_name: directory_request.directory_name,
-                                                            directory_filename: directory_request.directory_filename,
-                                                        }),
-                                                    )),
-                                                ],
-                                            },
-                                        };
-
-                                        {
-                                            let sequence_number = sequence_num.get_and_increment();
-                                            let entity_config = self
-                                                .entity_configs
-                                                .get(&request.destination_entity_id)
-                                                .unwrap_or(&self.default_config)
-                                                .clone();
-
-                                            let transport_tx = self
-                                                .transport_tx_map
-                                                .get(&request.destination_entity_id)
-                                                .expect("No transport for Entity ID.")
-                                                .clone();
-
-                                            let (id, sender, handle) =
-                                                Self::spawn_send_transaction(
-                                                    request,
-                                                    sequence_number,
-                                                    self.entity_id,
-                                                    transport_tx,
-                                                    entity_config,
-                                                    self.filestore.clone(),
-                                                    false,
-                                                )?;
-
-                                            let response =
-                                                Self::get_report(id, &transaction_channels);
-                                            if let Some(report) = response {
-                                                self.history.insert(id, report);
-                                            }
-                                            self.transaction_handles.push(handle);
-                                            transaction_channels.insert(id, sender);
-                                        }
-                                    }
-                                    UserRequest::RemoteStatusReport(report_request) => {
-                                        let report = Self::get_report(
-                                            (
-                                                report_request.source_entity_id,
-                                                report_request.transaction_sequence_number,
-                                            ),
-                                            &transaction_channels,
-                                        );
-
-                                        let response = {
-                                            match report {
-                                                Some(data) => RemoteStatusReportResponse {
-                                                    transaction_status: data.status,
-                                                    source_entity_id: data.id.0,
-                                                    transaction_sequence_number: data.id.1,
-                                                    response_code: true,
+                                let request = PutRequest {
+                                    source_filename: "".into(),
+                                    destination_filename: "".into(),
+                                    destination_entity_id: origin_id.0,
+                                    transmission_mode: tx_mode,
+                                    filestore_requests: vec![],
+                                    message_to_user: vec![
+                                        MessageToUser::from(
+                                            UserOperation::OriginatingTransactionIDMessage(
+                                                OriginatingTransactionIDMessage {
+                                                    source_entity_id: origin_id.0,
+                                                    transaction_sequence_number: origin_id
+                                                        .1,
                                                 },
-                                                None => RemoteStatusReportResponse {
+                                            ),
+                                        ),
+                                        MessageToUser::from(UserOperation::Response(
+                                            UserResponse::RemoteSuspend(
+                                                RemoteSuspendResponse {
+                                                    suspend_indication,
                                                     transaction_status:
                                                         TransactionStatus::Unrecognized,
-                                                    source_entity_id: report_request
+                                                    source_entity_id: suspend_req
                                                         .source_entity_id,
-                                                    transaction_sequence_number: report_request
-                                                        .transaction_sequence_number,
-                                                    response_code: false,
+                                                    transaction_sequence_number:
+                                                        suspend_req
+                                                            .transaction_sequence_number,
                                                 },
-                                            }
-                                        };
-                                        let request = PutRequest {
-                                            source_filename: "".into(),
-                                            destination_filename: "".into(),
-                                            destination_entity_id: origin_id.0,
-                                            transmission_mode: tx_mode,
-                                            filestore_requests: vec![],
-                                            message_to_user: vec![
-                                                MessageToUser::from(
-                                                    UserOperation::OriginatingTransactionIDMessage(
-                                                        OriginatingTransactionIDMessage {
-                                                            source_entity_id: origin_id.0,
-                                                            transaction_sequence_number: origin_id
-                                                                .1,
-                                                        },
-                                                    ),
-                                                ),
-                                                MessageToUser::from(UserOperation::Response(
-                                                    UserResponse::RemoteStatusReport(response),
-                                                )),
-                                            ],
-                                        };
+                                            ),
+                                        )),
+                                    ],
+                                };
 
-                                        let sequence_number = sequence_num.get_and_increment();
-                                        let entity_config = self
-                                            .entity_configs
-                                            .get(&request.destination_entity_id)
-                                            .unwrap_or(&self.default_config)
-                                            .clone();
+                                let sequence_number = sequence_num.get_and_increment();
+                                let entity_config = self
+                                    .entity_configs
+                                    .get(&request.destination_entity_id)
+                                    .unwrap_or(&self.default_config)
+                                    .clone();
 
-                                        let transport_tx = self
-                                            .transport_tx_map
-                                            .get(&request.destination_entity_id)
-                                            .expect("No transport for Entity ID.")
-                                            .clone();
+                                let transport_tx = self
+                                    .transport_tx_map
+                                    .get(&request.destination_entity_id)
+                                    .expect("No transport for Entity ID.")
+                                    .clone();
 
-                                        let (id, sender, handle) = Self::spawn_send_transaction(
-                                            request,
-                                            sequence_number,
-                                            self.entity_id,
-                                            transport_tx,
-                                            entity_config,
-                                            self.filestore.clone(),
-                                            false,
-                                        )?;
+                                let (id, sender, handle) = Self::spawn_send_transaction(
+                                    request,
+                                    sequence_number,
+                                    self.entity_id,
+                                    transport_tx,
+                                    entity_config,
+                                    self.filestore.clone(),
+                                    false,
+                                )?;
 
-                                        let response = Self::get_report(id, &transaction_channels);
-                                        if let Some(report) = response {
-                                            self.history.insert(id, report);
-                                        }
-                                        self.transaction_handles.push(handle);
-                                        transaction_channels.insert(id, sender);
-                                    }
-                                    UserRequest::RemoteSuspend(suspend_req) => {
-                                        let suspend_indication = match transaction_channels.get(&(
-                                            suspend_req.source_entity_id,
-                                            suspend_req.transaction_sequence_number,
-                                        )) {
-                                            Some(chan) => chan.send(Command::Suspend).is_ok(),
-                                            None => false,
-                                        };
-
-                                        let request = PutRequest {
-                                            source_filename: "".into(),
-                                            destination_filename: "".into(),
-                                            destination_entity_id: origin_id.0,
-                                            transmission_mode: tx_mode,
-                                            filestore_requests: vec![],
-                                            message_to_user: vec![
-                                                MessageToUser::from(
-                                                    UserOperation::OriginatingTransactionIDMessage(
-                                                        OriginatingTransactionIDMessage {
-                                                            source_entity_id: origin_id.0,
-                                                            transaction_sequence_number: origin_id
-                                                                .1,
-                                                        },
-                                                    ),
-                                                ),
-                                                MessageToUser::from(UserOperation::Response(
-                                                    UserResponse::RemoteSuspend(
-                                                        RemoteSuspendResponse {
-                                                            suspend_indication,
-                                                            transaction_status:
-                                                                TransactionStatus::Unrecognized,
-                                                            source_entity_id: suspend_req
-                                                                .source_entity_id,
-                                                            transaction_sequence_number:
-                                                                suspend_req
-                                                                    .transaction_sequence_number,
-                                                        },
-                                                    ),
-                                                )),
-                                            ],
-                                        };
-
-                                        let sequence_number = sequence_num.get_and_increment();
-                                        let entity_config = self
-                                            .entity_configs
-                                            .get(&request.destination_entity_id)
-                                            .unwrap_or(&self.default_config)
-                                            .clone();
-
-                                        let transport_tx = self
-                                            .transport_tx_map
-                                            .get(&request.destination_entity_id)
-                                            .expect("No transport for Entity ID.")
-                                            .clone();
-
-                                        let (id, sender, handle) = Self::spawn_send_transaction(
-                                            request,
-                                            sequence_number,
-                                            self.entity_id,
-                                            transport_tx,
-                                            entity_config,
-                                            self.filestore.clone(),
-                                            false,
-                                        )?;
-
-                                        let response = Self::get_report(id, &transaction_channels);
-                                        if let Some(report) = response {
-                                            self.history.insert(id, report);
-                                        }
-                                        self.transaction_handles.push(handle);
-                                        transaction_channels.insert(id, sender);
-                                    }
-                                    UserRequest::RemoteResume(resume_request) => {
-                                        let suspend_indication = match transaction_channels.get(&(
-                                            resume_request.source_entity_id,
-                                            resume_request.transaction_sequence_number,
-                                        )) {
-                                            Some(chan) => chan.send(Command::Resume).is_err(),
-                                            None => true,
-                                        };
-
-                                        let request = PutRequest {
-                                            source_filename: "".into(),
-                                            destination_filename: "".into(),
-                                            destination_entity_id: origin_id.0,
-                                            transmission_mode: tx_mode,
-                                            filestore_requests: vec![],
-                                            message_to_user: vec![
-                                                MessageToUser::from(
-                                                    UserOperation::OriginatingTransactionIDMessage(
-                                                        OriginatingTransactionIDMessage {
-                                                            source_entity_id: origin_id.0,
-                                                            transaction_sequence_number: origin_id
-                                                                .1,
-                                                        },
-                                                    ),
-                                                ),
-                                                MessageToUser::from(UserOperation::Response(
-                                                    UserResponse::RemoteSuspend(
-                                                        RemoteSuspendResponse {
-                                                            suspend_indication,
-                                                            transaction_status:
-                                                                TransactionStatus::Unrecognized,
-                                                            source_entity_id: resume_request
-                                                                .source_entity_id,
-                                                            transaction_sequence_number:
-                                                                resume_request
-                                                                    .transaction_sequence_number,
-                                                        },
-                                                    ),
-                                                )),
-                                            ],
-                                        };
-
-                                        let sequence_number = sequence_num.get_and_increment();
-                                        let entity_config = self
-                                            .entity_configs
-                                            .get(&request.destination_entity_id)
-                                            .unwrap_or(&self.default_config)
-                                            .clone();
-
-                                        let transport_tx = self
-                                            .transport_tx_map
-                                            .get(&request.destination_entity_id)
-                                            .expect("No transport for Entity ID.")
-                                            .clone();
-
-                                        let (id, sender, handle) = Self::spawn_send_transaction(
-                                            request,
-                                            sequence_number,
-                                            self.entity_id,
-                                            transport_tx,
-                                            entity_config,
-                                            self.filestore.clone(),
-                                            false,
-                                        )?;
-
-                                        let response = Self::get_report(id, &transaction_channels);
-                                        if let Some(report) = response {
-                                            self.history.insert(id, report);
-                                        }
-                                        self.transaction_handles.push(handle);
-                                        transaction_channels.insert(id, sender);
-                                    }
+                                let response = Self::get_report(id, &transaction_channels).await;
+                                if let Some(report) = response {
+                                    self.history.insert(id, report);
                                 }
+                                self.transaction_handles.push(handle);
+                                transaction_channels.insert(id, sender);
                             }
-                            for response in responses {
-                                // log indication of the response received!
-                                info!("Received User Operation Response: {:?}", response);
-                            }
-                            for message in other_messages {
-                                // also log this!
-                                info!("Received Messages I can't decifer {:?}", message);
-                            }
-                        }
-                        // Err(TryRecvError::Empty) => {
-                        //     // was not actually ready, go back to selection
-                        // }
-                        // Err(TryRecvError::Disconnected) => {
-                        //     // The transport instance disconnected?
-                        //     // what do we do?
-                        //     // remove from possible selections
-                        //     selector.remove(oper.index());
-                        // }
-                        Err(err) => {
-                            info!("Error on user msg {err}")
-                        }
-                    };
-                }
-                Ok(oper) if oper.index() > 0 => {
-                    // this is a pdu from a transport
-                    // subtract 1 because the transport indices start at 1 for the selector
-                    // but are 0 indexed in the vec
-                    let val = oper.index();
-                    let rx = &self.transport_rx_vec[val - 1];
-                    match oper.recv(rx) {
-                        Ok(pdu) => {
-                            // find the entity this entity will be sending too.
-                            // If this PDU is to the sender, we send to the destination
-                            // if this PDU is to the receiver, we send to the source
-                            let transport_entity = match &pdu.header.direction {
-                                Direction::ToSender => pdu.header.destination_entity_id,
-                                Direction::ToReceiver => pdu.header.source_entity_id,
-                            };
+                            UserRequest::RemoteResume(resume_request) => {
+                                let suspend_indication = match transaction_channels.get(&(
+                                    resume_request.source_entity_id,
+                                    resume_request.transaction_sequence_number,
+                                )) {
+                                    Some(chan) => chan.send(Command::Resume).is_err(),
+                                    None => true,
+                                };
 
-                            let key = (
-                                pdu.header.source_entity_id,
-                                pdu.header.transaction_sequence_number,
-                            );
-                            // hand pdu off to transaction
-                            let channel = transaction_channels
-                                .entry(key)
+                                let request = PutRequest {
+                                    source_filename: "".into(),
+                                    destination_filename: "".into(),
+                                    destination_entity_id: origin_id.0,
+                                    transmission_mode: tx_mode,
+                                    filestore_requests: vec![],
+                                    message_to_user: vec![
+                                        MessageToUser::from(
+                                            UserOperation::OriginatingTransactionIDMessage(
+                                                OriginatingTransactionIDMessage {
+                                                    source_entity_id: origin_id.0,
+                                                    transaction_sequence_number: origin_id
+                                                        .1,
+                                                },
+                                            ),
+                                        ),
+                                        MessageToUser::from(UserOperation::Response(
+                                            UserResponse::RemoteSuspend(
+                                                RemoteSuspendResponse {
+                                                    suspend_indication,
+                                                    transaction_status:
+                                                        TransactionStatus::Unrecognized,
+                                                    source_entity_id: resume_request
+                                                        .source_entity_id,
+                                                    transaction_sequence_number:
+                                                        resume_request
+                                                            .transaction_sequence_number,
+                                                },
+                                            ),
+                                        )),
+                                    ],
+                                };
+
+                                let sequence_number = sequence_num.get_and_increment();
+                                let entity_config = self
+                                    .entity_configs
+                                    .get(&request.destination_entity_id)
+                                    .unwrap_or(&self.default_config)
+                                    .clone();
+
+                                let transport_tx = self
+                                    .transport_tx_map
+                                    .get(&request.destination_entity_id)
+                                    .expect("No transport for Entity ID.")
+                                    .clone();
+
+                                let (id, sender, handle) = Self::spawn_send_transaction(
+                                    request,
+                                    sequence_number,
+                                    self.entity_id,
+                                    transport_tx,
+                                    entity_config,
+                                    self.filestore.clone(),
+                                    false,
+                                )?;
+
+                                let response = Self::get_report(id, &transaction_channels).await;
+                                if let Some(report) = response {
+                                    self.history.insert(id, report);
+                                }
+                                self.transaction_handles.push(handle);
+                                transaction_channels.insert(id, sender);
+                            }
+                        }
+                    }
+                    for response in responses {
+                        // log indication of the response received!
+                        info!("Received User Operation Response: {:?}", response);
+                    }
+                    for message in other_messages {
+                        // also log this!
+                        info!("Received Messages I can't decifer {:?}", message);
+                    }
+                },
+                Some(pdu) = self.transport_rx.recv() => {
+                    // find the entity this entity will be sending too.
+                    // If this PDU is to the sender, we send to the destination
+                    // if this PDU is to the receiver, we send to the source
+                    let transport_entity = match &pdu.header.direction {
+                        Direction::ToSender => pdu.header.destination_entity_id,
+                        Direction::ToReceiver => pdu.header.source_entity_id,
+                    };
+
+                    let key = (
+                        pdu.header.source_entity_id,
+                        pdu.header.transaction_sequence_number,
+                    );
+                    // hand pdu off to transaction
+                    let channel = match transaction_channels
+                        .entry(key){
+                            Entry::Occupied(entry) => entry.into_mut(),
+                            Entry::Vacant(entry) => {
                                 // if this key is not in the channel list
                                 // create a new transaction
-                                .or_insert_with(|| {
-                                    let entity_config = self
-                                        .entity_configs
-                                        .get(&key.0)
-                                        .unwrap_or(&self.default_config)
-                                        .clone();
+                                let entity_config = self
+                                .entity_configs
+                                .get(&key.0)
+                                .unwrap_or(&self.default_config)
+                                .clone();
 
-                                    let (id, channel, handle) = Self::spawn_receive_transaction(
-                                        &pdu.header,
-                                        // TODO! Fill in this error
-                                        self.transport_tx_map
-                                            .get(&transport_entity)
-                                            .expect("No transport for Entity ID.")
-                                            .clone(),
-                                        entity_config,
-                                        self.filestore.clone(),
-                                        self.message_tx.clone(),
-                                    )
-                                    .expect("Cannot spawn new Transaction.");
+                                let (id, channel2, handle) = Self::spawn_receive_transaction(
+                                    &pdu.header,
+                                    // TODO! Fill in this error
+                                    self.transport_tx_map
+                                        .get(&transport_entity)
+                                        .expect("No transport for Entity ID.")
+                                        .clone(),
+                                    entity_config,
+                                    self.filestore.clone(),
+                                    self.message_tx.clone(),
+                                ).await
+                                .expect("Cannot spawn new Transaction.");
 
-                                    // can't use the get_report function here due to double borrow
-                                    let (tx, rx) = bounded(1);
-                                    let response = channel
-                                        .send(Command::Report(tx))
-                                        .map(|_| rx.recv().ok())
-                                        .ok()
-                                        .flatten();
+                                // can't use the get_report function here due to double borrow
+                                let (tx, rx) = oneshot::channel();
+                                let response = match channel2
+                                    .send(Command::Report(tx)){
+                                        Ok(()) => rx.await.ok(),
+                                        Err(_) => None
+                                    };
 
-                                    if let Some(report) = response {
-                                        self.history.insert(id, report);
-                                    }
-                                    self.transaction_handles.push(handle);
-                                    channel
-                                });
-
-                            match channel.send(Command::Pdu(pdu.clone())) {
-                                Ok(()) => {}
-                                Err(_) => {
-                                    // the transaction is completed.
-                                    // spawn a new one
-                                    // this is very unlikely and only results
-                                    // if a sender is re-using a transaction id
-                                    let entity_config = self
-                                        .entity_configs
-                                        .get(&key.0)
-                                        .unwrap_or(&self.default_config)
-                                        .clone();
-
-                                    let (id, new_channel, handle) =
-                                        Self::spawn_receive_transaction(
-                                            &pdu.header,
-                                            self.transport_tx_map
-                                                .get(&transport_entity)
-                                                .expect("No transport for Entity ID.")
-                                                .clone(),
-                                            entity_config,
-                                            self.filestore.clone(),
-                                            self.message_tx.clone(),
-                                        )?;
-
-                                    let response = Self::get_report(id, &transaction_channels);
-                                    if let Some(report) = response {
-                                        self.history.insert(id, report);
-                                    }
-                                    self.transaction_handles.push(handle);
-                                    new_channel.send(Command::Pdu(pdu.clone()))?;
-                                    // update the dict to have the new channel
-                                    transaction_channels.insert(key, new_channel);
+                                if let Some(report) = response {
+                                    self.history.insert(id, report);
                                 }
-                            };
-                        }
-                        // Err(TryRecvError::Empty) => {
-                        //     // was not actually ready, go back to selection
-                        // }
-                        // Err(TryRecvError::Disconnected) => {
-                        //     // The transport instance disconnected?
-                        //     // what do we do?
-                        //     // remove from possible selections
-                        //     selector.remove(val);
-                        // }
-                        Err(_err) => {
-                            // the channel is empty and disconnected
-                            // this should only happen when we are cleaning up.
+                                self.transaction_handles.push(handle);
+                                entry.insert(channel2)
+                            }
+                        };
+
+
+                    match channel.send(Command::Pdu(pdu.clone())) {
+                        Ok(()) => {}
+                        Err(_) => {
+                            // the transaction is completed.
+                            // spawn a new one
+                            // this is very unlikely and only results
+                            // if a sender is re-using a transaction id
+                            let entity_config = self
+                                .entity_configs
+                                .get(&key.0)
+                                .unwrap_or(&self.default_config)
+                                .clone();
+
+                            let (id, new_channel, handle) =
+                                Self::spawn_receive_transaction(
+                                    &pdu.header,
+                                    self.transport_tx_map
+                                        .get(&transport_entity)
+                                        .expect("No transport for Entity ID.")
+                                        .clone(),
+                                    entity_config,
+                                    self.filestore.clone(),
+                                    self.message_tx.clone(),
+                                ).await?;
+
+                            let response = Self::get_report(id, &transaction_channels).await;
+                            if let Some(report) = response {
+                                self.history.insert(id, report);
+                            }
+                            self.transaction_handles.push(handle);
+                            new_channel.send(Command::Pdu(pdu.clone()))?;
+                            // update the dict to have the new channel
+                            transaction_channels.insert(key, new_channel);
                         }
                     };
-                }
-                Err(_) => {
-                    // timeout occurred
-                }
-                Ok(_) => unreachable!(),
-            };
 
-            // process any message from users from the outside application API
-            // interprocess looks like a good choice for this
+                },
+                Ok(conn) = self.listener.accept()  => {
+                    let mut conn = conn.compat();
 
-            match self.listener.accept() {
-                Ok(mut conn) => {
-                    let primitive = UserPrimitive::decode(&mut conn)?;
-                    match primitive {
+                    match UserPrimitive::decode(&mut conn).await? {
                         UserPrimitive::Put(request) => {
                             let sequence_number = sequence_num.get_and_increment();
 
@@ -1391,7 +1366,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                 false,
                             )?;
 
-                            let response = Self::get_report(id, &transaction_channels);
+                            let response = Self::get_report(id, &transaction_channels).await;
                             if let Some(report) = response {
                                 self.history.insert(id, report);
                             }
@@ -1404,7 +1379,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                 buff.extend(id.1.encode());
                                 buff
                             };
-                            conn.write_all(response.as_slice())?;
+                            conn.write_all(response.as_slice()).await?;
                         }
                         UserPrimitive::Cancel(id, seq) => {
                             if let Some(channel) = transaction_channels.get(&(id, seq)) {
@@ -1422,7 +1397,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                             }
                         }
                         UserPrimitive::Report(id, seq) => {
-                            let report = Self::get_report((id, seq), &transaction_channels);
+                            let report = Self::get_report((id, seq), &transaction_channels).await;
                             let response = match report {
                                 Some(data) => {
                                     info!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", id, seq, data.state, data.status, data.condition);
@@ -1436,14 +1411,14 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                     }
                                     None => {
                                         {
-                                            thread::sleep(Duration::from_millis(5));
+                                            tokio::time::sleep(Duration::from_millis(5)).await;
                                             // force a cleanup check then try again
                                             let mut ind = 0;
                                             while ind < self.transaction_handles.len() {
                                                 if self.transaction_handles[ind].is_finished() {
                                                     let handle =
                                                         self.transaction_handles.remove(ind);
-                                                    match handle.join() {
+                                                    match handle.await {
                                                         Ok(Ok(inner_report)) => {
                                                             // remove the channel for this transaction if it is complete
                                                             let _ = transaction_channels
@@ -1458,7 +1433,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                                             );
                                                         }
                                                         Ok(Err(err)) => {
-                                                            info!("Error occured during transaction: {err}");
+                                                            info!("Error occurred during transaction: {err}");
                                                         }
                                                         Err(_err) => {
                                                             error!("Unable to join handle!");
@@ -1486,21 +1461,18 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                             };
                             let full_response =
                                 [(response.len() as u64).to_be_bytes().to_vec(), response].concat();
-                            conn.write_all(full_response.as_slice())?;
+                            conn.write_all(full_response.as_slice()).await?;
                         }
                     };
-                    conn.flush()?;
-                }
-                Err(ref e)
-                    if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut =>
-                {
-                    // continue to trying to send
-                }
-                Err(e) => {
-                    error!("encountered IO error: {e}");
-                    return Err(Box::new(e));
-                }
+                    conn.flush().await?;
+                },
+                else => {break}
+
             };
+
+            // process any message from users from the outside application API
+            // interprocess looks like a good choice for this
+
             // join any handles that have completed
             // maybe should only run every so often?
             if cleanup.elapsed() >= Duration::from_secs(1) {
@@ -1508,7 +1480,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                 while ind < self.transaction_handles.len() {
                     if self.transaction_handles[ind].is_finished() {
                         let handle = self.transaction_handles.remove(ind);
-                        match handle.join() {
+                        match handle.await {
                             Ok(Ok(report)) => {
                                 // remove the channel for this transaction if it is complete
                                 let _ = transaction_channels.remove(&report.id);
@@ -1517,7 +1489,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                 self.history.insert(report.id, report);
                             }
                             Ok(Err(err)) => {
-                                info!("Error occured during transaction: {}", err)
+                                info!("Error occurred during transaction: {}", err)
                             }
                             Err(_) => error!("Unable to join handle!"),
                         };
@@ -1529,10 +1501,9 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                 cleanup = Instant::now();
             }
         }
-
         // a final cleanup
         while let Some(handle) = self.transaction_handles.pop() {
-            match handle.join() {
+            match handle.await {
                 Ok(Ok(report)) => {
                     // remove the channel for this transaction if it is complete
                     let _ = transaction_channels.remove(&report.id);
@@ -1541,11 +1512,22 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                     self.history.insert(report.id, report);
                 }
                 Ok(Err(err)) => {
-                    info!("Error occured during transaction: {}", err)
+                    info!("Error occurred during transaction: {}", err)
                 }
                 Err(_) => error!("Unable to join handle!"),
             };
         }
+
+        Ok(())
+    }
+
+    /// This function will consist of the main logic loop in any daemon process.
+    pub fn manage_transactions(&mut self) -> Result<(), Box<dyn std::error::Error + '_>> {
+        let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
+        runtime
+            .block_on(self.async_transaction_manager())
+            .expect("Error during transaction");
+
         Ok(())
     }
 }
@@ -1566,7 +1548,8 @@ mod test {
     #[case("a_first/name.txt", "")]
     #[case("a_first/name.txt", "b/second/name.txt")]
     #[case("", "b/second/name.txt")]
-    fn put_encode(
+    #[tokio::test]
+    async fn put_encode(
         #[case] source_filename: Utf8PathBuf,
         #[case] destination_filename: Utf8PathBuf,
         #[values(vec![], vec![
@@ -1608,13 +1591,14 @@ mod test {
         };
 
         let buffer = expected.clone().encode();
-        let recovered = PutRequest::decode(&mut &buffer[..]).unwrap();
+        let recovered = PutRequest::decode(&mut &buffer[..]).await.unwrap();
 
         assert_eq!(expected, recovered)
     }
 
     #[rstest]
-    fn primitive_encode(
+    #[tokio::test]
+    async fn primitive_encode(
         #[values(
             UserPrimitive::Put(
                 PutRequest{
@@ -1641,7 +1625,7 @@ mod test {
         expected: UserPrimitive,
     ) {
         let buffer = expected.clone().encode();
-        let recovered = UserPrimitive::decode(&mut &buffer[..]).unwrap();
+        let recovered = UserPrimitive::decode(&mut &buffer[..]).await.unwrap();
 
         assert_eq!(expected, recovered)
     }
@@ -1718,8 +1702,8 @@ mod test {
         assert_eq!(expected, recovered[0])
     }
 
-    #[test]
-    fn categorize_user_message() {
+    #[tokio::test]
+    async fn categorize_user_message() {
         let origin_id = (EntityID::from(55_u16), TransactionSeqNum::from(12_u16));
         let proxy_ops = vec![
             ProxyOperation::ProxyFileStoreRequest(FileStoreRequest {
@@ -1823,7 +1807,8 @@ mod test {
             )),
         ]);
 
-        let (proxy, req, resp, cancel, message) = categorize_user_msg(&origin_id, user_messages);
+        let (proxy, req, resp, cancel, message) =
+            categorize_user_msg(&origin_id, user_messages).await;
 
         assert_eq!(put_requests, proxy);
         assert_eq!(requests, req);

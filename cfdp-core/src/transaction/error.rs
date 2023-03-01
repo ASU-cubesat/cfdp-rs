@@ -1,7 +1,7 @@
 use std::num::TryFromIntError;
 
-use crossbeam_channel::SendError;
 use thiserror::Error;
+use tokio::sync::mpsc::error::SendError;
 
 use crate::{
     daemon::Report,

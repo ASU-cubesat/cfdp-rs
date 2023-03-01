@@ -4,27 +4,26 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-uart = ["serialport"]
+uart = ["tokio-serial"]
 
 
 [dependencies]
-byteorder = "~1.4"
+async-trait = "~0.1"
 camino = {version = "~1.1", features=["serde1"]}
 chrono = {version = "~0.4", default-features=false, features=["std"]}
 interprocess = { version = "~1.2", features = ["tokio_support"] }
-itertools = "~0.10"
 log = '~0.4'
 num-derive = "0.3"
 num-traits = "0.2"
 pathdiff = "~0.2"
-serialport = { version = "~4.2", optional = true }
-signal-hook = "~0.3"
 tempfile = "~3.3"
 thiserror = "~1.0"
 timer = "~0.2"
 tokio = { version = "1", features = ["full"] }
-tokio-util = { versio="0.7", default-features=false, features = ["compat"] }
+tokio-serial = { version = "~5.4", optional = true }
+tokio-util = { version = "0.7", default-features=false, features = ["rt", "compat"] }
 
 [dev-dependencies]
+signal-hook = "~0.3"
 rstest = "0.15.0"
 dirs = "~4.0"

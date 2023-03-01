@@ -1,20 +1,19 @@
-use std::{fs::OpenOptions, sync::Arc, thread, time::Duration};
+use std::{fs::OpenOptions, thread, time::Duration};
 
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::Utf8PathBuf;
 use cfdp_core::{
     daemon::PutRequest,
-    filestore::{ChecksumType, FileChecksum, FileStore, NativeFileStore},
+    filestore::{ChecksumType, FileChecksum, FileStore},
     pdu::{
         DirectoryListingRequest, EntityID, FileStoreAction, FileStoreRequest, MessageToUser,
         ProxyOperation, ProxyPutRequest, TransmissionMode, UserOperation, UserRequest,
     },
     transaction::TransactionState,
-    user::User,
 };
 use rstest::rstest;
 
 mod common;
-use common::get_filestore;
+use common::{get_filestore, UsersAndFilestore};
 
 // Series F3
 // Sequence 1 Test
@@ -27,22 +26,13 @@ use common::get_filestore;
 #[rstest]
 #[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(10))]
-fn f3s01(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
-    let (local_path, filestore) = get_filestore;
-
-    let mut user_remote = User::new(Some(
-        Utf8Path::new(local_path)
-            .parent()
-            .unwrap()
-            .join("cfdp_remote.socket")
-            .as_str(),
-    ))
-    .expect("Cannot connect to remote user.");
+fn f3s01(get_filestore: &UsersAndFilestore) {
+    let (_local_user, remote_user, filestore) = get_filestore;
 
     let out_file: Utf8PathBuf = "remote/small_f3s1.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
-    user_remote
+    remote_user
         .put(PutRequest {
             source_filename: "".into(),
             destination_filename: "".into(),
@@ -80,27 +70,26 @@ fn f3s01(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 #[rstest]
 #[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(5))]
-fn f3s02(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
-    let (local_path, filestore) = get_filestore;
-
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+fn f3s02(get_filestore: &UsersAndFilestore) {
+    let (local_user, _remote_user, filestore) = get_filestore;
 
     let out_file: Utf8PathBuf = "remote/f3s2.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
-    user.put(PutRequest {
-        source_filename: "".into(),
-        destination_filename: "".into(),
-        destination_entity_id: EntityID::from(1_u16),
-        transmission_mode: TransmissionMode::Acknowledged,
-        filestore_requests: vec![FileStoreRequest {
-            action_code: FileStoreAction::CreateFile,
-            first_filename: out_file,
-            second_filename: "".into(),
-        }],
-        message_to_user: vec![],
-    })
-    .expect("unable to send put request.");
+    local_user
+        .put(PutRequest {
+            source_filename: "".into(),
+            destination_filename: "".into(),
+            destination_entity_id: EntityID::from(1_u16),
+            transmission_mode: TransmissionMode::Acknowledged,
+            filestore_requests: vec![FileStoreRequest {
+                action_code: FileStoreAction::CreateFile,
+                first_filename: out_file,
+                second_filename: "".into(),
+            }],
+            message_to_user: vec![],
+        })
+        .expect("unable to send put request.");
 
     while !path_to_out.exists() {
         thread::sleep(Duration::from_millis(1))
@@ -118,34 +107,33 @@ fn f3s02(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 #[rstest]
 #[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(5))]
-fn f3s03(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
-    let (local_path, filestore) = get_filestore;
-
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+fn f3s03(get_filestore: &UsersAndFilestore) {
+    let (local_user, _remote_user, filestore) = get_filestore;
 
     let out_file: Utf8PathBuf = "remote/f3s3.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
-    user.put(PutRequest {
-        source_filename: "".into(),
-        destination_filename: "".into(),
-        destination_entity_id: EntityID::from(1_u16),
-        transmission_mode: TransmissionMode::Acknowledged,
-        filestore_requests: vec![FileStoreRequest {
-            action_code: FileStoreAction::CreateFile,
-            first_filename: out_file.clone(),
-            second_filename: "".into(),
-        }],
-        message_to_user: vec![],
-    })
-    .expect("unable to send put request.");
+    local_user
+        .put(PutRequest {
+            source_filename: "".into(),
+            destination_filename: "".into(),
+            destination_entity_id: EntityID::from(1_u16),
+            transmission_mode: TransmissionMode::Acknowledged,
+            filestore_requests: vec![FileStoreRequest {
+                action_code: FileStoreAction::CreateFile,
+                first_filename: out_file.clone(),
+                second_filename: "".into(),
+            }],
+            message_to_user: vec![],
+        })
+        .expect("unable to send put request.");
 
     while !path_to_out.exists() {
         thread::sleep(Duration::from_millis(1))
     }
     assert!(path_to_out.exists());
 
-    let id = user
+    let id = local_user
         .put(PutRequest {
             source_filename: "".into(),
             destination_filename: "".into(),
@@ -159,7 +147,7 @@ fn f3s03(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
             message_to_user: vec![],
         })
         .expect("unable to send put request.");
-    while user
+    while local_user
         .report(id)
         .expect("Unable to send Report Request.")
         .is_none()
@@ -167,14 +155,14 @@ fn f3s03(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         thread::sleep(Duration::from_millis(5))
     }
 
-    let mut report = user
+    let mut report = local_user
         .report(id)
         .expect("Unable to send Report Request.")
         .unwrap();
 
     while report.state != TransactionState::Terminated {
         thread::sleep(Duration::from_millis(5));
-        report = user
+        report = local_user
             .report(id)
             .expect("Unable to send Report Request.")
             .unwrap();
@@ -192,36 +180,35 @@ fn f3s03(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 #[rstest]
 #[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(5))]
-fn f3s04(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
-    let (local_path, filestore) = get_filestore;
-
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+fn f3s04(get_filestore: &UsersAndFilestore) {
+    let (local_user, _remote_user, filestore) = get_filestore;
 
     let out_file: Utf8PathBuf = "remote/f3s4.txt".into();
     let new_file: Utf8PathBuf = "remote/f3s4_new.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
     let path_to_new = filestore.get_native_path(&new_file);
 
-    user.put(PutRequest {
-        source_filename: "".into(),
-        destination_filename: "".into(),
-        destination_entity_id: EntityID::from(1_u16),
-        transmission_mode: TransmissionMode::Acknowledged,
-        filestore_requests: vec![FileStoreRequest {
-            action_code: FileStoreAction::CreateFile,
-            first_filename: out_file.clone(),
-            second_filename: "".into(),
-        }],
-        message_to_user: vec![],
-    })
-    .expect("unable to send put request.");
+    local_user
+        .put(PutRequest {
+            source_filename: "".into(),
+            destination_filename: "".into(),
+            destination_entity_id: EntityID::from(1_u16),
+            transmission_mode: TransmissionMode::Acknowledged,
+            filestore_requests: vec![FileStoreRequest {
+                action_code: FileStoreAction::CreateFile,
+                first_filename: out_file.clone(),
+                second_filename: "".into(),
+            }],
+            message_to_user: vec![],
+        })
+        .expect("unable to send put request.");
 
     while !path_to_out.exists() {
         thread::sleep(Duration::from_millis(1))
     }
     assert!(path_to_out.exists());
 
-    let id = user
+    let id = local_user
         .put(PutRequest {
             source_filename: "".into(),
             destination_filename: "".into(),
@@ -236,7 +223,7 @@ fn f3s04(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         })
         .expect("unable to send put request.");
 
-    while user
+    while local_user
         .report(id)
         .expect("Unable to send Report Request.")
         .is_none()
@@ -244,14 +231,14 @@ fn f3s04(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         thread::sleep(Duration::from_millis(5))
     }
 
-    let mut report = user
+    let mut report = local_user
         .report(id)
         .expect("Unable to send Report Request.")
         .unwrap();
 
     while report.state != TransactionState::Terminated {
         thread::sleep(Duration::from_millis(5));
-        report = user
+        report = local_user
             .report(id)
             .expect("Unable to send Report Request.")
             .unwrap();
@@ -273,17 +260,15 @@ fn f3s04(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 #[rstest]
 #[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(5))]
-fn f3s05(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
-    let (local_path, filestore) = get_filestore;
-
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+fn f3s05(get_filestore: &UsersAndFilestore) {
+    let (local_user, _remote_user, filestore) = get_filestore;
 
     let out_file: Utf8PathBuf = "remote/f3s5.txt".into();
     let new_file: Utf8PathBuf = "remote/medium_f3s5.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
     let path_to_new = filestore.get_native_path(&new_file);
 
-    let id = user
+    let id = local_user
         .put(PutRequest {
             source_filename: "/local/medium.txt".into(),
             destination_filename: new_file.clone(),
@@ -298,19 +283,29 @@ fn f3s05(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         })
         .expect("unable to send put request.");
 
-    while user.report(id).expect("unable to get report.").is_none() {
+    while local_user
+        .report(id)
+        .expect("unable to get report.")
+        .is_none()
+    {
         thread::sleep(Duration::from_millis(150))
     }
-    let mut report = user.report(id).expect("unable to get report.").unwrap();
+    let mut report = local_user
+        .report(id)
+        .expect("unable to get report.")
+        .unwrap();
     while report.state != TransactionState::Terminated {
         thread::sleep(Duration::from_millis(150));
-        report = user.report(id).expect("unable to get report.").unwrap();
+        report = local_user
+            .report(id)
+            .expect("unable to get report.")
+            .unwrap();
     }
 
     assert!(path_to_out.exists());
     assert!(path_to_new.exists());
 
-    let id = user
+    let id = local_user
         .put(PutRequest {
             source_filename: "".into(),
             destination_filename: "".into(),
@@ -324,7 +319,7 @@ fn f3s05(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
             message_to_user: vec![],
         })
         .expect("unable to send put request.");
-    while user
+    while local_user
         .report(id)
         .expect("Unable to obtain report.")
         .unwrap()
@@ -360,32 +355,31 @@ fn f3s05(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 #[rstest]
 #[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(5))]
-fn f3s06(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
-    let (local_path, filestore) = get_filestore;
-
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+fn f3s06(get_filestore: &UsersAndFilestore) {
+    let (local_user, _remote_user, filestore) = get_filestore;
 
     let out_file: Utf8PathBuf = "remote/f3s6.txt".into();
     let new_file: Utf8PathBuf = "remote/medium_f3s6.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
     let path_to_new = filestore.get_native_path(&new_file);
 
-    user.put(PutRequest {
-        source_filename: "/local/small.txt".into(),
-        destination_filename: out_file.clone(),
-        destination_entity_id: EntityID::from(1_u16),
-        transmission_mode: TransmissionMode::Acknowledged,
-        filestore_requests: vec![],
-        message_to_user: vec![],
-    })
-    .expect("unable to send put request.");
+    local_user
+        .put(PutRequest {
+            source_filename: "/local/small.txt".into(),
+            destination_filename: out_file.clone(),
+            destination_entity_id: EntityID::from(1_u16),
+            transmission_mode: TransmissionMode::Acknowledged,
+            filestore_requests: vec![],
+            message_to_user: vec![],
+        })
+        .expect("unable to send put request.");
 
     while !path_to_out.exists() {
         thread::sleep(Duration::from_millis(1))
     }
     assert!(path_to_out.exists());
 
-    let id = user
+    let id = local_user
         .put(PutRequest {
             source_filename: "/local/medium.txt".into(),
             destination_filename: new_file.clone(),
@@ -400,7 +394,7 @@ fn f3s06(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         })
         .expect("unable to send put request.");
 
-    while user
+    while local_user
         .report(id)
         .expect("Unable to send Report Request.")
         .is_none()
@@ -408,14 +402,14 @@ fn f3s06(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         thread::sleep(Duration::from_millis(5))
     }
 
-    let mut report = user
+    let mut report = local_user
         .report(id)
         .expect("Unable to send Report Request.")
         .unwrap();
 
     while report.state != TransactionState::Terminated {
         thread::sleep(Duration::from_millis(5));
-        report = user
+        report = local_user
             .report(id)
             .expect("Unable to send Report Request.")
             .unwrap();
@@ -447,27 +441,26 @@ fn f3s06(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 #[rstest]
 #[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(5))]
-fn f3s07(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
-    let (local_path, filestore) = get_filestore;
-
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+fn f3s07(get_filestore: &UsersAndFilestore) {
+    let (local_user, _remote_user, filestore) = get_filestore;
 
     let out_file: Utf8PathBuf = "remote/data".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
-    user.put(PutRequest {
-        source_filename: "".into(),
-        destination_filename: "".into(),
-        destination_entity_id: EntityID::from(1_u16),
-        transmission_mode: TransmissionMode::Acknowledged,
-        filestore_requests: vec![FileStoreRequest {
-            action_code: FileStoreAction::CreateDirectory,
-            first_filename: out_file,
-            second_filename: "".into(),
-        }],
-        message_to_user: vec![],
-    })
-    .expect("unable to send put request.");
+    local_user
+        .put(PutRequest {
+            source_filename: "".into(),
+            destination_filename: "".into(),
+            destination_entity_id: EntityID::from(1_u16),
+            transmission_mode: TransmissionMode::Acknowledged,
+            filestore_requests: vec![FileStoreRequest {
+                action_code: FileStoreAction::CreateDirectory,
+                first_filename: out_file,
+                second_filename: "".into(),
+            }],
+            message_to_user: vec![],
+        })
+        .expect("unable to send put request.");
 
     while !path_to_out.exists() {
         thread::sleep(Duration::from_millis(1))
@@ -488,27 +481,26 @@ fn f3s07(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 #[rstest]
 #[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(5))]
-fn f3s08(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
-    let (local_path, filestore) = get_filestore;
-
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+fn f3s08(get_filestore: &UsersAndFilestore) {
+    let (local_user, _remote_user, filestore) = get_filestore;
 
     let out_file: Utf8PathBuf = "remote/data_f3s8".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
-    user.put(PutRequest {
-        source_filename: "".into(),
-        destination_filename: "".into(),
-        destination_entity_id: EntityID::from(1_u16),
-        transmission_mode: TransmissionMode::Acknowledged,
-        filestore_requests: vec![FileStoreRequest {
-            action_code: FileStoreAction::CreateDirectory,
-            first_filename: out_file.clone(),
-            second_filename: "".into(),
-        }],
-        message_to_user: vec![],
-    })
-    .expect("unable to send put request.");
+    local_user
+        .put(PutRequest {
+            source_filename: "".into(),
+            destination_filename: "".into(),
+            destination_entity_id: EntityID::from(1_u16),
+            transmission_mode: TransmissionMode::Acknowledged,
+            filestore_requests: vec![FileStoreRequest {
+                action_code: FileStoreAction::CreateDirectory,
+                first_filename: out_file.clone(),
+                second_filename: "".into(),
+            }],
+            message_to_user: vec![],
+        })
+        .expect("unable to send put request.");
 
     while !path_to_out.exists() {
         thread::sleep(Duration::from_millis(1))
@@ -517,19 +509,20 @@ fn f3s08(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
     assert!(path_to_out.exists());
     assert!(path_to_out.is_dir());
 
-    user.put(PutRequest {
-        source_filename: "".into(),
-        destination_filename: "".into(),
-        destination_entity_id: EntityID::from(1_u16),
-        transmission_mode: TransmissionMode::Acknowledged,
-        filestore_requests: vec![FileStoreRequest {
-            action_code: FileStoreAction::RemoveDirectory,
-            first_filename: out_file,
-            second_filename: "".into(),
-        }],
-        message_to_user: vec![],
-    })
-    .expect("unable to send put request.");
+    local_user
+        .put(PutRequest {
+            source_filename: "".into(),
+            destination_filename: "".into(),
+            destination_entity_id: EntityID::from(1_u16),
+            transmission_mode: TransmissionMode::Acknowledged,
+            filestore_requests: vec![FileStoreRequest {
+                action_code: FileStoreAction::RemoveDirectory,
+                first_filename: out_file,
+                second_filename: "".into(),
+            }],
+            message_to_user: vec![],
+        })
+        .expect("unable to send put request.");
 
     while path_to_out.exists() {
         thread::sleep(Duration::from_millis(1))
@@ -549,23 +542,22 @@ fn f3s08(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 #[rstest]
 #[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(5))]
-fn f3s09(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
-    let (local_path, filestore) = get_filestore;
-
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+fn f3s09(get_filestore: &UsersAndFilestore) {
+    let (local_user, _remote_user, filestore) = get_filestore;
 
     let out_file: Utf8PathBuf = "remote/medium_f3s9.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
-    user.put(PutRequest {
-        source_filename: "/local/medium.txt".into(),
-        destination_filename: out_file.clone(),
-        destination_entity_id: EntityID::from(1_u16),
-        transmission_mode: TransmissionMode::Acknowledged,
-        filestore_requests: vec![],
-        message_to_user: vec![],
-    })
-    .expect("unable to send put request.");
+    local_user
+        .put(PutRequest {
+            source_filename: "/local/medium.txt".into(),
+            destination_filename: out_file.clone(),
+            destination_entity_id: EntityID::from(1_u16),
+            transmission_mode: TransmissionMode::Acknowledged,
+            filestore_requests: vec![],
+            message_to_user: vec![],
+        })
+        .expect("unable to send put request.");
 
     while !path_to_out.exists() {
         thread::sleep(Duration::from_millis(1))
@@ -574,19 +566,20 @@ fn f3s09(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
     assert!(path_to_out.exists());
     assert!(path_to_out.is_file());
 
-    user.put(PutRequest {
-        source_filename: "".into(),
-        destination_filename: "".into(),
-        destination_entity_id: EntityID::from(1_u16),
-        transmission_mode: TransmissionMode::Acknowledged,
-        filestore_requests: vec![FileStoreRequest {
-            action_code: FileStoreAction::DenyFile,
-            first_filename: out_file,
-            second_filename: "".into(),
-        }],
-        message_to_user: vec![],
-    })
-    .expect("unable to send put request.");
+    local_user
+        .put(PutRequest {
+            source_filename: "".into(),
+            destination_filename: "".into(),
+            destination_entity_id: EntityID::from(1_u16),
+            transmission_mode: TransmissionMode::Acknowledged,
+            filestore_requests: vec![FileStoreRequest {
+                action_code: FileStoreAction::DenyFile,
+                first_filename: out_file,
+                second_filename: "".into(),
+            }],
+            message_to_user: vec![],
+        })
+        .expect("unable to send put request.");
 
     while path_to_out.exists() {
         thread::sleep(Duration::from_millis(1))
@@ -606,28 +599,27 @@ fn f3s09(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 #[rstest]
 #[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(5))]
-fn f3s10(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
-    let (local_path, filestore) = get_filestore;
-
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+fn f3s10(get_filestore: &UsersAndFilestore) {
+    let (local_user, _remote_user, filestore) = get_filestore;
 
     let out_file: Utf8PathBuf = "/local/remote.listing".into();
     let path_to_out = filestore.get_native_path(out_file);
 
-    user.put(PutRequest {
-        source_filename: "".into(),
-        destination_filename: "".into(),
-        destination_entity_id: EntityID::from(1_u16),
-        transmission_mode: TransmissionMode::Acknowledged,
-        filestore_requests: vec![],
-        message_to_user: vec![MessageToUser::from(UserOperation::Request(
-            UserRequest::DirectoryListing(DirectoryListingRequest {
-                directory_name: "/remote".into(),
-                directory_filename: "/local/remote.listing".into(),
-            }),
-        ))],
-    })
-    .expect("unable to send put request.");
+    local_user
+        .put(PutRequest {
+            source_filename: "".into(),
+            destination_filename: "".into(),
+            destination_entity_id: EntityID::from(1_u16),
+            transmission_mode: TransmissionMode::Acknowledged,
+            filestore_requests: vec![],
+            message_to_user: vec![MessageToUser::from(UserOperation::Request(
+                UserRequest::DirectoryListing(DirectoryListingRequest {
+                    directory_name: "/remote".into(),
+                    directory_filename: "/local/remote.listing".into(),
+                }),
+            ))],
+        })
+        .expect("unable to send put request.");
 
     while !path_to_out.exists() {
         thread::sleep(Duration::from_millis(1))

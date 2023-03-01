@@ -6,26 +6,24 @@ use std::{
     time::Duration,
 };
 
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::Utf8PathBuf;
 use cfdp_core::{
     daemon::PutRequest,
-    filestore::{FileStore, NativeFileStore},
+    filestore::FileStore,
     pdu::{
         Condition, EntityID, MessageToUser, ProxyOperation, ProxyPutRequest, TransmissionMode,
         UserOperation,
     },
     transport::{PDUTransport, UdpTransport},
-    user::User,
 };
 
 use rstest::{fixture, rstest};
 
 mod common;
 use common::{
-    create_daemons, get_filestore, tempdir_fixture, terminate, EntityConstructorReturn,
-    LossyTransport, TransportIssue,
+    create_daemons, get_filestore, terminate, EntityConstructorReturn, LossyTransport,
+    TransportIssue, UsersAndFilestore,
 };
-use tempfile::TempDir;
 
 #[rstest]
 #[cfg_attr(target_os = "windows", ignore)]
@@ -37,22 +35,22 @@ use tempfile::TempDir;
 // Configuration:
 //  - Unacknowledged
 //  - File Size: Small (file fits in single pdu)
-fn f1s1(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
-    let (local_path, filestore) = get_filestore;
+fn f1s1(get_filestore: &UsersAndFilestore) {
+    let (local_user, _remote_user, filestore) = get_filestore;
 
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
     let out_file: Utf8PathBuf = "remote/small_f1s1.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
-    user.put(PutRequest {
-        source_filename: "local/small.txt".into(),
-        destination_filename: out_file,
-        destination_entity_id: EntityID::from(1_u16),
-        transmission_mode: TransmissionMode::Unacknowledged,
-        filestore_requests: vec![],
-        message_to_user: vec![],
-    })
-    .expect("unable to send put request.");
+    local_user
+        .put(PutRequest {
+            source_filename: "local/small.txt".into(),
+            destination_filename: out_file,
+            destination_entity_id: EntityID::from(1_u16),
+            transmission_mode: TransmissionMode::Unacknowledged,
+            filestore_requests: vec![],
+            message_to_user: vec![],
+        })
+        .expect("unable to send put request.");
 
     while !path_to_out.exists() {
         thread::sleep(Duration::from_millis(1))
@@ -70,22 +68,22 @@ fn f1s1(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 // Configuration:
 //  - Unacknowledged
 //  - File Size: Medium
-fn f1s2(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
-    let (local_path, filestore) = get_filestore;
+fn f1s2(get_filestore: &UsersAndFilestore) {
+    let (local_user, _remote_user, filestore) = get_filestore;
 
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
     let out_file: Utf8PathBuf = "remote/medium_f1s2.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
-    user.put(PutRequest {
-        source_filename: "local/medium.txt".into(),
-        destination_filename: out_file,
-        destination_entity_id: EntityID::from(1_u16),
-        transmission_mode: TransmissionMode::Unacknowledged,
-        filestore_requests: vec![],
-        message_to_user: vec![],
-    })
-    .expect("unable to send put request.");
+    local_user
+        .put(PutRequest {
+            source_filename: "local/medium.txt".into(),
+            destination_filename: out_file,
+            destination_entity_id: EntityID::from(1_u16),
+            transmission_mode: TransmissionMode::Unacknowledged,
+            filestore_requests: vec![],
+            message_to_user: vec![],
+        })
+        .expect("unable to send put request.");
 
     while !path_to_out.exists() {
         thread::sleep(Duration::from_millis(1))
@@ -103,22 +101,22 @@ fn f1s2(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 // Configuration:
 //  - Acknowledged
 //  - File Size: Medium
-fn f1s3(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
-    let (local_path, filestore) = get_filestore;
+fn f1s3(get_filestore: &UsersAndFilestore) {
+    let (local_user, _remote_user, filestore) = get_filestore;
 
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
     let out_file: Utf8PathBuf = "remote/medium_f1s3.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
-    user.put(PutRequest {
-        source_filename: "local/medium.txt".into(),
-        destination_filename: out_file,
-        destination_entity_id: EntityID::from(1_u16),
-        transmission_mode: TransmissionMode::Acknowledged,
-        filestore_requests: vec![],
-        message_to_user: vec![],
-    })
-    .expect("unable to send put request.");
+    local_user
+        .put(PutRequest {
+            source_filename: "local/medium.txt".into(),
+            destination_filename: out_file,
+            destination_entity_id: EntityID::from(1_u16),
+            transmission_mode: TransmissionMode::Acknowledged,
+            filestore_requests: vec![],
+            message_to_user: vec![],
+        })
+        .expect("unable to send put request.");
 
     while !path_to_out.exists() {
         thread::sleep(Duration::from_millis(1))
@@ -130,11 +128,10 @@ fn f1s3(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 #[fixture]
 #[once]
 fn fixture_f1s4(
-    tempdir_fixture: &TempDir,
-    get_filestore: &(&'static String, Arc<NativeFileStore>),
+    get_filestore: &UsersAndFilestore,
     terminate: &Arc<AtomicBool>,
 ) -> EntityConstructorReturn {
-    let (_, filestore) = get_filestore;
+    let (_, _, filestore) = get_filestore;
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
     let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
 
@@ -166,24 +163,14 @@ fn fixture_f1s4(
             Box::new(local_transport) as Box<dyn PDUTransport + Send>,
         )]);
 
-    let path = Utf8PathBuf::from(
-        tempdir_fixture
-            .path()
-            .as_os_str()
-            .to_str()
-            .expect("Unable to coerce tmp path to String."),
-    );
-    let (path, local, remote) = create_daemons(
-        path.as_path(),
+    let (local_user, remote_user, local, remote) = create_daemons(
         filestore.clone(),
         local_transport_map,
         remote_transport_map,
-        "f1s4_local.socket",
-        "f1s4_remote.socket",
         terminate.clone(),
         [None; 3],
     );
-    (path, filestore.clone(), local, remote)
+    (local_user, remote_user, filestore.clone(), local, remote)
 }
 
 #[rstest]
@@ -198,21 +185,20 @@ fn fixture_f1s4(
 //  - File Size: Medium
 //  - ~1% data lost in transport
 fn f1s4(fixture_f1s4: &'static EntityConstructorReturn) {
-    // let mut user = User::new(Some(_local_path))
-    let (local_path, filestore, _local, _remote) = fixture_f1s4;
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f1s4;
     let out_file: Utf8PathBuf = "remote/medium_f1s4.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
-    user.put(PutRequest {
-        source_filename: "local/medium.txt".into(),
-        destination_filename: out_file,
-        destination_entity_id: EntityID::from(1_u16),
-        transmission_mode: TransmissionMode::Acknowledged,
-        filestore_requests: vec![],
-        message_to_user: vec![],
-    })
-    .expect("unable to send put request.");
+    local_user
+        .put(PutRequest {
+            source_filename: "local/medium.txt".into(),
+            destination_filename: out_file,
+            destination_entity_id: EntityID::from(1_u16),
+            transmission_mode: TransmissionMode::Acknowledged,
+            filestore_requests: vec![],
+            message_to_user: vec![],
+        })
+        .expect("unable to send put request.");
 
     while !path_to_out.exists() {
         thread::sleep(Duration::from_millis(1))
@@ -224,11 +210,10 @@ fn f1s4(fixture_f1s4: &'static EntityConstructorReturn) {
 #[fixture]
 #[once]
 fn fixture_f1s5(
-    tempdir_fixture: &TempDir,
-    get_filestore: &(&'static String, Arc<NativeFileStore>),
+    get_filestore: &UsersAndFilestore,
     terminate: &Arc<AtomicBool>,
 ) -> EntityConstructorReturn {
-    let (_, filestore) = get_filestore;
+    let (_, _, filestore) = get_filestore;
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
     let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
 
@@ -260,24 +245,14 @@ fn fixture_f1s5(
             Box::new(local_transport) as Box<dyn PDUTransport + Send>,
         )]);
 
-    let path = Utf8PathBuf::from(
-        tempdir_fixture
-            .path()
-            .as_os_str()
-            .to_str()
-            .expect("Unable to coerce tmp path to String."),
-    );
-    let (path, local, remote) = create_daemons(
-        path.as_path(),
+    let (local_user, remote_user, local, remote) = create_daemons(
         filestore.clone(),
         local_transport_map,
         remote_transport_map,
-        "f1s5_local.socket",
-        "f1s5_remote.socket",
         terminate.clone(),
         [None; 3],
     );
-    (path, filestore.clone(), local, remote)
+    (local_user, remote_user, filestore.clone(), local, remote)
 }
 
 #[rstest]
@@ -292,22 +267,21 @@ fn fixture_f1s5(
 //  - File Size: Medium
 //  - ~1% data duplicated in transport
 fn f1s5(fixture_f1s5: &'static EntityConstructorReturn) {
-    // let mut user = User::new(Some(_local_path))
-    let (local_path, filestore, _local, _remote) = fixture_f1s5;
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f1s5;
 
     let out_file: Utf8PathBuf = "remote/medium_f1s5.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
-    user.put(PutRequest {
-        source_filename: "local/medium.txt".into(),
-        destination_filename: out_file,
-        destination_entity_id: EntityID::from(1_u16),
-        transmission_mode: TransmissionMode::Acknowledged,
-        filestore_requests: vec![],
-        message_to_user: vec![],
-    })
-    .expect("unable to send put request.");
+    local_user
+        .put(PutRequest {
+            source_filename: "local/medium.txt".into(),
+            destination_filename: out_file,
+            destination_entity_id: EntityID::from(1_u16),
+            transmission_mode: TransmissionMode::Acknowledged,
+            filestore_requests: vec![],
+            message_to_user: vec![],
+        })
+        .expect("unable to send put request.");
 
     while !path_to_out.exists() {
         thread::sleep(Duration::from_millis(1))
@@ -319,11 +293,10 @@ fn f1s5(fixture_f1s5: &'static EntityConstructorReturn) {
 #[fixture]
 #[once]
 fn fixture_f1s6(
-    tempdir_fixture: &TempDir,
-    get_filestore: &(&'static String, Arc<NativeFileStore>),
+    get_filestore: &UsersAndFilestore,
     terminate: &Arc<AtomicBool>,
 ) -> EntityConstructorReturn {
-    let (_, filestore) = get_filestore;
+    let (_, _, filestore) = get_filestore;
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
     let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
 
@@ -355,24 +328,14 @@ fn fixture_f1s6(
             Box::new(local_transport) as Box<dyn PDUTransport + Send>,
         )]);
 
-    let path = Utf8PathBuf::from(
-        tempdir_fixture
-            .path()
-            .as_os_str()
-            .to_str()
-            .expect("Unable to coerce tmp path to String."),
-    );
-    let (path, local, remote) = create_daemons(
-        path.as_path(),
+    let (local_user, remote_user, local, remote) = create_daemons(
         filestore.clone(),
         local_transport_map,
         remote_transport_map,
-        "f1s6_local.socket",
-        "f1s6_remote.socket",
         terminate.clone(),
         [None; 3],
     );
-    (path, filestore.clone(), local, remote)
+    (local_user, remote_user, filestore.clone(), local, remote)
 }
 
 #[rstest]
@@ -388,21 +351,21 @@ fn fixture_f1s6(
 //  - ~1% data re-ordered in transport
 fn f1s6(fixture_f1s6: &'static EntityConstructorReturn) {
     // let mut user = User::new(Some(_local_path))
-    let (local_path, filestore, _local, _remote) = fixture_f1s6;
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f1s6;
 
     let out_file: Utf8PathBuf = "remote/medium_f1s6.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
-    user.put(PutRequest {
-        source_filename: "local/medium.txt".into(),
-        destination_filename: out_file,
-        destination_entity_id: EntityID::from(1_u16),
-        transmission_mode: TransmissionMode::Acknowledged,
-        filestore_requests: vec![],
-        message_to_user: vec![],
-    })
-    .expect("unable to send put request.");
+    local_user
+        .put(PutRequest {
+            source_filename: "local/medium.txt".into(),
+            destination_filename: out_file,
+            destination_entity_id: EntityID::from(1_u16),
+            transmission_mode: TransmissionMode::Acknowledged,
+            filestore_requests: vec![],
+            message_to_user: vec![],
+        })
+        .expect("unable to send put request.");
 
     while !path_to_out.exists() {
         thread::sleep(Duration::from_millis(1))
@@ -423,75 +386,76 @@ fn f1s6(fixture_f1s6: &'static EntityConstructorReturn) {
 //  - File Size: Zero
 //  - Have proxy put request send Entity 0 data,
 //  -   then have a proxy put request in THAT message send data back to entity 1
-fn f1s7(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
-    let (local_path, filestore) = get_filestore;
+fn f1s7(get_filestore: &UsersAndFilestore) {
+    let (local_user, _remote_user, filestore) = get_filestore;
 
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
     let out_file: Utf8PathBuf = "/remote/medium_f1s7.txt".into();
     let interim_file: Utf8PathBuf = "/local/medium_f1s7.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
     let path_interim = filestore.get_native_path(&interim_file);
 
-    user.put(PutRequest {
-        source_filename: "".into(),
-        destination_filename: "".into(),
-        destination_entity_id: EntityID::from(1_u16),
-        transmission_mode: TransmissionMode::Acknowledged,
-        filestore_requests: vec![],
-        message_to_user: vec![
-            MessageToUser::from(UserOperation::ProxyOperation(
-                ProxyOperation::ProxyPutRequest(ProxyPutRequest {
-                    destination_entity_id: EntityID::from(0_u16),
-                    source_filename: "/local/medium.txt".into(),
-                    destination_filename: interim_file.clone(),
-                }),
-            )),
-            MessageToUser::from(UserOperation::ProxyOperation(
-                ProxyOperation::ProxyTransmissionMode(TransmissionMode::Acknowledged),
-            )),
-        ],
-    })
-    .expect("unable to send put request.");
+    local_user
+        .put(PutRequest {
+            source_filename: "".into(),
+            destination_filename: "".into(),
+            destination_entity_id: EntityID::from(1_u16),
+            transmission_mode: TransmissionMode::Acknowledged,
+            filestore_requests: vec![],
+            message_to_user: vec![
+                MessageToUser::from(UserOperation::ProxyOperation(
+                    ProxyOperation::ProxyPutRequest(ProxyPutRequest {
+                        destination_entity_id: EntityID::from(0_u16),
+                        source_filename: "/local/medium.txt".into(),
+                        destination_filename: interim_file.clone(),
+                    }),
+                )),
+                MessageToUser::from(UserOperation::ProxyOperation(
+                    ProxyOperation::ProxyTransmissionMode(TransmissionMode::Acknowledged),
+                )),
+            ],
+        })
+        .expect("unable to send put request.");
     while !path_interim.exists() {
         thread::sleep(Duration::from_millis(1))
     }
     assert!(path_interim.exists());
 
-    user.put(PutRequest {
-        source_filename: "".into(),
-        destination_filename: "".into(),
-        destination_entity_id: EntityID::from(1_u16),
-        transmission_mode: TransmissionMode::Acknowledged,
-        filestore_requests: vec![],
-        message_to_user: vec![
-            MessageToUser::from(UserOperation::ProxyOperation(
-                ProxyOperation::ProxyPutRequest(ProxyPutRequest {
-                    destination_entity_id: EntityID::from(0_u16),
-                    source_filename: "".into(),
-                    destination_filename: "".into(),
-                }),
-            )),
-            MessageToUser::from(UserOperation::ProxyOperation(
-                ProxyOperation::ProxyMessageToUser(MessageToUser::from(
-                    UserOperation::ProxyOperation(ProxyOperation::ProxyPutRequest(
-                        ProxyPutRequest {
-                            destination_entity_id: EntityID::from(1_u16),
-                            source_filename: interim_file,
-                            destination_filename: out_file,
-                        },
+    local_user
+        .put(PutRequest {
+            source_filename: "".into(),
+            destination_filename: "".into(),
+            destination_entity_id: EntityID::from(1_u16),
+            transmission_mode: TransmissionMode::Acknowledged,
+            filestore_requests: vec![],
+            message_to_user: vec![
+                MessageToUser::from(UserOperation::ProxyOperation(
+                    ProxyOperation::ProxyPutRequest(ProxyPutRequest {
+                        destination_entity_id: EntityID::from(0_u16),
+                        source_filename: "".into(),
+                        destination_filename: "".into(),
+                    }),
+                )),
+                MessageToUser::from(UserOperation::ProxyOperation(
+                    ProxyOperation::ProxyMessageToUser(MessageToUser::from(
+                        UserOperation::ProxyOperation(ProxyOperation::ProxyPutRequest(
+                            ProxyPutRequest {
+                                destination_entity_id: EntityID::from(1_u16),
+                                source_filename: interim_file,
+                                destination_filename: out_file,
+                            },
+                        )),
                     )),
                 )),
-            )),
-            MessageToUser::from(UserOperation::ProxyOperation(
-                ProxyOperation::ProxyMessageToUser(MessageToUser::from(
-                    UserOperation::ProxyOperation(ProxyOperation::ProxyTransmissionMode(
-                        TransmissionMode::Acknowledged,
+                MessageToUser::from(UserOperation::ProxyOperation(
+                    ProxyOperation::ProxyMessageToUser(MessageToUser::from(
+                        UserOperation::ProxyOperation(ProxyOperation::ProxyTransmissionMode(
+                            TransmissionMode::Acknowledged,
+                        )),
                     )),
                 )),
-            )),
-        ],
-    })
-    .expect("Unable to send put request.");
+            ],
+        })
+        .expect("Unable to send put request.");
 
     while !path_to_out.exists() {
         thread::sleep(Duration::from_millis(1))
@@ -509,14 +473,13 @@ fn f1s7(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 //  - Check User Cancel Functionality
 // Configuration:
 //  - Cancel initiated from Sender
-fn f1s8(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
-    let (local_path, filestore) = get_filestore;
+fn f1s8(get_filestore: &UsersAndFilestore) {
+    let (local_user, _remote_user, filestore) = get_filestore;
 
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
     let out_file: Utf8PathBuf = "remote/medium_f1s8.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
-    let id = user
+    let id = local_user
         .put(PutRequest {
             source_filename: "local/medium.txt".into(),
             destination_filename: out_file,
@@ -527,20 +490,20 @@ fn f1s8(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         })
         .expect("unable to send put request.");
 
-    while user.report(id).expect("cannot send report").is_none() {
+    while local_user.report(id).expect("cannot send report").is_none() {
         thread::sleep(Duration::from_millis(1));
     }
-    user.cancel(id).expect("unable to cancel.");
+    local_user.cancel(id).expect("unable to cancel.");
     thread::sleep(Duration::from_millis(5));
 
-    let mut report = user
+    let mut report = local_user
         .report(id)
         .expect("Unable to send Report Request.")
         .unwrap();
 
     while report.condition != Condition::CancelReceived {
         thread::sleep(Duration::from_millis(5));
-        report = user
+        report = local_user
             .report(id)
             .expect("Unable to send Report Request.")
             .unwrap();
@@ -560,22 +523,13 @@ fn f1s8(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 //  - Check User Cancel Functionality
 // Configuration:
 //  - Cancel initiated from Receiver
-fn f1s9(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
-    let (local_path, filestore) = get_filestore;
+fn f1s9(get_filestore: &UsersAndFilestore) {
+    let (local_user, remote_user, filestore) = get_filestore;
 
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
-    let mut user_remote = User::new(Some(
-        Utf8Path::new(local_path)
-            .parent()
-            .unwrap()
-            .join("cfdp_remote.socket")
-            .as_str(),
-    ))
-    .expect("User Cannot connect to Daemon.");
     let out_file: Utf8PathBuf = "remote/medium_f1s9.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
-    let id = user
+    let id = local_user
         .put(PutRequest {
             source_filename: "local/medium.txt".into(),
             destination_filename: out_file,
@@ -585,7 +539,7 @@ fn f1s9(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
             message_to_user: vec![],
         })
         .expect("unable to send put request.");
-    while user_remote
+    while remote_user
         .report(id)
         .expect("cannot send report")
         .is_none()
@@ -593,17 +547,17 @@ fn f1s9(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         thread::sleep(Duration::from_micros(1));
     }
     thread::sleep(Duration::from_millis(1));
-    user_remote.cancel(id).expect("unable to cancel.");
+    remote_user.cancel(id).expect("unable to cancel.");
     thread::sleep(Duration::from_millis(5));
 
-    let mut report = user_remote
+    let mut report = remote_user
         .report(id)
         .expect("Unable to send Report Request.")
         .unwrap();
 
     while report.condition != Condition::CancelReceived {
         thread::sleep(Duration::from_millis(5));
-        report = user_remote
+        report = remote_user
             .report(id)
             .expect("Unable to send Report Request.")
             .unwrap();
@@ -624,14 +578,13 @@ fn f1s9(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
 // Configuration:
 //  - Unacknowledged Transmission
 //  - Cancel initiated from Sender
-fn f1s10(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
-    let (local_path, filestore) = get_filestore;
+fn f1s10(get_filestore: &UsersAndFilestore) {
+    let (local_user, _remote_user, filestore) = get_filestore;
 
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
     let out_file: Utf8PathBuf = "remote/large_f1s10.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
-    let id = user
+    let id = local_user
         .put(PutRequest {
             source_filename: "local/large.txt".into(),
             destination_filename: out_file,
@@ -642,21 +595,21 @@ fn f1s10(get_filestore: &(&'static String, Arc<NativeFileStore>)) {
         })
         .expect("unable to send put request.");
 
-    while user.report(id).expect("cannot send report").is_none() {
+    while local_user.report(id).expect("cannot send report").is_none() {
         thread::sleep(Duration::from_millis(1));
     }
 
-    user.cancel(id).expect("unable to cancel.");
+    local_user.cancel(id).expect("unable to cancel.");
     thread::sleep(Duration::from_millis(5));
 
-    let mut report = user
+    let mut report = local_user
         .report(id)
         .expect("Unable to send Report Request.")
         .unwrap();
 
     while report.condition != Condition::CancelReceived {
         thread::sleep(Duration::from_millis(5));
-        report = user
+        report = local_user
             .report(id)
             .expect("Unable to send Report Request.")
             .unwrap();

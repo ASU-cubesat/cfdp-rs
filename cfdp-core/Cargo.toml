@@ -23,6 +23,5 @@ tempfile = "~3.3"
 thiserror = "~1.0"
 
 [dev-dependencies]
-dirs = "~4.0"
 rstest = "0.15.0"
 signal-hook = "~0.3"

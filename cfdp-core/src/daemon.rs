@@ -284,6 +284,7 @@ enum Command {
 
 /// Simple Status Report
 #[derive(Debug, Clone)]
+#[cfg_attr(test, derive(PartialEq))]
 pub struct Report {
     pub id: TransactionID,
     pub state: TransactionState,

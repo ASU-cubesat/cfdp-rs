@@ -20,12 +20,24 @@ impl Counter {
             paused: true,
         }
     }
+    /// start the timer (if it was paused), setting the start_time
+    /// clear the occurred flag
+    /// the counter value is not reset
     fn restart(&mut self) {
-        // reset timeout flag
         self.update();
         self.start_time = Instant::now();
         self.paused = false;
         self.occurred = false;
+    }
+
+    /// start the timer (if it was paused), setting the start_time
+    /// clear the occurred flag
+    /// reset the  counter value to 0
+    fn reset(&mut self) {
+        self.start_time = Instant::now();
+        self.paused = false;
+        self.occurred = false;
+        self.count = 0;
     }
 
     fn update(&mut self) {
@@ -102,14 +114,25 @@ impl Timer {
         self.inactivity.restart()
     }
 
+    pub fn reset_inactivity(&mut self) {
+        self.inactivity.reset()
+    }
+
     pub fn restart_ack(&mut self) {
         self.ack.restart()
+    }
+
+    pub fn reset_ack(&mut self) {
+        self.ack.reset()
     }
 
     pub fn restart_nak(&mut self) {
         self.nak.restart()
     }
 
+    pub fn reset_nak(&mut self) {
+        self.nak.reset()
+    }
     /// returns the duration until one of the timers timeouts
     /// if all timers are paused, returns Duration::MAX
     pub fn until_timeout(&self) -> Duration {

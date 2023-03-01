@@ -44,6 +44,12 @@ pub use ipc::IpcUser;
 
 #[cfg(feature = "ipc")]
 mod ipc {
+
+    #[cfg(windows)]
+    pub(crate) const SOCKET_ADDR: &str = "cfdp";
+    #[cfg(not(windows))]
+    pub const SOCKET_ADDR: &str = "/var/run/cfdp.socket";
+
     use camino::Utf8PathBuf;
     use crossbeam_channel::{bounded, Sender};
     use interprocess::local_socket::{LocalSocketListener, LocalSocketStream};
@@ -75,9 +81,11 @@ mod ipc {
     impl IpcUser {
         /// Create a new IpcUser instance at the provided socket address.
         /// The address must be compatible with [Utf8PathBuf] .
-        pub fn new(socket: &(impl AsRef<str> + ?Sized)) -> Result<Self, IoError> {
+        pub fn new(socket: Option<&(impl AsRef<str> + ?Sized)>) -> Result<Self, IoError> {
             Ok(Self {
-                socket: Utf8PathBuf::from(socket),
+                socket: socket
+                    .map(Utf8PathBuf::from)
+                    .unwrap_or_else(|| Utf8PathBuf::from(SOCKET_ADDR)),
             })
         }
 

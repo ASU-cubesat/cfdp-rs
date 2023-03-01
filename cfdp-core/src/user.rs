@@ -75,6 +75,7 @@ mod ipc {
 
     /// A default implementation of the [User] trait which uses [LocalSocketListener]
     /// to communicate between a user facing command line process and the internal User implemenation.
+    #[derive(Clone, Debug)]
     pub struct IpcUser {
         socket: Utf8PathBuf,
     }
@@ -89,13 +90,13 @@ mod ipc {
             })
         }
 
-        fn send(&mut self, primitive: UserPrimitive) -> Result<(), IoError> {
+        fn send(&self, primitive: UserPrimitive) -> Result<(), IoError> {
             let mut connection = LocalSocketStream::connect(self.socket.as_str())?;
             connection.write_all(primitive.encode().as_slice())
         }
 
         /// Send the input [PutRequest] to the daemon to initiate a CFDP transfer
-        pub fn put(&mut self, request: PutRequest) -> Result<TransactionID, IoError> {
+        pub fn put(&self, request: PutRequest) -> Result<TransactionID, IoError> {
             let primitive = UserPrimitive::Put(request);
             let id = {
                 let mut connection = LocalSocketStream::connect(self.socket.as_str())?;
@@ -112,22 +113,22 @@ mod ipc {
         }
 
         /// Suspend the input transactin
-        pub fn suspend(&mut self, transaction: TransactionID) -> Result<(), IoError> {
+        pub fn suspend(&self, transaction: TransactionID) -> Result<(), IoError> {
             self.send(UserPrimitive::Suspend(transaction.0, transaction.1))
         }
 
         /// Resume the input transaction
-        pub fn resume(&mut self, transaction: TransactionID) -> Result<(), IoError> {
+        pub fn resume(&self, transaction: TransactionID) -> Result<(), IoError> {
             self.send(UserPrimitive::Resume(transaction.0, transaction.1))
         }
 
         /// Cancel the input transaction
-        pub fn cancel(&mut self, transaction: TransactionID) -> Result<(), IoError> {
+        pub fn cancel(&self, transaction: TransactionID) -> Result<(), IoError> {
             self.send(UserPrimitive::Cancel(transaction.0, transaction.1))
         }
 
         /// Receive the latest [Report] for the given transaction.
-        pub fn report(&mut self, transaction: TransactionID) -> Result<Option<Report>, IoError> {
+        pub fn report(&self, transaction: TransactionID) -> Result<Option<Report>, IoError> {
             let primitive = UserPrimitive::Report(transaction.0, transaction.1);
 
             let report = {
@@ -268,9 +269,215 @@ mod ipc {
                         error!("encountered IO error: {e}");
                         return Err(e);
                     }
-                }
+                };
             }
             Ok(())
+        }
+    }
+
+    // interprocess has some problems on MacOS and Windows
+    #[cfg(all(test, target_os = "linux"))]
+    mod test {
+        use std::thread::JoinHandle;
+
+        use crate::{
+            pdu::{Condition, TransactionStatus, TransmissionMode, VariableID},
+            transaction::TransactionState,
+        };
+
+        use super::*;
+
+        use crossbeam_channel::Receiver;
+        use rstest::{fixture, rstest};
+        use signal_hook::{consts::TERM_SIGNALS, flag};
+        use tempfile::TempDir;
+
+        type IpcDaemonType = (
+            IpcUser,
+            JoinHandle<()>,
+            Receiver<(UserPrimitive, Sender<UserReturn>)>,
+        );
+
+        #[fixture]
+        #[once]
+        fn tempdir() -> TempDir {
+            TempDir::new().unwrap()
+        }
+
+        #[fixture]
+        fn daemon_ipc(#[default("ipc.socket")] name: &str, tempdir: &TempDir) -> IpcDaemonType {
+            let directory = tempdir;
+            let socket_path = directory.path().join(name);
+            let str_name = socket_path.as_os_str().to_str().unwrap();
+            let ipc_user = IpcUser::new(Some(str_name)).expect("unable to create daemon half");
+            let mut daemon_user = ipc_user.clone();
+
+            let (sender, receiver) = bounded(1);
+
+            // Boolean to track if a kill signal is received
+            let terminate = Arc::new(AtomicBool::new(false));
+
+            for sig in TERM_SIGNALS {
+                // When terminated by a second term signal, exit with exit code 1.
+                // This will do nothing the first time (because term_now is false).
+                flag::register_conditional_shutdown(*sig, 1, Arc::clone(&terminate))
+                    .expect("Unable to register termination signals.");
+                // But this will "arm" the above for the second time, by setting it to true.
+                // The order of registering these is important, if you put this one first, it will
+                // first arm and then terminate ‒ all in the first round.
+                flag::register(*sig, Arc::clone(&terminate))
+                    .expect("Unable to register termination signals.");
+            }
+            let signal = terminate;
+            let handle = thread::spawn(move || {
+                daemon_user
+                    .primitive_handler(signal, sender)
+                    .expect("Err in daemon user half.");
+            });
+            thread::sleep(Duration::from_millis(5));
+            assert!(ipc_user.socket.as_std_path().exists());
+
+            (ipc_user, handle, receiver)
+        }
+
+        #[rstest]
+        fn put(#[with("put")] daemon_ipc: IpcDaemonType) {
+            let (user, _handle, receiver) = daemon_ipc;
+            let expected = PutRequest {
+                source_filename: "input_name".into(),
+                destination_filename: "output_name".into(),
+                destination_entity_id: VariableID::from(12_u16),
+                transmission_mode: TransmissionMode::Acknowledged,
+                filestore_requests: vec![],
+                message_to_user: vec![],
+            };
+            println!("{:?}", user.socket);
+            let req_out = expected.clone();
+            thread::spawn(move || {
+                user.put(req_out).expect("unable to send put request");
+            });
+
+            let received = receiver.recv().expect("unable to get primitive.");
+            if let UserPrimitive::Put(req_received) = received.0 {
+                assert_eq!(expected, req_received)
+            } else {
+                panic!()
+            }
+        }
+
+        #[rstest]
+        fn suspend(#[with("suspend")] daemon_ipc: IpcDaemonType) {
+            let (user, _handle, receiver) = daemon_ipc;
+            let expected: TransactionID = (VariableID::from(12_u16), VariableID::from(8_u16));
+            thread::spawn(move || {
+                user.suspend(expected)
+                    .expect("unable to send suspend request");
+            });
+
+            let received = receiver.recv().expect("unable to get primitive.");
+            if let UserPrimitive::Suspend(id, seq_num) = received.0 {
+                assert_eq!(expected, (id, seq_num))
+            } else {
+                panic!()
+            }
+        }
+
+        #[rstest]
+        fn resume(#[with("resume")] daemon_ipc: IpcDaemonType) {
+            let (user, _handle, receiver) = daemon_ipc;
+            let expected: TransactionID = (VariableID::from(12_u16), VariableID::from(8_u16));
+
+            thread::spawn(move || {
+                user.resume(expected)
+                    .expect("unable to send resume request");
+            });
+
+            let received = receiver.recv().expect("unable to get primitive.");
+            if let UserPrimitive::Resume(id, seq_num) = received.0 {
+                assert_eq!(expected, (id, seq_num))
+            } else {
+                panic!()
+            }
+        }
+
+        #[rstest]
+        fn cancel(#[with("cancel")] daemon_ipc: IpcDaemonType) {
+            let (user, _handle, receiver) = daemon_ipc;
+            let expected: TransactionID = (VariableID::from(12_u16), VariableID::from(8_u16));
+
+            thread::spawn(move || {
+                user.cancel(expected)
+                    .expect("unable to send cancel request");
+            });
+
+            let received = receiver.recv().expect("unable to get primitive.");
+            if let UserPrimitive::Cancel(id, seq_num) = received.0 {
+                assert_eq!(expected, (id, seq_num))
+            } else {
+                panic!()
+            }
+        }
+
+        #[rstest]
+        fn report_some(#[with("report_some")] daemon_ipc: IpcDaemonType) {
+            let (user, _handle, receiver) = daemon_ipc;
+            let expected_id: TransactionID = (VariableID::from(12_u16), VariableID::from(8_u16));
+
+            let expected = Report {
+                id: expected_id,
+                state: TransactionState::Active,
+                status: TransactionStatus::Active,
+                condition: Condition::NoError,
+            };
+
+            let inner_report = expected.clone();
+            let handle = thread::spawn(move || {
+                let report = user
+                    .report(expected_id)
+                    .expect("unable to send cancel request")
+                    .unwrap();
+
+                assert_eq!(inner_report, report)
+            });
+
+            let (received, report_sender) = receiver.recv().expect("unable to get primitive.");
+            if let UserPrimitive::Report(id, seq_num) = received {
+                assert_eq!(expected_id, (id, seq_num));
+                report_sender
+                    .send(UserReturn::Report(Some(expected)))
+                    .expect("Cannot send response report");
+                handle.join().expect("Error during user reporting");
+            } else {
+                panic!()
+            }
+        }
+
+        #[rstest]
+        fn report_none(#[with("report_none")] daemon_ipc: IpcDaemonType) {
+            let (user, _handle, receiver) = daemon_ipc;
+            let expected_id: TransactionID = (VariableID::from(12_u16), VariableID::from(8_u16));
+
+            let expected = None;
+
+            let inner_report = expected.clone();
+            let handle = thread::spawn(move || {
+                let report = user
+                    .report(expected_id)
+                    .expect("unable to send cancel request");
+
+                assert_eq!(inner_report, report)
+            });
+
+            let (received, report_sender) = receiver.recv().expect("unable to get primitive.");
+            if let UserPrimitive::Report(id, seq_num) = received {
+                assert_eq!(expected_id, (id, seq_num));
+                report_sender
+                    .send(UserReturn::Report(expected))
+                    .expect("Cannot send response report");
+                handle.join().expect("Error during user reporting");
+            } else {
+                panic!()
+            }
         }
     }
 }

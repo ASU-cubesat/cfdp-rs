@@ -1,8 +1,7 @@
 use std::{
     collections::HashMap,
-    fs::{self, OpenOptions},
-    io::{Error as IOError, ErrorKind, Read, Write},
-    path::Path,
+    fs::OpenOptions,
+    io::{Error as IOError, Read, Write},
     string::FromUtf8Error,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -14,7 +13,6 @@ use std::{
 
 use camino::Utf8PathBuf;
 use crossbeam_channel::{bounded, unbounded, Receiver, Select, Sender, TryRecvError};
-use interprocess::local_socket::LocalSocketListener;
 use itertools::{Either, Itertools};
 use log::{error, info};
 use num_traits::FromPrimitive;
@@ -35,6 +33,7 @@ use crate::{
         TransactionID, TransactionState,
     },
     transport::PDUTransport,
+    user::{User, UserReturn},
 };
 
 #[cfg(windows)]
@@ -514,8 +513,8 @@ pub struct Daemon<T: FileStore + Send + 'static> {
     transaction_handles: Vec<JoinHandle<Result<Report, TransactionError>>>,
     // the vector of transportation tx channel connections
     transport_tx_map: HashMap<EntityID, Sender<(VariableID, PDU)>>,
-    // the vector of transportation rx channel connections
-    transport_rx_vec: Vec<Receiver<PDU>>,
+    // the transport PDU rx channel connection
+    transport_rx: Receiver<PDU>,
     // // mapping of unique transaction ids to channels used to talk to each transaction
     // transaction_channels: HashMap<(EntityID, Vec<u8>), Sender<Command>>,
     // the underlying filestore used by this Daemon
@@ -536,8 +535,8 @@ pub struct Daemon<T: FileStore + Send + 'static> {
     proxy_id_map: HashMap<TransactionID, TransactionID>,
     // termination signal sent to children threads
     terminate: Arc<AtomicBool>,
-    // socket listener for incoming User requests
-    listener: LocalSocketListener,
+    // channel to receive user primitives from the implemented User
+    primitive_rx: Receiver<(UserPrimitive, Sender<UserReturn>)>,
     // history of transactions this daemon has participated in
     history: HashMap<TransactionID, Report>,
 }
@@ -551,43 +550,33 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         entity_configs: HashMap<VariableID, EntityConfig>,
         default_config: EntityConfig,
         terminate: Arc<AtomicBool>,
-        socket_address: Option<&str>,
+        user_interface: Box<dyn User + Send>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let socket = socket_address.unwrap_or(SOCKET_ADDR);
+        let (primitive_tx, primitive_rx) = bounded(1);
 
-        let socket_path = Path::new(socket);
-        if socket_path.exists() {
-            fs::remove_file(socket_path)?;
-        }
-
-        let listener = LocalSocketListener::bind(socket)?;
-        // setting to non-blocking lets us grab conections that are open
-        // without blocking the entire thread.
-        listener.set_nonblocking(true)?;
+        let signal = terminate.clone();
+        let mut user_interface = user_interface;
+        thread::spawn(move || user_interface.primitive_handler(signal, primitive_tx));
 
         let (message_tx, message_rx) = unbounded();
-
         let mut transport_tx_map: HashMap<EntityID, Sender<(VariableID, PDU)>> = HashMap::new();
-        let mut transport_rx_vec = vec![];
 
+        let (pdu_send, pdu_receive) = unbounded();
         for (vec, mut transport) in transport_map.into_iter() {
-            let (pdu_send, pdu_receive) = unbounded();
             let (remote_send, remote_receive) = bounded(1);
 
             vec.iter().for_each(|id| {
                 transport_tx_map.insert(*id, remote_send.clone());
             });
 
-            transport_rx_vec.push(pdu_receive);
-
             let signal = terminate.clone();
-
-            thread::spawn(move || transport.pdu_handler(signal, pdu_send, remote_receive));
+            let sender = pdu_send.clone();
+            thread::spawn(move || transport.pdu_handler(signal, sender, remote_receive));
         }
         Ok(Self {
             transaction_handles: vec![],
             transport_tx_map,
-            transport_rx_vec,
+            transport_rx: pdu_receive,
             filestore,
             message_rx,
             message_tx,
@@ -597,7 +586,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             sequence_num,
             proxy_id_map: HashMap::new(),
             terminate,
-            listener,
+            primitive_rx,
             history: HashMap::new(),
         })
     }
@@ -828,10 +817,8 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
 
         let mut selector = Select::new();
         selector.recv(&self.message_rx);
-
-        for rx in self.transport_rx_vec.iter() {
-            selector.recv(rx);
-        }
+        selector.recv(&self.transport_rx);
+        selector.recv(&self.primitive_rx);
 
         // mapping of unique transaction ids to channels used to talk to each transaction
         let mut transaction_channels: HashMap<(EntityID, TransactionSeqNum), Sender<Command>> =
@@ -1251,13 +1238,8 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                         }
                     };
                 }
-                Ok(oper) if oper.index() > 0 => {
-                    // this is a pdu from a transport
-                    // subtract 1 because the transport indices start at 1 for the selector
-                    // but are 0 indexed in the vec
-                    let val = oper.index();
-                    let rx = &self.transport_rx_vec[val - 1];
-                    match oper.recv(rx) {
+                Ok(oper) if oper.index() == 1 => {
+                    match oper.recv(&self.transport_rx) {
                         Ok(pdu) => {
                             // find the entity this entity will be sending too.
                             // If this PDU is to the sender, we send to the destination
@@ -1347,20 +1329,149 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                 }
                             };
                         }
-                        // Err(TryRecvError::Empty) => {
-                        //     // was not actually ready, go back to selection
-                        // }
-                        // Err(TryRecvError::Disconnected) => {
-                        //     // The transport instance disconnected?
-                        //     // what do we do?
-                        //     // remove from possible selections
-                        //     selector.remove(val);
-                        // }
                         Err(_err) => {
                             // the channel is empty and disconnected
                             // this should only happen when we are cleaning up.
                         }
                     };
+                }
+                // received a UserPrimitive from the user implementation
+                Ok(oper) if oper.index() == 2 => {
+                    match oper.recv(&self.primitive_rx) {
+                        Ok((primitive, internal_return)) => {
+                            match primitive {
+                                UserPrimitive::Put(request) => {
+                                    let sequence_number = sequence_num.get_and_increment();
+
+                                    let entity_config = self
+                                        .entity_configs
+                                        .get(&request.destination_entity_id)
+                                        .unwrap_or(&self.default_config)
+                                        .clone();
+
+                                    let transport_tx = self
+                                        .transport_tx_map
+                                        .get(&request.destination_entity_id)
+                                        .expect("No transport for Entity ID.")
+                                        .clone();
+                                    let (id, sender, handle) = Self::spawn_send_transaction(
+                                        request,
+                                        sequence_number,
+                                        self.entity_id,
+                                        transport_tx,
+                                        entity_config,
+                                        self.filestore.clone(),
+                                        false,
+                                    )?;
+
+                                    self.transaction_handles.push(handle);
+                                    transaction_channels.insert(id, sender);
+
+                                    let response = Self::get_report(id, &transaction_channels);
+                                    if let Some(report) = response {
+                                        self.history.insert(id, report.clone());
+                                        // // Send back the initial report with the ID and state.
+                                        // // but abandon if the user ends up busy
+                                        // self.report_tx
+                                        //     .send_timeout(report, Duration::from_millis(100))?;
+                                    }
+                                    internal_return.send(UserReturn::ID(id))?;
+                                }
+                                UserPrimitive::Cancel(id, seq) => {
+                                    if let Some(channel) = transaction_channels.get(&(id, seq)) {
+                                        channel.send(Command::Cancel)?;
+                                    }
+                                }
+                                UserPrimitive::Suspend(id, seq) => {
+                                    if let Some(channel) = transaction_channels.get(&(id, seq)) {
+                                        channel.send(Command::Suspend)?;
+                                    }
+                                }
+                                UserPrimitive::Resume(id, seq) => {
+                                    if let Some(channel) = transaction_channels.get(&(id, seq)) {
+                                        channel.send(Command::Resume)?;
+                                    }
+                                }
+                                UserPrimitive::Report(id, seq) => {
+                                    let report = Self::get_report((id, seq), &transaction_channels);
+                                    let response = match report {
+                                        Some(data) => {
+                                            info!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", id, seq, data.state, data.status, data.condition);
+                                            self.history.insert(data.id, data.clone());
+                                            Some(data)
+                                        }
+                                        None => match self.history.get(&(id, seq)) {
+                                            Some(data) => {
+                                                info!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", id, seq, data.state, data.status, data.condition);
+                                                Some(data.clone())
+                                            }
+                                            None => {
+                                                {
+                                                    thread::sleep(Duration::from_millis(5));
+                                                    // force a cleanup check then try again
+                                                    let mut ind = 0;
+                                                    while ind < self.transaction_handles.len() {
+                                                        if self.transaction_handles[ind]
+                                                            .is_finished()
+                                                        {
+                                                            let handle = self
+                                                                .transaction_handles
+                                                                .remove(ind);
+                                                            match handle.join() {
+                                                                Ok(Ok(inner_report)) => {
+                                                                    // remove the channel for this transaction if it is complete
+                                                                    let _ = transaction_channels
+                                                                        .remove(&inner_report.id);
+                                                                    // keep all proxy id maps where the finished transaction ID is not the entry
+                                                                    self.proxy_id_map.retain(
+                                                                        |_, value| {
+                                                                            *value
+                                                                                != inner_report.id
+                                                                        },
+                                                                    );
+                                                                    self.history.insert(
+                                                                        inner_report.id,
+                                                                        inner_report,
+                                                                    );
+                                                                }
+                                                                Ok(Err(err)) => {
+                                                                    info!("Error occured during transaction: {err}");
+                                                                }
+                                                                Err(_err) => {
+                                                                    error!(
+                                                                        "Unable to join handle!"
+                                                                    );
+                                                                }
+                                                            };
+                                                        } else {
+                                                            ind += 1;
+                                                        }
+                                                    }
+
+                                                    cleanup = Instant::now();
+                                                }
+                                                match self.history.get(&(id, seq)) {
+                                                    Some(data) => {
+                                                        info!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", id, seq, data.state, data.status, data.condition);
+                                                        Some(data.clone())
+                                                    }
+                                                    None => {
+                                                        info!("Cannot find information on requested transaction.");
+                                                        None
+                                                    }
+                                                }
+                                            }
+                                        },
+                                    };
+                                    internal_return.send(UserReturn::Report(response))?;
+                                }
+                            };
+                        }
+                        Err(_err) => {
+                            // The channel is disconnected
+                            error!("User interface disconnected from daemon.");
+                        }
+                    }
                 }
                 Err(_) => {
                     // timeout occurred
@@ -1368,147 +1479,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                 Ok(_) => unreachable!(),
             };
 
-            // process any message from users from the outside application API
-            // interprocess looks like a good choice for this
-
-            match self.listener.accept() {
-                Ok(mut conn) => {
-                    let primitive = UserPrimitive::decode(&mut conn)?;
-                    match primitive {
-                        UserPrimitive::Put(request) => {
-                            let sequence_number = sequence_num.get_and_increment();
-
-                            let entity_config = self
-                                .entity_configs
-                                .get(&request.destination_entity_id)
-                                .unwrap_or(&self.default_config)
-                                .clone();
-
-                            let transport_tx = self
-                                .transport_tx_map
-                                .get(&request.destination_entity_id)
-                                .expect("No transport for Entity ID.")
-                                .clone();
-                            let (id, sender, handle) = Self::spawn_send_transaction(
-                                request,
-                                sequence_number,
-                                self.entity_id,
-                                transport_tx,
-                                entity_config,
-                                self.filestore.clone(),
-                                false,
-                            )?;
-
-                            let response = Self::get_report(id, &transaction_channels);
-                            if let Some(report) = response {
-                                self.history.insert(id, report);
-                            }
-
-                            self.transaction_handles.push(handle);
-                            transaction_channels.insert(id, sender);
-                            let response = {
-                                let mut buff = vec![];
-                                buff.extend(id.0.encode());
-                                buff.extend(id.1.encode());
-                                buff
-                            };
-                            conn.write_all(response.as_slice())?;
-                        }
-                        UserPrimitive::Cancel(id, seq) => {
-                            if let Some(channel) = transaction_channels.get(&(id, seq)) {
-                                channel.send(Command::Cancel)?;
-                            }
-                        }
-                        UserPrimitive::Suspend(id, seq) => {
-                            if let Some(channel) = transaction_channels.get(&(id, seq)) {
-                                channel.send(Command::Suspend)?;
-                            }
-                        }
-                        UserPrimitive::Resume(id, seq) => {
-                            if let Some(channel) = transaction_channels.get(&(id, seq)) {
-                                channel.send(Command::Resume)?;
-                            }
-                        }
-                        UserPrimitive::Report(id, seq) => {
-                            let report = Self::get_report((id, seq), &transaction_channels);
-                            let response = match report {
-                                Some(data) => {
-                                    info!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", id, seq, data.state, data.status, data.condition);
-                                    self.history.insert(data.id, data.clone());
-                                    data.clone().encode()
-                                }
-                                None => match self.history.get(&(id, seq)) {
-                                    Some(data) => {
-                                        info!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", id, seq, data.state, data.status, data.condition);
-                                        data.clone().encode()
-                                    }
-                                    None => {
-                                        {
-                                            thread::sleep(Duration::from_millis(5));
-                                            // force a cleanup check then try again
-                                            let mut ind = 0;
-                                            while ind < self.transaction_handles.len() {
-                                                if self.transaction_handles[ind].is_finished() {
-                                                    let handle =
-                                                        self.transaction_handles.remove(ind);
-                                                    match handle.join() {
-                                                        Ok(Ok(inner_report)) => {
-                                                            // remove the channel for this transaction if it is complete
-                                                            let _ = transaction_channels
-                                                                .remove(&inner_report.id);
-                                                            // keep all proxy id maps where the finished transaction ID is not the entry
-                                                            self.proxy_id_map.retain(|_, value| {
-                                                                *value != inner_report.id
-                                                            });
-                                                            self.history.insert(
-                                                                inner_report.id,
-                                                                inner_report,
-                                                            );
-                                                        }
-                                                        Ok(Err(err)) => {
-                                                            info!("Error occured during transaction: {err}");
-                                                        }
-                                                        Err(_err) => {
-                                                            error!("Unable to join handle!");
-                                                        }
-                                                    };
-                                                } else {
-                                                    ind += 1;
-                                                }
-                                            }
-
-                                            cleanup = Instant::now();
-                                        }
-                                        match self.history.get(&(id, seq)) {
-                                            Some(data) => {
-                                                info!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", id, seq, data.state, data.status, data.condition);
-                                                data.clone().encode()
-                                            }
-                                            None => {
-                                                info!("Cannot find information on requested transaction.");
-                                                vec![]
-                                            }
-                                        }
-                                    }
-                                },
-                            };
-                            let full_response =
-                                [(response.len() as u64).to_be_bytes().to_vec(), response].concat();
-                            conn.write_all(full_response.as_slice())?;
-                        }
-                    };
-                    conn.flush()?;
-                }
-                Err(ref e)
-                    if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut =>
-                {
-                    // continue to trying to send
-                }
-                Err(e) => {
-                    error!("encountered IO error: {e}");
-                    return Err(Box::new(e));
-                }
-            };
             // join any handles that have completed
             // maybe should only run every so often?
             if cleanup.elapsed() >= Duration::from_secs(1) {

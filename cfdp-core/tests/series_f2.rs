@@ -74,7 +74,6 @@ fn fixture_f2s1(
 }
 
 #[rstest]
-#[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(5))]
 // Series F2
 // Sequence 1 Test
@@ -162,7 +161,6 @@ fn fixture_f2s2(
 }
 
 #[rstest]
-#[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(5))]
 // Series F2
 // Sequence 2 Test
@@ -248,7 +246,6 @@ fn fixture_f2s3(
 }
 
 #[rstest]
-#[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(5))]
 // Series F2
 // Sequence 3 Test
@@ -334,7 +331,6 @@ fn fixture_f2s4(
 }
 
 #[rstest]
-#[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(5))]
 // Series F2
 // Sequence 3 Test
@@ -420,7 +416,6 @@ fn fixture_f2s5(
 }
 
 #[rstest]
-#[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(5))]
 // Series F2
 // Sequence 5 Test
@@ -504,7 +499,6 @@ fn fixture_f2s6(
 }
 
 #[rstest]
-#[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(10))]
 // Series F2
 // Sequence 6 Test
@@ -590,7 +584,6 @@ fn fixture_f2s7(
 }
 
 #[rstest]
-#[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(10))]
 // Series F2
 // Sequence 7 Test
@@ -695,7 +688,6 @@ fn fixture_f2s8(
 }
 
 #[rstest]
-#[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(5))]
 // Series F2
 // Sequence 8 Test
@@ -793,7 +785,6 @@ fn fixture_f2s9(
 }
 
 #[rstest]
-#[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(5))]
 // Series F2
 // Sequence 9 Test
@@ -889,10 +880,9 @@ fn fixture_f2s10(
 }
 
 #[rstest]
-#[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(5))]
 // Series F2
-// Sequence 9 Test
+// Sequence 10 Test
 // Test goal:
 //  - check Inactivity at Receiver
 // Configuration:

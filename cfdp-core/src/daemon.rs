@@ -36,11 +36,6 @@ use crate::{
     user::{User, UserReturn},
 };
 
-#[cfg(windows)]
-pub(crate) const SOCKET_ADDR: &str = "cfdp";
-#[cfg(not(windows))]
-pub(crate) const SOCKET_ADDR: &str = "/var/run/cfdp.socket";
-
 #[derive(Error, Debug)]
 pub enum PrimitiveError {
     #[error("IO Error During Primitive execution: {0}")]
@@ -537,6 +532,9 @@ pub struct Daemon<T: FileStore + Send + 'static> {
     terminate: Arc<AtomicBool>,
     // channel to receive user primitives from the implemented User
     primitive_rx: Receiver<(UserPrimitive, Sender<UserReturn>)>,
+    // channel to send user primitives from the implemented User
+    // this is passed to SendTransactions in order to propagate up ProxyPutRequests
+    primitive_tx: Sender<(UserPrimitive, Sender<UserReturn>)>,
     // history of transactions this daemon has participated in
     history: HashMap<TransactionID, Report>,
 }
@@ -556,7 +554,8 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
 
         let signal = terminate.clone();
         let mut user_interface = user_interface;
-        thread::spawn(move || user_interface.primitive_handler(signal, primitive_tx));
+        let user_tx = primitive_tx.clone();
+        thread::spawn(move || user_interface.primitive_handler(signal, user_tx));
 
         let (message_tx, message_rx) = unbounded();
         let mut transport_tx_map: HashMap<EntityID, Sender<(VariableID, PDU)>> = HashMap::new();
@@ -587,6 +586,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             proxy_id_map: HashMap::new(),
             terminate,
             primitive_rx,
+            primitive_tx,
             history: HashMap::new(),
         })
     }
@@ -691,6 +691,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         sequence_number: TransactionSeqNum,
         source_entity_id: EntityID,
         transport_tx: Sender<(EntityID, PDU)>,
+        primtive_tx: Sender<(UserPrimitive, Sender<UserReturn>)>,
         entity_config: EntityConfig,
         filestore: Arc<T>,
         send_proxy_response: bool,
@@ -735,7 +736,8 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                     false => FileSizeFlag::Large,
                 };
 
-                let mut transaction = SendTransaction::new(config, metadata, filestore);
+                let mut transaction =
+                    SendTransaction::new(config, metadata, filestore, primtive_tx);
                 let mut sel = Select::new();
                 let rx_select_id = sel.recv(&transaction_rx);
 
@@ -855,6 +857,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                     sequence_number,
                                     self.entity_id,
                                     transport_tx,
+                                    self.primitive_tx.clone(),
                                     entity_config,
                                     self.filestore.clone(),
                                     true,
@@ -975,6 +978,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                                     sequence_number,
                                                     self.entity_id,
                                                     transport_tx,
+                                                    self.primitive_tx.clone(),
                                                     entity_config,
                                                     self.filestore.clone(),
                                                     false,
@@ -1057,6 +1061,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                             sequence_number,
                                             self.entity_id,
                                             transport_tx,
+                                            self.primitive_tx.clone(),
                                             entity_config,
                                             self.filestore.clone(),
                                             false,
@@ -1129,6 +1134,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                             sequence_number,
                                             self.entity_id,
                                             transport_tx,
+                                            self.primitive_tx.clone(),
                                             entity_config,
                                             self.filestore.clone(),
                                             false,
@@ -1201,6 +1207,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                             sequence_number,
                                             self.entity_id,
                                             transport_tx,
+                                            self.primitive_tx.clone(),
                                             entity_config,
                                             self.filestore.clone(),
                                             false,
@@ -1359,6 +1366,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         sequence_number,
                                         self.entity_id,
                                         transport_tx,
+                                        self.primitive_tx.clone(),
                                         entity_config,
                                         self.filestore.clone(),
                                         false,
@@ -1375,7 +1383,9 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         // self.report_tx
                                         //     .send_timeout(report, Duration::from_millis(100))?;
                                     }
-                                    internal_return.send(UserReturn::ID(id))?;
+
+                                    // ignore the possible error if the user disconnected;
+                                    let _ = internal_return.send(UserReturn::ID(id));
                                 }
                                 UserPrimitive::Cancel(id, seq) => {
                                     if let Some(channel) = transaction_channels.get(&(id, seq)) {
@@ -1463,7 +1473,8 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                             }
                                         },
                                     };
-                                    internal_return.send(UserReturn::Report(response))?;
+                                    // ignore the possible error if the user disconnected;
+                                    let _ = internal_return.send(UserReturn::Report(response));
                                 }
                             };
                         }

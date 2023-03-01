@@ -1061,8 +1061,8 @@ mod test {
                     closure_requested: false,
                     file_size: 10,
                     checksum_type: ChecksumType::Modular,
-                    source_filename: path.clone().as_str().as_bytes().to_vec(),
-                    destination_filename: path.clone().as_str().as_bytes().to_vec(),
+                    source_filename: path.as_str().as_bytes().to_vec(),
+                    destination_filename: path.as_str().as_bytes().to_vec(),
                     options: vec![],
                 }));
                 let payload_len = payload

@@ -1,9 +1,6 @@
 use std::{
     collections::HashMap,
-    net::UdpSocket,
     sync::{atomic::AtomicBool, Arc},
-    thread,
-    time::Duration,
 };
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -16,6 +13,7 @@ use cfdp_core::{
 };
 use rstest::{fixture, rstest};
 use tempfile::TempDir;
+use tokio::{net::UdpSocket, time::Duration};
 
 mod common;
 use common::{
@@ -32,63 +30,72 @@ fn fixture_f2s1(
 ) -> EntityConstructorReturn {
     let (_, filestore) = get_filestore;
 
-    let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
-    let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
-
-    let local_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind local UDP.");
-    let local_addr = local_udp.local_addr().expect("Cannot find local address.");
-
-    let entity_map = {
-        let mut temp = HashMap::new();
-        temp.insert(EntityID::from(0_u16), local_addr);
-        temp.insert(EntityID::from(1_u16), remote_addr);
-        temp
-    };
-
-    let local_transport = LossyTransport::try_from((
-        local_udp,
-        entity_map.clone(),
-        TransportIssue::Once(PDUDirective::Metadata),
-    ))
-    .expect("Unable to make Lossy Transport.");
-    let remote_transport =
-        UdpTransport::try_from((remote_udp, entity_map)).expect("Unable to make UdpTransport.");
-
-    let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(0_u16)],
-            Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
-        )]);
-
-    let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(1_u16)],
-            Box::new(local_transport) as Box<dyn PDUTransport + Send>,
-        )]);
-
-    let path = Utf8PathBuf::from(
+    let utf8_path = Utf8PathBuf::from(
         tempdir_fixture
             .path()
             .as_os_str()
             .to_str()
             .expect("Unable to coerce tmp path to String."),
     );
-    let (path, local, remote) = create_daemons(
-        path.as_path(),
-        filestore.clone(),
-        local_transport_map,
-        remote_transport_map,
-        "f2s1_local.socket",
-        "f2s1_remote.socket",
-        terminate.clone(),
-        [None; 3],
-    );
-    (path, filestore.clone(), local, remote)
+    let local_path = utf8_path.join("f2s1_local.socket").as_str().to_owned();
+
+    let (local, remote) = block_on!(async {
+        let remote_udp = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("Unable to bind remote UDP.");
+        let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
+
+        let local_udp = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("Unable to bind local UDP.");
+        let local_addr = local_udp.local_addr().expect("Cannot find local address.");
+
+        let entity_map = {
+            let mut temp = HashMap::new();
+            temp.insert(EntityID::from(0_u16), local_addr);
+            temp.insert(EntityID::from(1_u16), remote_addr);
+            temp
+        };
+        let local_transport = LossyTransport::try_from((
+            local_udp,
+            entity_map.clone(),
+            TransportIssue::Once(PDUDirective::Metadata),
+        ))
+        .expect("Unable to make Lossy Transport.");
+        let remote_transport =
+            UdpTransport::try_from((remote_udp, entity_map)).expect("Unable to make UdpTransport.");
+
+        let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+            HashMap::from([(
+                vec![EntityID::from(0_u16)],
+                Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
+            )]);
+
+        let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+            HashMap::from([(
+                vec![EntityID::from(1_u16)],
+                Box::new(local_transport) as Box<dyn PDUTransport + Send>,
+            )]);
+
+        create_daemons(
+            utf8_path.clone().as_path(),
+            filestore.clone(),
+            local_transport_map,
+            remote_transport_map,
+            "f2s1_local.socket",
+            "f2s1_remote.socket",
+            terminate.clone(),
+            [None; 3],
+        )
+        .await
+    });
+    (local_path, filestore.clone(), local, remote)
 }
 
 #[rstest]
 #[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(5))]
+#[tokio::test(flavor = "multi_thread")]
 // Series F2
 // Sequence 1 Test
 // Test goal:
@@ -97,10 +104,12 @@ fn fixture_f2s1(
 //  - Acknowledged
 //  - File Size: Medium
 //  - Drop first instance of Metadata PDU
-fn f2s1(fixture_f2s1: &'static EntityConstructorReturn) {
+async fn f2s1(fixture_f2s1: &'static EntityConstructorReturn) {
     // let mut user = User::new(Some(_local_path))
     let (local_path, filestore, _local, _remote) = fixture_f2s1;
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let mut user = User::new(Some(local_path))
+        .await
+        .expect("User Cannot connect to Daemon.");
 
     let out_file: Utf8PathBuf = "remote/medium_f2s1.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
@@ -113,10 +122,11 @@ fn f2s1(fixture_f2s1: &'static EntityConstructorReturn) {
         filestore_requests: vec![],
         message_to_user: vec![],
     })
+    .await
     .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        tokio::time::sleep(Duration::from_millis(10)).await
     }
 
     assert!(path_to_out.exists());
@@ -130,64 +140,73 @@ fn fixture_f2s2(
     terminate: &Arc<AtomicBool>,
 ) -> EntityConstructorReturn {
     let (_, filestore) = get_filestore;
-
-    let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
-    let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
-
-    let local_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind local UDP.");
-    let local_addr = local_udp.local_addr().expect("Cannot find local address.");
-
-    let entity_map = {
-        let mut temp = HashMap::new();
-        temp.insert(EntityID::from(0_u16), local_addr);
-        temp.insert(EntityID::from(1_u16), remote_addr);
-        temp
-    };
-
-    let local_transport = LossyTransport::try_from((
-        local_udp,
-        entity_map.clone(),
-        TransportIssue::Once(PDUDirective::EoF),
-    ))
-    .expect("Unable to make Lossy Transport.");
-    let remote_transport =
-        UdpTransport::try_from((remote_udp, entity_map)).expect("Unable to make UdpTransport.");
-
-    let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(0_u16)],
-            Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
-        )]);
-
-    let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(1_u16)],
-            Box::new(local_transport) as Box<dyn PDUTransport + Send>,
-        )]);
-
-    let path = Utf8PathBuf::from(
+    let utf8_path = Utf8PathBuf::from(
         tempdir_fixture
             .path()
             .as_os_str()
             .to_str()
             .expect("Unable to coerce tmp path to String."),
     );
-    let (path, local, remote) = create_daemons(
-        path.as_path(),
-        filestore.clone(),
-        local_transport_map,
-        remote_transport_map,
-        "f2s2_local.socket",
-        "f2s2_remote.socket",
-        terminate.clone(),
-        [None; 3],
-    );
-    (path, filestore.clone(), local, remote)
+    let local_path = utf8_path.join("f2s2_local.socket").as_str().to_owned();
+
+    let (local, remote) = block_on!(async {
+        let remote_udp = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("Unable to bind remote UDP.");
+        let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
+
+        let local_udp = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("Unable to bind local UDP.");
+        let local_addr = local_udp.local_addr().expect("Cannot find local address.");
+
+        let entity_map = {
+            let mut temp = HashMap::new();
+            temp.insert(EntityID::from(0_u16), local_addr);
+            temp.insert(EntityID::from(1_u16), remote_addr);
+            temp
+        };
+
+        let local_transport = LossyTransport::try_from((
+            local_udp,
+            entity_map.clone(),
+            TransportIssue::Once(PDUDirective::EoF),
+        ))
+        .expect("Unable to make Lossy Transport.");
+        let remote_transport =
+            UdpTransport::try_from((remote_udp, entity_map)).expect("Unable to make UdpTransport.");
+
+        let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+            HashMap::from([(
+                vec![EntityID::from(0_u16)],
+                Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
+            )]);
+
+        let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+            HashMap::from([(
+                vec![EntityID::from(1_u16)],
+                Box::new(local_transport) as Box<dyn PDUTransport + Send>,
+            )]);
+
+        create_daemons(
+            utf8_path.clone().as_path(),
+            filestore.clone(),
+            local_transport_map,
+            remote_transport_map,
+            "f2s2_local.socket",
+            "f2s2_remote.socket",
+            terminate.clone(),
+            [None; 3],
+        )
+        .await
+    });
+    (local_path, filestore.clone(), local, remote)
 }
 
 #[rstest]
 #[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(5))]
+#[tokio::test(flavor = "multi_thread")]
 // Series F2
 // Sequence 2 Test
 // Test goal:
@@ -196,10 +215,11 @@ fn fixture_f2s2(
 //  - Acknowledged
 //  - File Size: Medium
 //  - Drop first instance of EoF PDU
-fn f2s2(fixture_f2s2: &'static EntityConstructorReturn) {
-    // let mut user = User::new(Some(_local_path))
+async fn f2s2(fixture_f2s2: &'static EntityConstructorReturn) {
     let (local_path, filestore, _local, _remote) = fixture_f2s2;
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let mut user = User::new(Some(local_path))
+        .await
+        .expect("User Cannot connect to Daemon.");
 
     let out_file: Utf8PathBuf = "remote/medium_f2s2.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
@@ -212,10 +232,11 @@ fn f2s2(fixture_f2s2: &'static EntityConstructorReturn) {
         filestore_requests: vec![],
         message_to_user: vec![],
     })
+    .await
     .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
     assert!(path_to_out.exists());
@@ -229,63 +250,73 @@ fn fixture_f2s3(
     terminate: &Arc<AtomicBool>,
 ) -> EntityConstructorReturn {
     let (_, filestore) = get_filestore;
-    let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
-    let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
-
-    let local_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind local UDP.");
-    let local_addr = local_udp.local_addr().expect("Cannot find local address.");
-
-    let entity_map = {
-        let mut temp = HashMap::new();
-        temp.insert(EntityID::from(0_u16), local_addr);
-        temp.insert(EntityID::from(1_u16), remote_addr);
-        temp
-    };
-
-    let local_transport = UdpTransport::try_from((local_udp, entity_map.clone()))
-        .expect("Unable to make UdpTransport.");
-    let remote_transport = LossyTransport::try_from((
-        remote_udp,
-        entity_map,
-        TransportIssue::Once(PDUDirective::Finished),
-    ))
-    .expect("Unable to make Lossy Transport.");
-
-    let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(0_u16)],
-            Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
-        )]);
-
-    let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(1_u16)],
-            Box::new(local_transport) as Box<dyn PDUTransport + Send>,
-        )]);
-
-    let path = Utf8PathBuf::from(
+    let utf8_path = Utf8PathBuf::from(
         tempdir_fixture
             .path()
             .as_os_str()
             .to_str()
             .expect("Unable to coerce tmp path to String."),
     );
-    let (path, local, remote) = create_daemons(
-        path.as_path(),
-        filestore.clone(),
-        local_transport_map,
-        remote_transport_map,
-        "f2s3_local.socket",
-        "f2s3_remote.socket",
-        terminate.clone(),
-        [None; 3],
-    );
-    (path, filestore.clone(), local, remote)
+    let local_path = utf8_path.join("f2s3_local.socket").as_str().to_owned();
+
+    let (local, remote) = block_on!(async {
+        let remote_udp = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("Unable to bind remote UDP.");
+        let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
+
+        let local_udp = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("Unable to bind local UDP.");
+        let local_addr = local_udp.local_addr().expect("Cannot find local address.");
+
+        let entity_map = {
+            let mut temp = HashMap::new();
+            temp.insert(EntityID::from(0_u16), local_addr);
+            temp.insert(EntityID::from(1_u16), remote_addr);
+            temp
+        };
+
+        let local_transport = UdpTransport::try_from((local_udp, entity_map.clone()))
+            .expect("Unable to make UdpTransport.");
+        let remote_transport = LossyTransport::try_from((
+            remote_udp,
+            entity_map,
+            TransportIssue::Once(PDUDirective::Finished),
+        ))
+        .expect("Unable to make Lossy Transport.");
+
+        let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+            HashMap::from([(
+                vec![EntityID::from(0_u16)],
+                Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
+            )]);
+
+        let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+            HashMap::from([(
+                vec![EntityID::from(1_u16)],
+                Box::new(local_transport) as Box<dyn PDUTransport + Send>,
+            )]);
+
+        create_daemons(
+            utf8_path.clone().as_path(),
+            filestore.clone(),
+            local_transport_map,
+            remote_transport_map,
+            "f2s3_local.socket",
+            "f2s3_remote.socket",
+            terminate.clone(),
+            [None; 3],
+        )
+        .await
+    });
+    (local_path, filestore.clone(), local, remote)
 }
 
 #[rstest]
 #[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(5))]
+#[tokio::test(flavor = "multi_thread")]
 // Series F2
 // Sequence 3 Test
 // Test goal:
@@ -294,10 +325,11 @@ fn fixture_f2s3(
 //  - Acknowledged
 //  - File Size: Medium
 //  - Drop first instance of Finished PDU
-fn f2s3(fixture_f2s3: &'static EntityConstructorReturn) {
-    // let mut user = User::new(Some(_local_path))
+async fn f2s3(fixture_f2s3: &'static EntityConstructorReturn) {
     let (local_path, filestore, _local, _remote) = fixture_f2s3;
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let mut user = User::new(Some(local_path))
+        .await
+        .expect("User Cannot connect to Daemon.");
 
     let out_file: Utf8PathBuf = "remote/medium_f2s3.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
@@ -310,10 +342,11 @@ fn f2s3(fixture_f2s3: &'static EntityConstructorReturn) {
         filestore_requests: vec![],
         message_to_user: vec![],
     })
+    .await
     .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
     assert!(path_to_out.exists());
@@ -327,63 +360,73 @@ fn fixture_f2s4(
     terminate: &Arc<AtomicBool>,
 ) -> EntityConstructorReturn {
     let (_, filestore) = get_filestore;
-    let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
-    let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
-
-    let local_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind local UDP.");
-    let local_addr = local_udp.local_addr().expect("Cannot find local address.");
-
-    let entity_map = {
-        let mut temp = HashMap::new();
-        temp.insert(EntityID::from(0_u16), local_addr);
-        temp.insert(EntityID::from(1_u16), remote_addr);
-        temp
-    };
-
-    let local_transport = UdpTransport::try_from((local_udp, entity_map.clone()))
-        .expect("Unable to make UdpTransport.");
-    let remote_transport = LossyTransport::try_from((
-        remote_udp,
-        entity_map,
-        TransportIssue::Once(PDUDirective::Ack),
-    ))
-    .expect("Unable to make Lossy Transport.");
-
-    let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(0_u16)],
-            Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
-        )]);
-
-    let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(1_u16)],
-            Box::new(local_transport) as Box<dyn PDUTransport + Send>,
-        )]);
-
-    let path = Utf8PathBuf::from(
+    let utf8_path = Utf8PathBuf::from(
         tempdir_fixture
             .path()
             .as_os_str()
             .to_str()
             .expect("Unable to coerce tmp path to String."),
     );
-    let (path, local, remote) = create_daemons(
-        path.as_path(),
-        filestore.clone(),
-        local_transport_map,
-        remote_transport_map,
-        "f2s4_local.socket",
-        "f2s4_remote.socket",
-        terminate.clone(),
-        [None; 3],
-    );
-    (path, filestore.clone(), local, remote)
+    let local_path = utf8_path.join("f2s4_local.socket").as_str().to_owned();
+
+    let (local, remote) = block_on!(async {
+        let remote_udp = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("Unable to bind remote UDP.");
+        let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
+
+        let local_udp = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("Unable to bind local UDP.");
+        let local_addr = local_udp.local_addr().expect("Cannot find local address.");
+
+        let entity_map = {
+            let mut temp = HashMap::new();
+            temp.insert(EntityID::from(0_u16), local_addr);
+            temp.insert(EntityID::from(1_u16), remote_addr);
+            temp
+        };
+
+        let local_transport = UdpTransport::try_from((local_udp, entity_map.clone()))
+            .expect("Unable to make UdpTransport.");
+        let remote_transport = LossyTransport::try_from((
+            remote_udp,
+            entity_map,
+            TransportIssue::Once(PDUDirective::Ack),
+        ))
+        .expect("Unable to make Lossy Transport.");
+
+        let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+            HashMap::from([(
+                vec![EntityID::from(0_u16)],
+                Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
+            )]);
+
+        let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+            HashMap::from([(
+                vec![EntityID::from(1_u16)],
+                Box::new(local_transport) as Box<dyn PDUTransport + Send>,
+            )]);
+
+        create_daemons(
+            utf8_path.as_path(),
+            filestore.clone(),
+            local_transport_map,
+            remote_transport_map,
+            "f2s4_local.socket",
+            "f2s4_remote.socket",
+            terminate.clone(),
+            [None; 3],
+        )
+        .await
+    });
+    (local_path, filestore.clone(), local, remote)
 }
 
 #[rstest]
 #[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(5))]
+#[tokio::test(flavor = "multi_thread")]
 // Series F2
 // Sequence 3 Test
 // Test goal:
@@ -392,10 +435,11 @@ fn fixture_f2s4(
 //  - Acknowledged
 //  - File Size: Medium
 //  - Drop first instance of ACK(EOF) PDU
-fn f2s4(fixture_f2s4: &'static EntityConstructorReturn) {
-    // let mut user = User::new(Some(_local_path))
+async fn f2s4(fixture_f2s4: &'static EntityConstructorReturn) {
     let (local_path, filestore, _local, _remote) = fixture_f2s4;
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let mut user = User::new(Some(local_path))
+        .await
+        .expect("User Cannot connect to Daemon.");
 
     let out_file: Utf8PathBuf = "remote/medium_f2s4.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
@@ -408,10 +452,11 @@ fn f2s4(fixture_f2s4: &'static EntityConstructorReturn) {
         filestore_requests: vec![],
         message_to_user: vec![],
     })
+    .await
     .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
     assert!(path_to_out.exists());
@@ -425,63 +470,72 @@ fn fixture_f2s5(
     terminate: &Arc<AtomicBool>,
 ) -> EntityConstructorReturn {
     let (_, filestore) = get_filestore;
-    let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
-    let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
-
-    let local_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind local UDP.");
-    let local_addr = local_udp.local_addr().expect("Cannot find local address.");
-
-    let entity_map = {
-        let mut temp = HashMap::new();
-        temp.insert(EntityID::from(0_u16), local_addr);
-        temp.insert(EntityID::from(1_u16), remote_addr);
-        temp
-    };
-
-    let local_transport = LossyTransport::try_from((
-        local_udp,
-        entity_map.clone(),
-        TransportIssue::Once(PDUDirective::Ack),
-    ))
-    .expect("Unable to make UdpTransport.");
-    let remote_transport =
-        UdpTransport::try_from((remote_udp, entity_map)).expect("Unable to make Lossy Transport.");
-
-    let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(0_u16)],
-            Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
-        )]);
-
-    let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(1_u16)],
-            Box::new(local_transport) as Box<dyn PDUTransport + Send>,
-        )]);
-
-    let path = Utf8PathBuf::from(
+    let utf8_path = Utf8PathBuf::from(
         tempdir_fixture
             .path()
             .as_os_str()
             .to_str()
             .expect("Unable to coerce tmp path to String."),
     );
-    let (path, local, remote) = create_daemons(
-        path.as_path(),
-        filestore.clone(),
-        local_transport_map,
-        remote_transport_map,
-        "f2s5_local.socket",
-        "f2s5_remote.socket",
-        terminate.clone(),
-        [None; 3],
-    );
-    (path, filestore.clone(), local, remote)
+    let local_path = utf8_path.join("f2s5_local.socket").as_str().to_owned();
+    let (local, remote) = block_on!(async {
+        let remote_udp = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("Unable to bind remote UDP.");
+        let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
+
+        let local_udp = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("Unable to bind local UDP.");
+        let local_addr = local_udp.local_addr().expect("Cannot find local address.");
+
+        let entity_map = {
+            let mut temp = HashMap::new();
+            temp.insert(EntityID::from(0_u16), local_addr);
+            temp.insert(EntityID::from(1_u16), remote_addr);
+            temp
+        };
+
+        let local_transport = LossyTransport::try_from((
+            local_udp,
+            entity_map.clone(),
+            TransportIssue::Once(PDUDirective::Ack),
+        ))
+        .expect("Unable to make UdpTransport.");
+        let remote_transport = UdpTransport::try_from((remote_udp, entity_map))
+            .expect("Unable to make Lossy Transport.");
+
+        let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+            HashMap::from([(
+                vec![EntityID::from(0_u16)],
+                Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
+            )]);
+
+        let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+            HashMap::from([(
+                vec![EntityID::from(1_u16)],
+                Box::new(local_transport) as Box<dyn PDUTransport + Send>,
+            )]);
+
+        create_daemons(
+            utf8_path.clone().as_path(),
+            filestore.clone(),
+            local_transport_map,
+            remote_transport_map,
+            "f2s5_local.socket",
+            "f2s5_remote.socket",
+            terminate.clone(),
+            [None; 3],
+        )
+        .await
+    });
+    (local_path, filestore.clone(), local, remote)
 }
 
 #[rstest]
 #[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(5))]
+#[tokio::test(flavor = "multi_thread")]
 // Series F2
 // Sequence 5 Test
 // Test goal:
@@ -490,10 +544,11 @@ fn fixture_f2s5(
 //  - Acknowledged
 //  - File Size: Medium
 //  - Drop first instance of ACK(Fin) PDU
-fn f2s5(fixture_f2s5: &'static EntityConstructorReturn) {
-    // let mut user = User::new(Some(_local_path))
+async fn f2s5(fixture_f2s5: &'static EntityConstructorReturn) {
     let (local_path, filestore, _local, _remote) = fixture_f2s5;
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let mut user = User::new(Some(local_path))
+        .await
+        .expect("User Cannot connect to Daemon.");
 
     let out_file: Utf8PathBuf = "remote/medium_f2s5.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
@@ -506,10 +561,11 @@ fn f2s5(fixture_f2s5: &'static EntityConstructorReturn) {
         filestore_requests: vec![],
         message_to_user: vec![],
     })
+    .await
     .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
     assert!(path_to_out.exists());
@@ -523,61 +579,70 @@ fn fixture_f2s6(
     terminate: &Arc<AtomicBool>,
 ) -> EntityConstructorReturn {
     let (_, filestore) = get_filestore;
-    let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
-    let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
-
-    let local_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind local UDP.");
-    let local_addr = local_udp.local_addr().expect("Cannot find local address.");
-
-    let entity_map = {
-        let mut temp = HashMap::new();
-        temp.insert(EntityID::from(0_u16), local_addr);
-        temp.insert(EntityID::from(1_u16), remote_addr);
-        temp
-    };
-
-    let local_transport =
-        LossyTransport::try_from((local_udp, entity_map.clone(), TransportIssue::Every))
-            .expect("Unable to make UdpTransport.");
-    let remote_transport =
-        LossyTransport::try_from((remote_udp, entity_map, TransportIssue::Every))
-            .expect("Unable to make Lossy Transport.");
-
-    let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(0_u16)],
-            Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
-        )]);
-
-    let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(1_u16)],
-            Box::new(local_transport) as Box<dyn PDUTransport + Send>,
-        )]);
-
-    let path = Utf8PathBuf::from(
+    let utf8_path = Utf8PathBuf::from(
         tempdir_fixture
             .path()
             .as_os_str()
             .to_str()
             .expect("Unable to coerce tmp path to String."),
     );
-    let (path, local, remote) = create_daemons(
-        path.as_path(),
-        filestore.clone(),
-        local_transport_map,
-        remote_transport_map,
-        "f2s6_local.socket",
-        "f2s6_remote.socket",
-        terminate.clone(),
-        [None; 3],
-    );
-    (path, filestore.clone(), local, remote)
+    let local_path = utf8_path.join("f2s6_local.socket").as_str().to_owned();
+    let (local, remote) = block_on!(async {
+        let remote_udp = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("Unable to bind remote UDP.");
+        let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
+
+        let local_udp = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("Unable to bind local UDP.");
+        let local_addr = local_udp.local_addr().expect("Cannot find local address.");
+
+        let entity_map = {
+            let mut temp = HashMap::new();
+            temp.insert(EntityID::from(0_u16), local_addr);
+            temp.insert(EntityID::from(1_u16), remote_addr);
+            temp
+        };
+
+        let local_transport =
+            LossyTransport::try_from((local_udp, entity_map.clone(), TransportIssue::Every))
+                .expect("Unable to make UdpTransport.");
+        let remote_transport =
+            LossyTransport::try_from((remote_udp, entity_map, TransportIssue::Every))
+                .expect("Unable to make Lossy Transport.");
+
+        let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+            HashMap::from([(
+                vec![EntityID::from(0_u16)],
+                Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
+            )]);
+
+        let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+            HashMap::from([(
+                vec![EntityID::from(1_u16)],
+                Box::new(local_transport) as Box<dyn PDUTransport + Send>,
+            )]);
+
+        create_daemons(
+            utf8_path.clone().as_path(),
+            filestore.clone(),
+            local_transport_map,
+            remote_transport_map,
+            "f2s6_local.socket",
+            "f2s6_remote.socket",
+            terminate.clone(),
+            [None; 3],
+        )
+        .await
+    });
+    (local_path, filestore.clone(), local, remote)
 }
 
 #[rstest]
 #[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(10))]
+#[tokio::test(flavor = "multi_thread")]
 // Series F2
 // Sequence 6 Test
 // Test goal:
@@ -586,10 +651,11 @@ fn fixture_f2s6(
 //  - Acknowledged
 //  - File Size: Medium
 //  - Drop first instance of Every non-EOF pdu in both directions
-fn f2s6(fixture_f2s6: &'static EntityConstructorReturn) {
-    // let mut user = User::new(Some(_local_path))
+async fn f2s6(fixture_f2s6: &'static EntityConstructorReturn) {
     let (local_path, filestore, _local, _remote) = fixture_f2s6;
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let mut user = User::new(Some(local_path))
+        .await
+        .expect("User Cannot connect to Daemon.");
 
     let out_file: Utf8PathBuf = "remote/medium_f2s6.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
@@ -602,10 +668,11 @@ fn f2s6(fixture_f2s6: &'static EntityConstructorReturn) {
         filestore_requests: vec![],
         message_to_user: vec![],
     })
+    .await
     .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
     assert!(path_to_out.exists());
@@ -619,63 +686,73 @@ fn fixture_f2s7(
     terminate: &Arc<AtomicBool>,
 ) -> EntityConstructorReturn {
     let (_, filestore) = get_filestore;
-    let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
-    let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
-
-    let local_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind local UDP.");
-    let local_addr = local_udp.local_addr().expect("Cannot find local address.");
-
-    let entity_map = {
-        let mut temp = HashMap::new();
-        temp.insert(EntityID::from(0_u16), local_addr);
-        temp.insert(EntityID::from(1_u16), remote_addr);
-        temp
-    };
-
-    let local_transport = UdpTransport::try_from((local_udp, entity_map.clone()))
-        .expect("Unable to make UdpTransport.");
-    let remote_transport = LossyTransport::try_from((
-        remote_udp,
-        entity_map,
-        TransportIssue::All(vec![PDUDirective::Finished, PDUDirective::Ack]),
-    ))
-    .expect("Unable to make Lossy Transport.");
-
-    let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(0_u16)],
-            Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
-        )]);
-
-    let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(1_u16)],
-            Box::new(local_transport) as Box<dyn PDUTransport + Send>,
-        )]);
-
-    let path = Utf8PathBuf::from(
+    let utf8_path = Utf8PathBuf::from(
         tempdir_fixture
             .path()
             .as_os_str()
             .to_str()
             .expect("Unable to coerce tmp path to String."),
     );
-    let (path, local, remote) = create_daemons(
-        path.as_path(),
-        filestore.clone(),
-        local_transport_map,
-        remote_transport_map,
-        "f2s7_local.socket",
-        "f2s7_remote.socket",
-        terminate.clone(),
-        [Some(10), None, None],
-    );
-    (path, filestore.clone(), local, remote)
+    let local_path = utf8_path.join("f2s7_local.socket").as_str().to_owned();
+
+    let (local, remote) = block_on!(async {
+        let remote_udp = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("Unable to bind remote UDP.");
+        let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
+
+        let local_udp = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("Unable to bind local UDP.");
+        let local_addr = local_udp.local_addr().expect("Cannot find local address.");
+
+        let entity_map = {
+            let mut temp = HashMap::new();
+            temp.insert(EntityID::from(0_u16), local_addr);
+            temp.insert(EntityID::from(1_u16), remote_addr);
+            temp
+        };
+
+        let local_transport = UdpTransport::try_from((local_udp, entity_map.clone()))
+            .expect("Unable to make UdpTransport.");
+        let remote_transport = LossyTransport::try_from((
+            remote_udp,
+            entity_map,
+            TransportIssue::All(vec![PDUDirective::Finished, PDUDirective::Ack]),
+        ))
+        .expect("Unable to make Lossy Transport.");
+
+        let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+            HashMap::from([(
+                vec![EntityID::from(0_u16)],
+                Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
+            )]);
+
+        let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+            HashMap::from([(
+                vec![EntityID::from(1_u16)],
+                Box::new(local_transport) as Box<dyn PDUTransport + Send>,
+            )]);
+
+        create_daemons(
+            utf8_path.clone().as_path(),
+            filestore.clone(),
+            local_transport_map,
+            remote_transport_map,
+            "f2s7_local.socket",
+            "f2s7_remote.socket",
+            terminate.clone(),
+            [Some(10), None, None],
+        )
+        .await
+    });
+    (local_path, filestore.clone(), local, remote)
 }
 
 #[rstest]
 #[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(10))]
+#[tokio::test(flavor = "multi_thread")]
 // Series F2
 // Sequence 7 Test
 // Test goal:
@@ -684,10 +761,11 @@ fn fixture_f2s7(
 //  - Acknowledged
 //  - File Size: Medium
 //  - Drop all ACK and Finished PDUs
-fn f2s7(fixture_f2s7: &'static EntityConstructorReturn) {
-    // let mut user = User::new(Some(_local_path))
+async fn f2s7(fixture_f2s7: &'static EntityConstructorReturn) {
     let (local_path, filestore, _local, _remote) = fixture_f2s7;
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let mut user = User::new(Some(local_path))
+        .await
+        .expect("User Cannot connect to Daemon.");
 
     let out_file: Utf8PathBuf = "remote/medium_f2s7.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
@@ -701,23 +779,26 @@ fn f2s7(fixture_f2s7: &'static EntityConstructorReturn) {
             filestore_requests: vec![],
             message_to_user: vec![],
         })
+        .await
         .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert!(path_to_out.exists());
     // wait long enough for the ack limit to be reached
 
     let mut report = user
         .report(id)
+        .await
         .expect("Unable to send Report Request.")
         .unwrap();
 
     while report.condition != Condition::PositiveLimitReached {
-        thread::sleep(Duration::from_millis(100));
+        tokio::time::sleep(Duration::from_millis(100)).await;
         report = user
             .report(id)
+            .await
             .expect("Unable to send Report Request.")
             .unwrap();
     }
@@ -733,67 +814,77 @@ fn fixture_f2s8(
     terminate: &Arc<AtomicBool>,
 ) -> EntityConstructorReturn {
     let (_, filestore) = get_filestore;
-    let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
-    let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
-
-    let local_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind local UDP.");
-    let local_addr = local_udp.local_addr().expect("Cannot find local address.");
-
-    let entity_map = {
-        let mut temp = HashMap::new();
-        temp.insert(EntityID::from(0_u16), local_addr);
-        temp.insert(EntityID::from(1_u16), remote_addr);
-        temp
-    };
-
-    let local_transport = LossyTransport::try_from((
-        local_udp,
-        entity_map.clone(),
-        TransportIssue::All(vec![PDUDirective::Metadata]),
-    ))
-    .expect("Unable to Lossy Transport.");
-    let remote_transport = LossyTransport::try_from((
-        remote_udp,
-        entity_map,
-        TransportIssue::All(vec![PDUDirective::Nak]),
-    ))
-    .expect("Unable to make Lossy Transport.");
-
-    let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(0_u16)],
-            Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
-        )]);
-
-    let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(1_u16)],
-            Box::new(local_transport) as Box<dyn PDUTransport + Send>,
-        )]);
-
-    let path = Utf8PathBuf::from(
+    let utf8_path = Utf8PathBuf::from(
         tempdir_fixture
             .path()
             .as_os_str()
             .to_str()
             .expect("Unable to coerce tmp path to String."),
     );
-    let (path, local, remote) = create_daemons(
-        path.as_path(),
-        filestore.clone(),
-        local_transport_map,
-        remote_transport_map,
-        "f2s8_local.socket",
-        "f2s8_remote.socket",
-        terminate.clone(),
-        [Some(10), Some(1), Some(1)],
-    );
-    (path, filestore.clone(), local, remote)
+    let local_path = utf8_path.join("f2s8_local.socket").as_str().to_owned();
+
+    let (local, remote) = block_on!(async {
+        let remote_udp = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("Unable to bind remote UDP.");
+        let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
+
+        let local_udp = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("Unable to bind local UDP.");
+        let local_addr = local_udp.local_addr().expect("Cannot find local address.");
+
+        let entity_map = {
+            let mut temp = HashMap::new();
+            temp.insert(EntityID::from(0_u16), local_addr);
+            temp.insert(EntityID::from(1_u16), remote_addr);
+            temp
+        };
+
+        let local_transport = LossyTransport::try_from((
+            local_udp,
+            entity_map.clone(),
+            TransportIssue::All(vec![PDUDirective::Metadata]),
+        ))
+        .expect("Unable to Lossy Transport.");
+        let remote_transport = LossyTransport::try_from((
+            remote_udp,
+            entity_map,
+            TransportIssue::All(vec![PDUDirective::Nak]),
+        ))
+        .expect("Unable to make Lossy Transport.");
+
+        let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+            HashMap::from([(
+                vec![EntityID::from(0_u16)],
+                Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
+            )]);
+
+        let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+            HashMap::from([(
+                vec![EntityID::from(1_u16)],
+                Box::new(local_transport) as Box<dyn PDUTransport + Send>,
+            )]);
+
+        create_daemons(
+            utf8_path.clone().as_path(),
+            filestore.clone(),
+            local_transport_map,
+            remote_transport_map,
+            "f2s8_local.socket",
+            "f2s8_remote.socket",
+            terminate.clone(),
+            [Some(10), Some(1), Some(1)],
+        )
+        .await
+    });
+    (local_path, filestore.clone(), local, remote)
 }
 
 #[rstest]
 #[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(5))]
+#[tokio::test(flavor = "multi_thread")]
 // Series F2
 // Sequence 8 Test
 // Test goal:
@@ -802,9 +893,11 @@ fn fixture_f2s8(
 //  - Acknowledged
 //  - File Size: Medium
 //  - Drop all NAK from receiver.
-fn f2s8(fixture_f2s8: &'static EntityConstructorReturn) {
+async fn f2s8(fixture_f2s8: &'static EntityConstructorReturn) {
     let (local_path, filestore, _local, _remote) = fixture_f2s8;
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let mut user = User::new(Some(local_path))
+        .await
+        .expect("User Cannot connect to Daemon.");
 
     let out_file: Utf8PathBuf = "remote/medium_f2s8.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
@@ -818,18 +911,21 @@ fn f2s8(fixture_f2s8: &'static EntityConstructorReturn) {
             filestore_requests: vec![],
             message_to_user: vec![],
         })
+        .await
         .expect("unable to send put request.");
 
     // wait long enough for the nak limit to be reached
     let mut report = user
         .report(id)
+        .await
         .expect("Unable to send Report Request.")
         .unwrap();
 
     while report.condition != Condition::NakLimitReached {
-        thread::sleep(Duration::from_millis(100));
+        tokio::time::sleep(Duration::from_millis(100)).await;
         report = user
             .report(id)
+            .await
             .expect("Unable to send Report Request.")
             .unwrap();
     }
@@ -847,63 +943,73 @@ fn fixture_f2s9(
     terminate: &Arc<AtomicBool>,
 ) -> EntityConstructorReturn {
     let (_, filestore) = get_filestore;
-    let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
-    let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
-
-    let local_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind local UDP.");
-    let local_addr = local_udp.local_addr().expect("Cannot find local address.");
-
-    let entity_map = {
-        let mut temp = HashMap::new();
-        temp.insert(EntityID::from(0_u16), local_addr);
-        temp.insert(EntityID::from(1_u16), remote_addr);
-        temp
-    };
-
-    let local_transport = UdpTransport::try_from((local_udp, entity_map.clone()))
-        .expect("Unable to Lossy Transport.");
-    let remote_transport = LossyTransport::try_from((
-        remote_udp,
-        entity_map,
-        TransportIssue::All(vec![PDUDirective::Finished]),
-    ))
-    .expect("Unable to make Lossy Transport.");
-
-    let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(0_u16)],
-            Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
-        )]);
-
-    let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(1_u16)],
-            Box::new(local_transport) as Box<dyn PDUTransport + Send>,
-        )]);
-
-    let path = Utf8PathBuf::from(
+    let utf8_path = Utf8PathBuf::from(
         tempdir_fixture
             .path()
             .as_os_str()
             .to_str()
             .expect("Unable to coerce tmp path to String."),
     );
-    let (path, local, remote) = create_daemons(
-        path.as_path(),
-        filestore.clone(),
-        local_transport_map,
-        remote_transport_map,
-        "f2s9_local.socket",
-        "f2s9_remote.socket",
-        terminate.clone(),
-        [Some(1), Some(10), Some(1)],
-    );
-    (path, filestore.clone(), local, remote)
+    let local_path = utf8_path.join("f2s9_local.socket").as_str().to_owned();
+
+    let (local, remote) = block_on!(async {
+        let remote_udp = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("Unable to bind remote UDP.");
+        let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
+
+        let local_udp = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("Unable to bind local UDP.");
+        let local_addr = local_udp.local_addr().expect("Cannot find local address.");
+
+        let entity_map = {
+            let mut temp = HashMap::new();
+            temp.insert(EntityID::from(0_u16), local_addr);
+            temp.insert(EntityID::from(1_u16), remote_addr);
+            temp
+        };
+
+        let local_transport = UdpTransport::try_from((local_udp, entity_map.clone()))
+            .expect("Unable to Lossy Transport.");
+        let remote_transport = LossyTransport::try_from((
+            remote_udp,
+            entity_map,
+            TransportIssue::All(vec![PDUDirective::Finished]),
+        ))
+        .expect("Unable to make Lossy Transport.");
+
+        let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+            HashMap::from([(
+                vec![EntityID::from(0_u16)],
+                Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
+            )]);
+
+        let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+            HashMap::from([(
+                vec![EntityID::from(1_u16)],
+                Box::new(local_transport) as Box<dyn PDUTransport + Send>,
+            )]);
+
+        create_daemons(
+            utf8_path.clone().as_path(),
+            filestore.clone(),
+            local_transport_map,
+            remote_transport_map,
+            "f2s9_local.socket",
+            "f2s9_remote.socket",
+            terminate.clone(),
+            [Some(1), Some(10), Some(1)],
+        )
+        .await
+    });
+    (local_path, filestore.clone(), local, remote)
 }
 
 #[rstest]
 #[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(5))]
+#[tokio::test(flavor = "multi_thread")]
 // Series F2
 // Sequence 9 Test
 // Test goal:
@@ -912,9 +1018,11 @@ fn fixture_f2s9(
 //  - Acknowledged
 //  - File Size: Medium
 //  - Drop all Finished from receiver.
-fn f2s9(fixture_f2s9: &'static EntityConstructorReturn) {
+async fn f2s9(fixture_f2s9: &'static EntityConstructorReturn) {
     let (local_path, filestore, _local, _remote) = fixture_f2s9;
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let mut user = User::new(Some(local_path))
+        .await
+        .expect("User Cannot connect to Daemon.");
 
     let out_file: Utf8PathBuf = "remote/medium_f2s9.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
@@ -928,18 +1036,21 @@ fn f2s9(fixture_f2s9: &'static EntityConstructorReturn) {
             filestore_requests: vec![],
             message_to_user: vec![],
         })
+        .await
         .expect("unable to send put request.");
 
     // wait long enough for the nak limit to be reached
     let mut report = user
         .report(id)
+        .await
         .expect("Unable to send Report Request.")
         .unwrap();
 
     while report.condition != Condition::InactivityDetected {
-        thread::sleep(Duration::from_millis(100));
+        tokio::time::sleep(Duration::from_millis(100)).await;
         report = user
             .report(id)
+            .await
             .expect("Unable to send Report Request.")
             .unwrap();
     }
@@ -958,60 +1069,71 @@ fn fixture_f2s10(
     terminate: &Arc<AtomicBool>,
 ) -> EntityConstructorReturn {
     let (_, filestore) = get_filestore;
-    let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
-    let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
 
-    let local_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind local UDP.");
-    let local_addr = local_udp.local_addr().expect("Cannot find local address.");
-
-    let entity_map = {
-        let mut temp = HashMap::new();
-        temp.insert(EntityID::from(0_u16), local_addr);
-        temp.insert(EntityID::from(1_u16), remote_addr);
-        temp
-    };
-
-    let local_transport =
-        LossyTransport::try_from((local_udp, entity_map.clone(), TransportIssue::Inactivity))
-            .expect("Unable to Lossy Transport.");
-    let remote_transport =
-        UdpTransport::try_from((remote_udp, entity_map)).expect("Unable to make UdpTransport.");
-
-    let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(0_u16)],
-            Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
-        )]);
-
-    let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(1_u16)],
-            Box::new(local_transport) as Box<dyn PDUTransport + Send>,
-        )]);
-
-    let path = Utf8PathBuf::from(
+    let utf8_path = Utf8PathBuf::from(
         tempdir_fixture
             .path()
             .as_os_str()
             .to_str()
             .expect("Unable to coerce tmp path to String."),
     );
-    let (path, local, remote) = create_daemons(
-        path.as_path(),
-        filestore.clone(),
-        local_transport_map,
-        remote_transport_map,
-        "f2s10_local.socket",
-        "f2s10_remote.socket",
-        terminate.clone(),
-        [Some(1), Some(10), Some(10)],
-    );
-    (path, filestore.clone(), local, remote)
+    let local_path = utf8_path.join("f2s10_local.socket").as_str().to_owned();
+
+    let (local, remote) = block_on!(async {
+        let remote_udp = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("Unable to bind remote UDP.");
+        let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
+
+        let local_udp = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("Unable to bind local UDP.");
+        let local_addr = local_udp.local_addr().expect("Cannot find local address.");
+
+        let entity_map = {
+            let mut temp = HashMap::new();
+            temp.insert(EntityID::from(0_u16), local_addr);
+            temp.insert(EntityID::from(1_u16), remote_addr);
+            temp
+        };
+
+        let local_transport =
+            LossyTransport::try_from((local_udp, entity_map.clone(), TransportIssue::Inactivity))
+                .expect("Unable to Lossy Transport.");
+        let remote_transport =
+            UdpTransport::try_from((remote_udp, entity_map)).expect("Unable to make UdpTransport.");
+
+        let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+            HashMap::from([(
+                vec![EntityID::from(0_u16)],
+                Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
+            )]);
+
+        let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
+            HashMap::from([(
+                vec![EntityID::from(1_u16)],
+                Box::new(local_transport) as Box<dyn PDUTransport + Send>,
+            )]);
+
+        create_daemons(
+            utf8_path.clone().as_path(),
+            filestore.clone(),
+            local_transport_map,
+            remote_transport_map,
+            "f2s10_local.socket",
+            "f2s10_remote.socket",
+            terminate.clone(),
+            [Some(1), Some(10), Some(10)],
+        )
+        .await
+    });
+    (local_path, filestore.clone(), local, remote)
 }
 
 #[rstest]
 #[cfg_attr(target_os = "windows", ignore)]
 #[timeout(Duration::from_secs(5))]
+#[tokio::test(flavor = "multi_thread")]
 // Series F2
 // Sequence 9 Test
 // Test goal:
@@ -1020,10 +1142,12 @@ fn fixture_f2s10(
 //  - Acknowledged
 //  - File Size: Medium
 //  - Drop every PDU but the first from the sender
-fn f2s10(fixture_f2s10: &'static EntityConstructorReturn) {
+async fn f2s10(fixture_f2s10: &'static EntityConstructorReturn) {
     let (local_path, filestore, _local, _remote) = fixture_f2s10;
 
-    let mut user = User::new(Some(local_path)).expect("User Cannot connect to Daemon.");
+    let mut user = User::new(Some(local_path))
+        .await
+        .expect("User Cannot connect to Daemon.");
     let mut user_remote = User::new(Some(
         Utf8Path::new(local_path)
             .parent()
@@ -1031,6 +1155,7 @@ fn f2s10(fixture_f2s10: &'static EntityConstructorReturn) {
             .join("f2s10_remote.socket")
             .as_str(),
     ))
+    .await
     .expect("Cannot connect to remote user.");
 
     let out_file: Utf8PathBuf = "remote/medium_f2s10.txt".into();
@@ -1045,26 +1170,30 @@ fn f2s10(fixture_f2s10: &'static EntityConstructorReturn) {
             filestore_requests: vec![],
             message_to_user: vec![],
         })
+        .await
         .expect("unable to send put request.");
 
     // wait long enough for the nak limit to be reached
     while user_remote
         .report(id)
+        .await
         .expect("Unable to send Report Request.")
         .is_none()
     {
-        thread::sleep(Duration::from_millis(5))
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 
     let mut report = user_remote
         .report(id)
+        .await
         .expect("Unable to send Report Request.")
         .unwrap();
 
     while report.condition != Condition::InactivityDetected {
-        thread::sleep(Duration::from_millis(100));
+        tokio::time::sleep(Duration::from_millis(100)).await;
         report = user_remote
             .report(id)
+            .await
             .expect("Unable to send Report Request.")
             .unwrap();
     }

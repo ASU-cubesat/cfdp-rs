@@ -42,8 +42,8 @@ pub trait PDUTransport {
     /// A transport implementation will send any received messages through the
     /// [Sender] channel to the [Daemon](crate::daemon::Daemon).
     /// The [Receiver] channel is used to recv PDUs from the Daemon and send them to their respective remote Entity.
-    /// The [Daemon](crate::daemon::Daemon) is responsible for receiving messages and ditribute them to each
-    /// [Transaction](crate::transaction::Transaction) as necessary.
+    /// The [Daemon](crate::daemon::Daemon) is responsible for receiving messages and distribute them to each
+    /// transaction [Send](crate::transaction::SendTransaction) or [Recv](crate::transaction::RecvTransaction)
     /// The signal is used to indicate a shutdown operation was requested.
     fn pdu_handler(
         &mut self,

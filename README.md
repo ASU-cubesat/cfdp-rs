@@ -4,8 +4,7 @@
 # cfdp-rs
 This project aims to be a feature-complete, cross-platform, open source Rust implementation of the CCSDS File Delivery Protocol (CFDP).
 
-Currently issues with communcation pipes prevents thorough testing on MacOs and Windows platforms.
-Development is needed on these platforms to validate functionality and improve stability.
+The User interface is left as an application specific implementation with attaches to the underlying Daemon through the `User` trait interface.
 
 # Optional Features
 The following optional features are currently or planned to be impelemented
@@ -15,7 +14,10 @@ The following optional features are currently or planned to be impelemented
 - [ ] Data boundary segmentation
 - [x] Delayed NAK mode
 - [x] Immediate NAK mode
+- [ ] Prompted NAK mode
 - [ ] Asynchronous NAK mode
+
+The Prompt NAK mode is technically implemented for an Acknowledged transaction via the Prompt PDU however currently a RecvTransaction will attempt to send NAKs at other times depending on the configuration.
 
 # Inter-Agency Tests
 This software suite currently implements the following Common Inter-Agency Tests:

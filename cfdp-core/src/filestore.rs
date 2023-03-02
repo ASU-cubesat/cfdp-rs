@@ -1,7 +1,7 @@
 use std::{
     fmt::Write as _Write,
     fs::{self, File, OpenOptions},
-    io::{Error as IOError, ErrorKind, Read, Seek, Write},
+    io::{BufRead, BufReader, Error as IOError, ErrorKind, Read, Seek, Write},
     str::Utf8Error,
     time::{SystemTime, SystemTimeError},
 };
@@ -397,47 +397,63 @@ impl FileStore for NativeFileStore {
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, FromPrimitive, PartialEq, Eq)]
+/// CCSDS enumerated checksum types
 pub enum ChecksumType {
+    /// Turn every 4 bytes into a u32 and accumulate
     Modular = 0,
+    /// This checksum is always 0
     Null = 15,
 }
+
+/// Computes all pre-defined CCSDS checksums
 pub trait FileChecksum {
+    /// Given the input [ChecksumType] compute the appropriate algorithm.
     fn checksum(&mut self, checksum_type: ChecksumType) -> FileStoreResult<u32>;
 }
 
-impl FileChecksum for File {
+impl<R: Read + Seek + ?Sized> FileChecksum for R {
     fn checksum(&mut self, checksum_type: ChecksumType) -> FileStoreResult<u32> {
         match checksum_type {
             ChecksumType::Null => Ok(0_u32),
             ChecksumType::Modular => {
-                let mut checksum = 0_u32;
+                let mut reader = BufReader::new(self);
                 // reset the file pointer to the beginning
-                self.rewind()?;
+                reader.rewind()?;
 
-                loop {
-                    let mut u32_buff = Vec::with_capacity(4);
-                    // this line will take 4 bytes at a time from the file.
-                    // if there are less that 4 bytes left it will right pad the buffer with 0s.
-                    let num_read = Read::take(Read::by_ref(self), 4).read_to_end(&mut u32_buff)?;
-                    match num_read {
+                let mut checksum: u32 = 0;
+                'outer: loop {
+                    // fill_buffer will return an empty slice when EoF is reached
+                    // on the internal Read instance
+                    let buffer = reader.fill_buf()?;
+
+                    if buffer.is_empty() {
                         // if nothing was read break from the loop
-                        0 => break,
-                        // otherwise add the 4 bytes as a u32 to the checksum
-                        num => {
-                            // If the file size is not a multiple of 4
-                            // right pad the final u32 with 0s.
-                            if num < 4 {
-                                u32_buff.resize(4, 0_u8);
-                            }
-                            let val = u32::from_be_bytes([
-                                u32_buff[0],
-                                u32_buff[1],
-                                u32_buff[2],
-                                u32_buff[3],
-                            ]);
-                            (checksum, _) = checksum.overflowing_add(val);
-                        }
+
+                        break 'outer;
                     }
+
+                    // chunks_exact can some times be more efficient than chunks
+                    // we'll have to deal with the remainder anyway.
+                    // Take 4 bytes at a time from the buffer, convert to u32 and add
+                    let mut iter = buffer.chunks_exact(4);
+                    (&mut iter).for_each(|chunk| {
+                        // we can unwrap because we are guaranteed to have a length 4 slice
+                        checksum =
+                            checksum.wrapping_add(u32::from_be_bytes(chunk.try_into().unwrap()));
+                    });
+                    // handle any remainder by resizing to 4-bytes then adding
+                    if !iter.remainder().is_empty() {
+                        let mut remainder = iter.remainder().to_vec();
+                        remainder.resize(4, 0_u8);
+                        // we can unwrap because we are guaranteed to have a length 4 vector
+                        checksum = checksum
+                            .wrapping_add(u32::from_be_bytes(remainder.try_into().unwrap()));
+                    }
+
+                    let len = buffer.len();
+                    // update the internal buffer to let it know
+                    // len bytes were consumed
+                    reader.consume(len);
                 }
                 Ok(checksum)
             }
@@ -693,7 +709,24 @@ f,test.txt,{s5},{t5}
     }
 
     #[rstest]
-    fn checksum(
+    fn checksum_cursor(
+        #[values(ChecksumType::Null, ChecksumType::Modular)] checksum_type: ChecksumType,
+    ) -> FileStoreResult<()> {
+        let file_data: Vec<u8> = vec![0x8a, 0x1b, 0x37, 0x44, 0x78, 0x91, 0xab, 0x03, 0x46, 0x12];
+
+        let expected_checksum = match &checksum_type {
+            ChecksumType::Null => 0_u32,
+            ChecksumType::Modular => 0x48BEE247_u32,
+        };
+
+        let recovered_checksum = std::io::Cursor::new(file_data).checksum(checksum_type)?;
+
+        assert_eq!(expected_checksum, recovered_checksum);
+        Ok(())
+    }
+
+    #[rstest]
+    fn checksum_file(
         test_filestore: &NativeFileStore,
         #[values(ChecksumType::Null, ChecksumType::Modular)] checksum_type: ChecksumType,
     ) -> FileStoreResult<()> {

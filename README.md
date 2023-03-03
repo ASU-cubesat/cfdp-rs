@@ -14,10 +14,10 @@ The following optional features are currently or planned to be impelemented
 - [ ] Data boundary segmentation
 - [x] Delayed NAK mode
 - [x] Immediate NAK mode
-- [ ] Prompted NAK mode
+- [x] Prompted NAK mode
 - [ ] Asynchronous NAK mode
 
-The Prompt NAK mode is technically implemented for an Acknowledged transaction via the Prompt PDU however currently a RecvTransaction will attempt to send NAKs at other times depending on the configuration.
+
 
 # Inter-Agency Tests
 This software suite currently implements the following Common Inter-Agency Tests:

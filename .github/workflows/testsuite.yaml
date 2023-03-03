@@ -56,10 +56,6 @@ jobs:
           override: true
           components: llvm-tools-preview
 
-      - name: Install libudev
-        if: ${{ matrix.os == 'ubuntu' }}
-        run: sudo apt install libudev-dev
-
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 

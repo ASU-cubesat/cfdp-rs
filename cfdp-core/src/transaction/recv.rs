@@ -639,14 +639,29 @@ impl<T: FileStore> RecvTransaction<T> {
             self.nak_received_file_size = self.received_file_size;
         }
 
-        // TODO: do not exceed the maximum size of the PDU if there are many naks (some should be left to be sent next time)
-        let segment_requests = self.naks.drain(..).collect();
+        let n = usize::min(
+            self.naks.len(),
+            NegativeAcknowledgmentPDU::max_nak_num(
+                self.config.file_size_flag,
+                self.config.file_size_segment as u32,
+            ) as usize,
+        );
+
+        let segment_requests: Vec<SegmentRequestForm> = self.naks.drain(..n).collect();
+        let scope_start = segment_requests
+            .first()
+            .map(|sr| sr.start_offset)
+            .unwrap_or(0);
+        let scope_end = segment_requests
+            .last()
+            .map(|sr| sr.end_offset)
+            .unwrap_or(self.received_file_size);
+
         let nak = NegativeAcknowledgmentPDU {
-            start_of_scope: 0_u64,
-            end_of_scope: self.received_file_size,
+            start_of_scope: scope_start,
+            end_of_scope: scope_end,
             segment_requests,
         };
-        self.naks.clear();
 
         let payload = PDUPayload::Directive(Operations::Nak(nak));
         let payload_len = payload.clone().encode(self.config.file_size_flag).len();
@@ -734,7 +749,7 @@ impl<T: FileStore> RecvTransaction<T> {
                 match payload {
                     PDUPayload::FileData(filedata) => {
                         //the end of the last segment
-                        let prev_end = self.saved_segments.last().map(|(_, end)| *end);
+                        let prev_end = self.saved_segments.last().map(|(_, end)| *end).unwrap_or(0);
 
                         let (offset, length) = self.store_file_data(filedata)?;
                         // update the total received size if appropriate.
@@ -747,14 +762,12 @@ impl<T: FileStore> RecvTransaction<T> {
                                 //send all gaps at the next opportunity
                                 self.naks = self.get_all_naks();
                                 self.timer.restart_nak();
-                            } else if let Some(prev_end) = prev_end {
-                                if offset > prev_end {
-                                    //new gap -> send it at the next opportunity
-                                    self.naks.push_back(SegmentRequestForm {
-                                        start_offset: prev_end,
-                                        end_offset: offset,
-                                    });
-                                }
+                            } else if offset > prev_end {
+                                //new gap -> send it at the next opportunity
+                                self.naks.push_back(SegmentRequestForm {
+                                    start_offset: prev_end,
+                                    end_offset: offset,
+                                });
                             }
                         }
                         self.check_finished()?;
@@ -1279,12 +1292,8 @@ mod test {
 
         let pdu = PDU { header, payload };
 
-        // now that naks are created correctly
-        // test the right PDU is sent
-        thread::spawn(move || {
-            transaction.naks = transaction.get_all_naks();
-            transaction.send_naks(&transport_tx).unwrap();
-        });
+        transaction.naks = transaction.get_all_naks();
+        transaction.send_naks(&transport_tx).unwrap();
 
         let (destination_id, received_pdu) = transport_rx.recv().unwrap();
         let expected_id = default_config.source_entity_id;
@@ -1345,14 +1354,12 @@ mod test {
         );
         let pdu = PDU { header, payload };
 
-        thread::spawn(move || {
-            transaction.cancel().unwrap();
+        transaction.cancel().unwrap();
+        if transaction.config.transmission_mode == TransmissionMode::Unacknowledged {
+            assert_eq!(TransactionState::Terminated, transaction.state);
+        }
 
-            if transaction.config.transmission_mode == TransmissionMode::Unacknowledged {
-                assert_eq!(TransactionStatus::Terminated, transaction.status);
-            }
-            transaction.send_pdu(&transport_tx).unwrap();
-        });
+        transaction.send_pdu(&transport_tx).unwrap();
 
         if config.transmission_mode == TransmissionMode::Acknowledged {
             let (destination_id, received_pdu) = transport_rx.recv().unwrap();
@@ -1873,10 +1880,8 @@ mod test {
         );
         let pdu = PDU { header, payload };
 
-        thread::spawn(move || {
-            transaction.process_pdu(pdu).unwrap();
-            assert_eq!(expected, transaction.metadata);
-        });
+        transaction.process_pdu(pdu).unwrap();
+        assert_eq!(expected, transaction.metadata);
 
         let (_, _, user_msg) = message_rx.recv().unwrap();
         assert_eq!(1, user_msg.len());
@@ -1994,7 +1999,7 @@ mod test {
             PDU { header, payload }
         };
 
-        thread::spawn(move || {
+        {
             // this is the whole contents of the file
             transaction.process_pdu(file_pdu).unwrap();
 
@@ -2030,7 +2035,7 @@ mod test {
 
                 assert!(!transaction.timer.ack.is_ticking());
             }
-        });
+        }
 
         // need to get the EoF from Acknowledged mode too.
         if transmission_mode == TransmissionMode::Acknowledged {
@@ -2127,7 +2132,7 @@ mod test {
             NakOrKeepAlive::Nak => {
                 let payload = PDUPayload::Directive(Operations::Nak(NegativeAcknowledgmentPDU {
                     start_of_scope: 0,
-                    end_of_scope: 0,
+                    end_of_scope: 600,
                     segment_requests: vec![SegmentRequestForm {
                         start_offset: 0,
                         end_offset: 600,
@@ -2165,14 +2170,129 @@ mod test {
                 PDU { header, payload }
             }
         };
-        thread::spawn(move || {
-            transaction.process_pdu(prompt_pdu).unwrap();
-            assert!(transaction.has_pdu_to_send());
-            transaction.send_pdu(&transport_tx).unwrap();
-        });
+
+        transaction.process_pdu(prompt_pdu).unwrap();
+        assert!(transaction.has_pdu_to_send());
+        transaction.send_pdu(&transport_tx).unwrap();
 
         let (destination_id, received_pdu) = transport_rx.recv().unwrap();
         assert_eq!(expected_id, destination_id);
         assert_eq!(expected_pdu, received_pdu)
+    }
+
+    #[rstest]
+    fn nak_split(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
+        let (transport_tx, transport_rx) = unbounded();
+        let (message_tx, _) = unbounded();
+        let mut config = default_config.clone();
+        config.file_size_segment = 16;
+        config.transmission_mode = TransmissionMode::Acknowledged;
+
+        let expected_id = config.source_entity_id;
+
+        let filestore = Arc::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        ));
+        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
+        transaction.nak_procedure = NakProcedure::Immediate;
+
+        let file_pdu1 = {
+            let payload = PDUPayload::FileData(FileDataPDU::Unsegmented(UnsegmentedFileData {
+                offset: 16,
+                file_data: vec![0; 16],
+            }));
+            let payload_len = payload
+                .clone()
+                .encode(transaction.config.file_size_flag)
+                .len() as u16;
+            let header = transaction.get_header(
+                Direction::ToReceiver,
+                PDUType::FileData,
+                payload_len,
+                SegmentationControl::NotPreserved,
+            );
+            PDU { header, payload }
+        };
+
+        let file_pdu2 = {
+            let payload = PDUPayload::FileData(FileDataPDU::Unsegmented(UnsegmentedFileData {
+                offset: 48,
+                file_data: vec![0; 16],
+            }));
+            let payload_len = payload
+                .clone()
+                .encode(transaction.config.file_size_flag)
+                .len() as u16;
+            let header = transaction.get_header(
+                Direction::ToReceiver,
+                PDUType::FileData,
+                payload_len,
+                SegmentationControl::NotPreserved,
+            );
+            PDU { header, payload }
+        };
+
+        let expected_nak1 = {
+            let payload = PDUPayload::Directive(Operations::Nak(NegativeAcknowledgmentPDU {
+                start_of_scope: 0,
+                end_of_scope: 16,
+                segment_requests: vec![SegmentRequestForm {
+                    start_offset: 0,
+                    end_offset: 16,
+                }],
+            }));
+
+            let payload_len = payload
+                .clone()
+                .encode(transaction.config.file_size_flag)
+                .len() as u16;
+
+            let header = transaction.get_header(
+                Direction::ToSender,
+                PDUType::FileDirective,
+                payload_len,
+                SegmentationControl::NotPreserved,
+            );
+            PDU { header, payload }
+        };
+
+        let expected_nak2 = {
+            let payload = PDUPayload::Directive(Operations::Nak(NegativeAcknowledgmentPDU {
+                start_of_scope: 32,
+                end_of_scope: 48,
+                segment_requests: vec![SegmentRequestForm {
+                    start_offset: 32,
+                    end_offset: 48,
+                }],
+            }));
+
+            let payload_len = payload
+                .clone()
+                .encode(transaction.config.file_size_flag)
+                .len() as u16;
+
+            let header = transaction.get_header(
+                Direction::ToSender,
+                PDUType::FileDirective,
+                payload_len,
+                SegmentationControl::NotPreserved,
+            );
+            PDU { header, payload }
+        };
+
+        transaction.process_pdu(file_pdu1).unwrap();
+        transaction.process_pdu(file_pdu2).unwrap();
+
+        assert!(transaction.has_pdu_to_send());
+        transaction.send_pdu(&transport_tx).unwrap();
+        assert!(transaction.has_pdu_to_send());
+        transaction.send_pdu(&transport_tx).unwrap();
+
+        let (destination_id, received_pdu) = transport_rx.recv().unwrap();
+        assert_eq!(expected_id, destination_id);
+        assert_eq!(expected_nak1, received_pdu);
+        let (destination_id, received_pdu) = transport_rx.recv().unwrap();
+        assert_eq!(expected_id, destination_id);
+        assert_eq!(expected_nak2, received_pdu)
     }
 }

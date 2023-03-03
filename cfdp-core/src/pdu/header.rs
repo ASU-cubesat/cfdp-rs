@@ -97,6 +97,15 @@ pub enum FileSizeFlag {
     Large = 1,
 }
 
+impl FileSizeFlag {
+    /// returns the size in bytes of the encoded file size (i.e. 4 for small and 8 for large)
+    pub fn encoded_len(&self) -> u32 {
+        match self {
+            FileSizeFlag::Small => 4,
+            FileSizeFlag::Large => 8,
+        }
+    }
+}
 #[repr(u8)]
 #[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum SegmentationControl {

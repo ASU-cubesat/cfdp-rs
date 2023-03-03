@@ -890,6 +890,13 @@ impl FSSEncode for NegativeAcknowledgmentPDU {
     }
 }
 
+impl NegativeAcknowledgmentPDU {
+    /// returns the maximum number of nak segments which can fit into one PDU given the payload length
+    pub fn max_nak_num(file_size_flag: FileSizeFlag, payload_len: u32) -> u32 {
+        (payload_len - 2 * file_size_flag.encoded_len()) / (2 * file_size_flag.encoded_len())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PromptPDU {
     pub nak_or_keep_alive: NakOrKeepAlive,

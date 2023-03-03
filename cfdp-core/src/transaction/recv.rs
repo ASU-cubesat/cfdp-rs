@@ -519,12 +519,12 @@ impl<T: FileStore> RecvTransaction<T> {
     fn send_ack_eof(&mut self, transport_tx: &Sender<(VariableID, PDU)>) -> TransactionResult<()> {
         if let Some(ack) = self.ack.take() {
             let payload = PDUPayload::Directive(Operations::Ack(ack));
-            let payload_len = payload.clone().encode(self.config.file_size_flag).len();
+            let payload_len = payload.get_len(self.config.file_size_flag);
 
             let header = self.get_header(
                 Direction::ToSender,
                 PDUType::FileDirective,
-                payload_len as u16,
+                payload_len,
                 // TODO add semgentation Control ability
                 SegmentationControl::NotPreserved,
             );
@@ -572,7 +572,7 @@ impl<T: FileStore> RecvTransaction<T> {
         if let Some((finished, true)) = &self.finished {
             let payload = PDUPayload::Directive(Operations::Finished(finished.clone()));
 
-            let payload_len = payload.clone().encode(self.config.file_size_flag).len() as u16;
+            let payload_len = payload.get_len(self.config.file_size_flag);
 
             let header = self.get_header(
                 Direction::ToSender,
@@ -664,12 +664,12 @@ impl<T: FileStore> RecvTransaction<T> {
         };
 
         let payload = PDUPayload::Directive(Operations::Nak(nak));
-        let payload_len = payload.clone().encode(self.config.file_size_flag).len();
+        let payload_len = payload.get_len(self.config.file_size_flag);
 
         let header = self.get_header(
             Direction::ToSender,
             PDUType::FileDirective,
-            payload_len as u16,
+            payload_len,
             SegmentationControl::NotPreserved,
         );
         let destination = header.source_entity_id;
@@ -1279,14 +1279,11 @@ mod test {
             segment_requests: expected.into(),
         }));
 
-        let payload_len = payload
-            .clone()
-            .encode(transaction.config.file_size_flag)
-            .len();
+        let payload_len = payload.get_len(transaction.config.file_size_flag);
         let header = transaction.get_header(
             Direction::ToSender,
             PDUType::FileDirective,
-            payload_len as u16,
+            payload_len,
             SegmentationControl::NotPreserved,
         );
 
@@ -1344,12 +1341,12 @@ mod test {
             filestore_response: vec![],
             fault_location: None,
         }));
-        let payload_len = payload.clone().encode(config.file_size_flag).len();
+        let payload_len = payload.get_len(config.file_size_flag);
 
         let header = transaction.get_header(
             Direction::ToSender,
             PDUType::FileDirective,
-            payload_len as u16,
+            payload_len,
             SegmentationControl::NotPreserved,
         );
         let pdu = PDU { header, payload };
@@ -1493,12 +1490,12 @@ mod test {
             transaction_status: transaction.status.clone(),
         }));
 
-        let payload_len = payload.clone().encode(config.file_size_flag).len();
+        let payload_len = payload.get_len(config.file_size_flag);
 
         let header = transaction.get_header(
             Direction::ToSender,
             PDUType::FileDirective,
-            payload_len as u16,
+            payload_len,
             SegmentationControl::NotPreserved,
         );
         let pdu = PDU { header, payload };
@@ -1641,10 +1638,8 @@ mod test {
         });
 
         let payload = PDUPayload::Directive(operation);
-        let payload_len = payload
-            .clone()
-            .encode(transaction.config.file_size_flag)
-            .len() as u16;
+        let payload_len = payload.get_len(transaction.config.file_size_flag);
+
         let header = transaction.get_header(
             Direction::ToReceiver,
             PDUType::FileDirective,
@@ -1728,10 +1723,8 @@ mod test {
         });
 
         let payload = PDUPayload::Directive(operation);
-        let payload_len = payload
-            .clone()
-            .encode(transaction.config.file_size_flag)
-            .len() as u16;
+        let payload_len = payload.get_len(transaction.config.file_size_flag);
+
         let header = transaction.get_header(
             Direction::ToReceiver,
             PDUType::FileDirective,
@@ -1788,10 +1781,8 @@ mod test {
             offset: 12_u64,
             file_data: (0..12_u8).collect::<Vec<u8>>(),
         }));
-        let payload_len = payload
-            .clone()
-            .encode(transaction.config.file_size_flag)
-            .len() as u16;
+        let payload_len = payload.get_len(transaction.config.file_size_flag);
+
         let header = transaction.get_header(
             Direction::ToSender,
             PDUType::FileData,
@@ -1868,10 +1859,8 @@ mod test {
                 MetadataTLV::FileStoreRequest(fs_req),
             ],
         }));
-        let payload_len = payload
-            .clone()
-            .encode(transaction.config.file_size_flag)
-            .len() as u16;
+        let payload_len = payload.get_len(transaction.config.file_size_flag);
+
         let header = transaction.get_header(
             Direction::ToReceiver,
             PDUType::FileDirective,
@@ -1942,10 +1931,8 @@ mod test {
                 offset: 0,
                 file_data: input_data.as_bytes().to_vec(),
             }));
-            let payload_len = payload
-                .clone()
-                .encode(transaction.config.file_size_flag)
-                .len() as u16;
+            let payload_len = payload.get_len(transaction.config.file_size_flag);
+
             let header = transaction.get_header(
                 Direction::ToReceiver,
                 PDUType::FileData,
@@ -1962,10 +1949,8 @@ mod test {
                 file_size: input_data.len() as u64,
                 fault_location: None,
             }));
-            let payload_len = payload
-                .clone()
-                .encode(transaction.config.file_size_flag)
-                .len() as u16;
+            let payload_len = payload.get_len(transaction.config.file_size_flag);
+
             let header = transaction.get_header(
                 Direction::ToReceiver,
                 PDUType::FileDirective,
@@ -1984,10 +1969,7 @@ mod test {
                 fault_location: None,
             }));
 
-            let payload_len = payload
-                .clone()
-                .encode(transaction.config.file_size_flag)
-                .len() as u16;
+            let payload_len = payload.get_len(transaction.config.file_size_flag);
 
             let header = transaction.get_header(
                 Direction::ToSender,
@@ -2018,10 +2000,8 @@ mod test {
                         transaction_status: TransactionStatus::Undefined,
                     }));
 
-                    let payload_len = payload
-                        .clone()
-                        .encode(transaction.config.file_size_flag)
-                        .len() as u16;
+                    let payload_len = payload.get_len(transaction.config.file_size_flag);
+
                     let header = transaction.get_header(
                         Direction::ToReceiver,
                         PDUType::FileDirective,
@@ -2113,10 +2093,7 @@ mod test {
             let payload = PDUPayload::Directive(Operations::Prompt(PromptPDU {
                 nak_or_keep_alive: nak_or_keep_alive.clone(),
             }));
-            let payload_len = payload
-                .clone()
-                .encode(transaction.config.file_size_flag)
-                .len() as u16;
+            let payload_len = payload.get_len(transaction.config.file_size_flag);
 
             let header = transaction.get_header(
                 Direction::ToReceiver,
@@ -2138,10 +2115,7 @@ mod test {
                         end_offset: 600,
                     }],
                 }));
-                let payload_len = payload
-                    .clone()
-                    .encode(transaction.config.file_size_flag)
-                    .len() as u16;
+                let payload_len = payload.get_len(transaction.config.file_size_flag);
 
                 let header = transaction.get_header(
                     Direction::ToSender,
@@ -2155,10 +2129,7 @@ mod test {
             NakOrKeepAlive::KeepAlive => {
                 let payload =
                     PDUPayload::Directive(Operations::KeepAlive(KeepAlivePDU { progress: 0 }));
-                let payload_len = payload
-                    .clone()
-                    .encode(transaction.config.file_size_flag)
-                    .len() as u16;
+                let payload_len = payload.get_len(transaction.config.file_size_flag);
 
                 let header = transaction.get_header(
                     Direction::ToSender,

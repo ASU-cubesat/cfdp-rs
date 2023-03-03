@@ -1463,14 +1463,17 @@ mod test {
             file_status: FileStatusCode::FileStoreRejection
         }
     ))]
-    fn user_op_roundtrip(#[case] expected: UserOperation) {
+    fn user_ops_setup(#[case] expected: UserOperation) {}
+
+    #[apply(user_ops_setup)]
+    fn user_ops_roundtrip(expected: UserOperation) {
         let buffer = expected.clone().encode();
         let recovered = UserOperation::decode(&mut &buffer[..]).unwrap();
 
         assert_eq!(expected, recovered)
     }
 
-    #[apply(user_op_roundtrip)]
+    #[apply(user_ops_setup)]
     fn user_ops_len(expected: UserOperation) {
         assert_eq!(expected.get_len(), expected.encode().len() as u16)
     }

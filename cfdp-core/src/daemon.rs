@@ -95,7 +95,7 @@ impl PutRequest {
             buffer.push(vec.len() as u8);
             buffer.extend_from_slice(vec)
         }
-        buffer.push(self.destination_entity_id.get_len());
+        buffer.push(self.destination_entity_id.get_len() as u8);
         buffer.extend(self.destination_entity_id.to_be_bytes());
 
         buffer.push(self.transmission_mode as u8);

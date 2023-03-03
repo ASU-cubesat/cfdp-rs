@@ -246,6 +246,18 @@ pub struct FileStoreRequest {
 }
 impl PDUEncode for FileStoreRequest {
     type PDUType = Self;
+
+    fn get_len(&self) -> u16 {
+        // action code
+        1_u16
+        // first name 1 + len
+        + 1
+        + self.first_filename.as_str().len() as u16
+        // second name 1 + len
+        + 1
+        + self.second_filename.as_str().len() as u16
+    }
+
     fn encode(self) -> Vec<u8> {
         let first_byte = (self.action_code as u8) << 4;
         let mut buffer = vec![first_byte];
@@ -305,6 +317,21 @@ impl FileStoreResponse {
 }
 impl PDUEncode for FileStoreResponse {
     type PDUType = Self;
+
+    fn get_len(&self) -> u16 {
+        // Status code
+        1
+        // First file name length + name (len of str is bytes)
+        + 1
+        + self.first_filename.as_str().len() as u16
+        // Second file name length + name (len of str is bytes)
+        + 1
+        + self.second_filename.as_str().len() as u16
+        // message len + message
+        + 1
+        + self.filestore_message.len() as u16
+    }
+
     fn encode(self) -> Vec<u8> {
         let mut buffer = vec![self.action_and_status.as_u8()];
 

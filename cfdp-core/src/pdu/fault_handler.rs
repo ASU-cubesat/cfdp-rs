@@ -47,6 +47,10 @@ pub struct FaultHandlerOverride {
 impl PDUEncode for FaultHandlerOverride {
     type PDUType = Self;
 
+    fn get_len(&self) -> u16 {
+        1
+    }
+
     fn encode(self) -> Vec<u8> {
         vec![self.fault_handler_code as u8]
     }

@@ -43,6 +43,19 @@ impl ProxyOperation {
             Self::ProxyPutCancel => MessageType::ProxyPutCancel,
         }
     }
+
+    fn get_len(&self) -> u16 {
+        match self {
+            Self::ProxyPutRequest(inner) => inner.get_len(),
+            Self::ProxyMessageToUser(inner) => inner.get_len(),
+            Self::ProxyFileStoreRequest(inner) => inner.get_len(),
+            Self::ProxyFaultHandlerOverride(inner) => inner.get_len(),
+            Self::ProxyTransmissionMode(inner) => inner.get_len(),
+            Self::ProxyFlowLabel(inner) => inner.get_len(),
+            Self::ProxySegmentationControl(inner) => inner.get_len(),
+            Self::ProxyPutCancel => 1,
+        }
+    }
     fn encode(self) -> Vec<u8> {
         match self {
             Self::ProxyPutRequest(msg) => msg.encode(),
@@ -77,6 +90,16 @@ pub enum UserResponse {
     RemoteSuspend(RemoteSuspendResponse),
 }
 impl UserResponse {
+    pub fn get_len(&self) -> u16 {
+        match self {
+            Self::ProxyPut(inner) => inner.get_len(),
+            Self::ProxyFileStore(inner) => 1 + inner.get_len(),
+            Self::DirectoryListing(inner) => inner.get_len(),
+            Self::RemoteStatusReport(inner) => inner.get_len(),
+            Self::RemoteResume(inner) => inner.get_len(),
+            Self::RemoteSuspend(inner) => inner.get_len(),
+        }
+    }
     pub fn get_message_type(&self) -> MessageType {
         match self {
             Self::ProxyPut(_) => MessageType::ProxyPutResponse,
@@ -111,6 +134,14 @@ pub enum UserRequest {
     RemoteResume(RemoteResumeRequest),
 }
 impl UserRequest {
+    pub fn get_len(&self) -> u16 {
+        match self {
+            Self::DirectoryListing(inner) => inner.get_len(),
+            Self::RemoteStatusReport(inner) => inner.get_len(),
+            Self::RemoteSuspend(inner) => inner.get_len(),
+            Self::RemoteResume(inner) => inner.get_len(),
+        }
+    }
     pub fn get_message_type(&self) -> MessageType {
         match self {
             Self::DirectoryListing(_) => MessageType::DirectoryListingRequest,
@@ -169,6 +200,24 @@ impl UserOperation {
 }
 impl PDUEncode for UserOperation {
     type PDUType = Self;
+
+    fn get_len(&self) -> u16 {
+        USER_OPS_IDENTIFIER.len() as u16
+            + 1
+            + match self {
+                Self::OriginatingTransactionIDMessage(inner) => inner.get_len(),
+                Self::ProxyOperation(inner) => inner.get_len(),
+                Self::Response(inner) => inner.get_len(),
+                Self::Request(inner) => inner.get_len(),
+                Self::SFORequest(inner) => inner.get_len(),
+                Self::SFOMessageToUser(inner) => inner.get_len(),
+                Self::SFOFlowLabel(inner) => inner.get_len(),
+                Self::SFOFaultHandlerOverride(inner) => inner.get_len(),
+                Self::SFOFileStoreRequest(inner) => inner.get_len(),
+                Self::SFOFileStoreResponse(inner) => inner.get_len(),
+                Self::SFOReport(inner) => inner.get_len(),
+            }
+    }
     fn encode(self) -> Vec<u8> {
         let mut buffer: Vec<u8> = USER_OPS_IDENTIFIER.to_vec();
         buffer.push(self.get_message_type() as u8);
@@ -320,11 +369,16 @@ pub struct OriginatingTransactionIDMessage {
 }
 impl PDUEncode for OriginatingTransactionIDMessage {
     type PDUType = Self;
+
+    fn get_len(&self) -> u16 {
+        1 + self.source_entity_id.get_len() + self.transaction_sequence_number.get_len()
+    }
+
     fn encode(self) -> Vec<u8> {
         let mut buffer: Vec<u8> = vec![];
 
-        let first_byte = (((self.source_entity_id.get_len() - 1u8) & 0x3) << 4)
-            | ((self.transaction_sequence_number.get_len() - 1u8) & 0x3);
+        let first_byte = (((self.source_entity_id.get_len() as u8 - 1u8) & 0x3) << 4)
+            | ((self.transaction_sequence_number.get_len() as u8 - 1u8) & 0x3);
         buffer.push(first_byte);
 
         buffer.extend(self.source_entity_id.to_be_bytes());
@@ -366,8 +420,16 @@ pub struct ProxyPutRequest {
 }
 impl PDUEncode for ProxyPutRequest {
     type PDUType = Self;
+
+    fn get_len(&self) -> u16 {
+        1 + self.destination_entity_id.get_len()
+            + 1
+            + self.source_filename.as_str().len() as u16
+            + 1
+            + self.destination_filename.as_str().len() as u16
+    }
     fn encode(self) -> Vec<u8> {
-        let mut buffer = vec![self.destination_entity_id.get_len()];
+        let mut buffer = vec![self.destination_entity_id.get_len() as u8];
         buffer.extend(self.destination_entity_id.to_be_bytes());
 
         let source_name = self.source_filename.as_str().as_bytes();
@@ -404,6 +466,11 @@ pub struct ProxyPutResponse {
 }
 impl PDUEncode for ProxyPutResponse {
     type PDUType = Self;
+
+    fn get_len(&self) -> u16 {
+        1
+    }
+
     fn encode(self) -> Vec<u8> {
         let byte = ((self.condition as u8) << 4)
             | ((self.delivery_code as u8) << 2)
@@ -447,6 +514,11 @@ pub struct ProxySegmentationControl {
 }
 impl PDUEncode for ProxySegmentationControl {
     type PDUType = Self;
+
+    fn get_len(&self) -> u16 {
+        1
+    }
+
     fn encode(self) -> Vec<u8> {
         vec![self.control as u8]
     }
@@ -471,6 +543,12 @@ pub struct DirectoryListingRequest {
 }
 impl PDUEncode for DirectoryListingRequest {
     type PDUType = Self;
+
+    fn get_len(&self) -> u16 {
+        1 + self.directory_name.as_str().len() as u16
+            + 1
+            + self.directory_filename.as_str().len() as u16
+    }
     fn encode(self) -> Vec<u8> {
         let dir_name = self.directory_name.as_str().as_bytes();
         let mut buffer = vec![dir_name.len() as u8];
@@ -510,6 +588,13 @@ pub struct DirectoryListingResponse {
 }
 impl PDUEncode for DirectoryListingResponse {
     type PDUType = Self;
+
+    fn get_len(&self) -> u16 {
+        1 + 1
+            + self.directory_name.as_str().len() as u16
+            + 1
+            + self.directory_filename.as_str().len() as u16
+    }
 
     fn encode(self) -> Vec<u8> {
         let mut buffer = vec![self.response_code as u8];
@@ -555,11 +640,18 @@ pub struct RemoteStatusReportRequest {
 impl PDUEncode for RemoteStatusReportRequest {
     type PDUType = Self;
 
+    fn get_len(&self) -> u16 {
+        1 + self.source_entity_id.get_len()
+            + self.transaction_sequence_number.get_len()
+            + 1
+            + self.report_filename.as_str().len() as u16
+    }
+
     fn encode(self) -> Vec<u8> {
         let mut buffer: Vec<u8> = vec![];
 
-        let first_byte = (((self.source_entity_id.get_len() - 1u8) & 0x3) << 4)
-            | ((self.transaction_sequence_number.get_len() - 1u8) & 0x3);
+        let first_byte = (((self.source_entity_id.get_len() as u8 - 1u8) & 0x3) << 4)
+            | ((self.transaction_sequence_number.get_len() as u8 - 1u8) & 0x3);
         buffer.push(first_byte);
 
         buffer.extend(self.source_entity_id.to_be_bytes());
@@ -612,14 +704,18 @@ pub struct RemoteStatusReportResponse {
 impl PDUEncode for RemoteStatusReportResponse {
     type PDUType = Self;
 
+    fn get_len(&self) -> u16 {
+        1 + 1 + self.source_entity_id.get_len() + self.transaction_sequence_number.get_len()
+    }
+
     fn encode(self) -> Vec<u8> {
         let mut buffer: Vec<u8> = vec![];
 
         let first_byte: u8 = ((self.transaction_status as u8) << 6) | (self.response_code as u8);
         buffer.push(first_byte);
 
-        let second_byte = (((self.source_entity_id.get_len() - 1u8) & 0x3) << 4)
-            | ((self.transaction_sequence_number.get_len() - 1u8) & 0x3);
+        let second_byte = (((self.source_entity_id.get_len() as u8 - 1u8) & 0x3) << 4)
+            | ((self.transaction_sequence_number.get_len() as u8 - 1u8) & 0x3);
         buffer.push(second_byte);
 
         buffer.extend(self.source_entity_id.to_be_bytes());
@@ -675,11 +771,15 @@ pub struct RemoteSuspendRequest {
 impl PDUEncode for RemoteSuspendRequest {
     type PDUType = Self;
 
+    fn get_len(&self) -> u16 {
+        1 + self.source_entity_id.get_len() + self.transaction_sequence_number.get_len()
+    }
+
     fn encode(self) -> Vec<u8> {
         let mut buffer: Vec<u8> = vec![];
 
-        let first_byte = (((self.source_entity_id.get_len() - 1u8) & 0x3) << 4)
-            | ((self.transaction_sequence_number.get_len() - 1u8) & 0x3);
+        let first_byte = (((self.source_entity_id.get_len() as u8 - 1u8) & 0x3) << 4)
+            | ((self.transaction_sequence_number.get_len() as u8 - 1u8) & 0x3);
         buffer.push(first_byte);
 
         buffer.extend(self.source_entity_id.to_be_bytes());
@@ -725,6 +825,10 @@ pub struct RemoteSuspendResponse {
 impl PDUEncode for RemoteSuspendResponse {
     type PDUType = Self;
 
+    fn get_len(&self) -> u16 {
+        1 + 1 + self.transaction_sequence_number.get_len() + self.source_entity_id.get_len()
+    }
+
     fn encode(self) -> Vec<u8> {
         let mut buffer: Vec<u8> = vec![];
 
@@ -732,8 +836,8 @@ impl PDUEncode for RemoteSuspendResponse {
             ((self.suspend_indication as u8) << 7) | ((self.transaction_status as u8) << 5);
         buffer.push(first_byte);
 
-        let second_byte = (((self.source_entity_id.get_len() - 1u8) & 0x3) << 4)
-            | ((self.transaction_sequence_number.get_len() - 1u8) & 0x3);
+        let second_byte = (((self.source_entity_id.get_len() as u8 - 1u8) & 0x3) << 4)
+            | ((self.transaction_sequence_number.get_len() as u8 - 1u8) & 0x3);
         buffer.push(second_byte);
 
         buffer.extend(self.source_entity_id.to_be_bytes());
@@ -788,11 +892,15 @@ pub struct RemoteResumeRequest {
 impl PDUEncode for RemoteResumeRequest {
     type PDUType = Self;
 
+    fn get_len(&self) -> u16 {
+        1 + self.source_entity_id.get_len() + self.transaction_sequence_number.get_len()
+    }
+
     fn encode(self) -> Vec<u8> {
         let mut buffer: Vec<u8> = vec![];
 
-        let first_byte = (((self.source_entity_id.get_len() - 1u8) & 0x3) << 4)
-            | ((self.transaction_sequence_number.get_len() - 1u8) & 0x3);
+        let first_byte = (((self.source_entity_id.get_len() as u8 - 1u8) & 0x3) << 4)
+            | ((self.transaction_sequence_number.get_len() as u8 - 1u8) & 0x3);
         buffer.push(first_byte);
 
         buffer.extend(self.source_entity_id.to_be_bytes());
@@ -837,6 +945,10 @@ pub struct RemoteResumeResponse {
 impl PDUEncode for RemoteResumeResponse {
     type PDUType = Self;
 
+    fn get_len(&self) -> u16 {
+        1 + 1 + self.source_entity_id.get_len() + self.transaction_sequence_number.get_len()
+    }
+
     fn encode(self) -> Vec<u8> {
         let mut buffer: Vec<u8> = vec![];
 
@@ -844,8 +956,8 @@ impl PDUEncode for RemoteResumeResponse {
             ((self.suspend_indication as u8) << 7) | ((self.transaction_status as u8) << 5);
         buffer.push(first_byte);
 
-        let second_byte = (((self.source_entity_id.get_len() - 1u8) & 0x3) << 4)
-            | ((self.transaction_sequence_number.get_len() - 1u8) & 0x3);
+        let second_byte = (((self.source_entity_id.get_len() as u8 - 1u8) & 0x3) << 4)
+            | ((self.transaction_sequence_number.get_len() as u8 - 1u8) & 0x3);
         buffer.push(second_byte);
 
         buffer.extend(self.source_entity_id.to_be_bytes());
@@ -906,6 +1018,23 @@ pub struct SFORequest {
 }
 impl PDUEncode for SFORequest {
     type PDUType = Self;
+
+    fn get_len(&self) -> u16 {
+        // trace control, transmission mode, segment mode and closure reques
+        1
+        // prior way points
+        + 1
+        // request label len + message
+        + 1 + self.request_label.len() as u16
+        // source entity id len + val
+        + 1 + self.source_entity_id.len() as u16
+        // destination entity id len + val
+        + 1 + self.destination_entity_id.len() as u16
+        // source filename len + val
+        + 1 + self.source_filename.len() as u16
+        // destination filename len + val
+        + 1 + self.destination_filename.len() as u16
+    }
 
     fn encode(self) -> Vec<u8> {
         // trace control flag is a u2 but haven't seen a definition of it yet
@@ -998,6 +1127,23 @@ pub struct SFOReport {
 }
 impl PDUEncode for SFOReport {
     type PDUType = Self;
+
+    fn get_len(&self) -> u16 {
+        // label len + message
+        1 + self.request_label.len() as u16
+        // source entity id len + valu
+        + 1 + self.source_entity_id.len() as u16
+        // destination entity id len + valu
+        + 1 + self.destination_entity_id.len() as u16
+        // reporting entity id len + valu
+        + 1 + self.reporting_entity_id.len() as u16
+        // prior waypoints
+        + 1
+        // report code
+        + 1
+        // condition, direction, code, status
+        + 1
+    }
 
     fn encode(self) -> Vec<u8> {
         let mut buffer = vec![self.request_label.len() as u8];

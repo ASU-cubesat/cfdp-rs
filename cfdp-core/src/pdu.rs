@@ -22,6 +22,15 @@ pub enum PDUPayload {
     FileData(FileDataPDU),
 }
 impl PDUPayload {
+    /// computes the total length of the payload without additional encoding/copying
+    pub fn get_len(&self, file_size_flag: FileSizeFlag) -> u16 {
+        match self {
+            Self::Directive(operation) => operation.get_len(file_size_flag),
+            Self::FileData(file_data) => file_data.get_len(file_size_flag),
+        }
+    }
+
+    /// Encodes the payload to a byte stream
     pub fn encode(self, file_size_flag: FileSizeFlag) -> Vec<u8> {
         match self {
             Self::Directive(operation) => operation.encode(file_size_flag),
@@ -29,6 +38,7 @@ impl PDUPayload {
         }
     }
 
+    /// Decodes from an input bytestream
     pub fn decode<T: std::io::Read>(
         buffer: &mut T,
         pdu_type: PDUType,
@@ -55,6 +65,10 @@ pub struct PDU {
 }
 impl PDUEncode for PDU {
     type PDUType = Self;
+
+    fn get_len(&self) -> u16 {
+        self.header.get_len() + self.payload.get_len(self.header.large_file_flag)
+    }
 
     fn encode(self) -> Vec<u8> {
         let crc_flag = self.header.crc_flag;
@@ -144,6 +158,8 @@ fn crc16(in_char: u16, crc: u16) -> u16 {
 mod test {
     use super::*;
 
+    use crate::{filestore::ChecksumType, pdu::header::NakOrKeepAlive};
+
     use rstest::rstest;
 
     #[rstest]
@@ -158,6 +174,168 @@ mod test {
     fn crc16(#[case] input: &[u8], #[case] expected: u16) {
         let recovered = crc16_ibm_3740(input);
         assert_eq!(expected, recovered)
+    }
+
+    #[rstest]
+    #[case(PDUPayload::Directive(Operations::EoF(EndOfFile{
+        condition: Condition::NoError,
+        checksum: 13_u32,
+        file_size: 12_u64,
+        fault_location: None,
+    })))]
+    #[case(PDUPayload::Directive(Operations::EoF(EndOfFile{
+        condition: Condition::NoError,
+        checksum: 13_u32,
+        file_size: 12_u64,
+        fault_location: Some(VariableID::from(1_u8)),
+    })))]
+    #[case(PDUPayload::Directive(Operations::EoF(EndOfFile{
+        condition: Condition::NoError,
+        checksum: 13_u32,
+        file_size: 12_u64,
+        fault_location: Some(VariableID::from(15_u16)),
+    })))]
+    #[case(PDUPayload::Directive(Operations::EoF(EndOfFile{
+        condition: Condition::NoError,
+        checksum: 13_u32,
+        file_size: 12_u64,
+        fault_location: Some(VariableID::from(15_u32)),
+    })))]
+    #[case(PDUPayload::Directive(Operations::EoF(EndOfFile{
+        condition: Condition::NoError,
+        checksum: 13_u32,
+        file_size: 12_u64,
+        fault_location: Some(VariableID::from(15_u64)),
+    })))]
+    #[case(PDUPayload::Directive(Operations::Finished(Finished {
+        condition: Condition::NoError,
+        delivery_code: DeliveryCode::Complete,
+        file_status: FileStatusCode::Retained,
+        filestore_response: vec![],
+        fault_location: None
+    })))]
+    #[case(PDUPayload::Directive(Operations::Finished(Finished {
+        condition: Condition::NoError,
+        delivery_code: DeliveryCode::Complete,
+        file_status: FileStatusCode::Retained,
+        filestore_response: vec![],
+        fault_location: Some(VariableID::from(12_u16))
+    })))]
+    #[case(PDUPayload::Directive(Operations::Finished(Finished {
+        condition: Condition::NoError,
+        delivery_code: DeliveryCode::Complete,
+        file_status: FileStatusCode::Retained,
+        filestore_response: vec![
+            FileStoreResponse {
+                action_and_status: FileStoreStatus::CreateFile(CreateFileStatus::Successful),
+                first_filename: "test".into(),
+                second_filename: "".into(),
+                filestore_message: "some message here".into(),
+            }
+        ],
+        fault_location: None
+    })))]
+    #[case(PDUPayload::Directive(Operations::Finished(Finished {
+        condition: Condition::NoError,
+        delivery_code: DeliveryCode::Complete,
+        file_status: FileStatusCode::Retained,
+        filestore_response: vec![
+            FileStoreResponse {
+                action_and_status: FileStoreStatus::CreateFile(CreateFileStatus::Successful),
+                first_filename: "test".into(),
+                second_filename: "".into(),
+                filestore_message: "some message here".into(),
+            },
+            FileStoreResponse {
+                action_and_status: FileStoreStatus::AppendFile(AppendStatus::Successful),
+                first_filename: "the_long_filename".into(),
+                second_filename: "The second longer name".into(),
+                filestore_message: "A very detailed message indeed".into(),
+            }
+        ],
+        fault_location: Some(VariableID::from(55_u64))
+    })))]
+    #[case(PDUPayload::Directive(
+        Operations::Ack(AckPDU{
+            directive: PDUDirective::EoF,
+            directive_subtype_code: ACKSubDirective::Other,
+            condition: Condition::NoError,
+            transaction_status: TransactionStatus::Unrecognized,
+        })
+
+    ))]
+    #[case(PDUPayload::Directive(
+        Operations::Metadata(
+            MetadataPDU {
+                closure_requested: true,
+                checksum_type: ChecksumType::Modular,
+                file_size: 55_u64,
+                source_filename: "the input filename".into(),
+                destination_filename: "the output filename".into(),
+                options: vec![
+                    MetadataTLV::FlowLabel(FlowLabel{ value: vec![1, 2, 3] }),
+                    MetadataTLV::FaultHandlerOverride(FaultHandlerOverride { fault_handler_code: HandlerCode::NoticeOfSuspension })
+
+                ]
+            }
+        )
+
+    ))]
+    #[case(PDUPayload::Directive(
+        Operations::Nak(
+            NakPDU {
+                start_of_scope: 12_u64,
+                end_of_scope: 239585_u64,
+                segment_requests: vec![
+                    SegmentRequestForm{
+                        start_offset:12,
+                        end_offset: 64
+                    },
+                    SegmentRequestForm{
+                        start_offset: 69,
+                        end_offset: 4758
+                    }
+                ]
+            }
+        )
+
+    ))]
+    #[case(PDUPayload::Directive(Operations::Prompt(
+        PromptPDU{
+            nak_or_keep_alive: NakOrKeepAlive::Nak
+        }
+    )))]
+    #[case(PDUPayload::Directive(Operations::KeepAlive(
+        KeepAlivePDU{
+            progress: 184
+        }
+    )))]
+    #[case(PDUPayload::FileData(
+        FileDataPDU::Unsegmented(
+            UnsegmentedFileData {
+                offset: 948,
+                file_data: (0..12).collect()
+            }
+        )
+    ))]
+    #[case(PDUPayload::FileData(
+        FileDataPDU::Segmented(
+            SegmentedFileData {
+                record_continuation_state: RecordContinuationState::First,
+                segment_metadata: (0..50).step_by(2).collect(),
+                offset: 757,
+                file_data: (33..57).step_by(7).collect(),
+            }
+        )
+    ))]
+    fn pdu_len(
+        #[case] payload: PDUPayload,
+        #[values(FileSizeFlag::Small, FileSizeFlag::Large)] file_size_flag: FileSizeFlag,
+    ) {
+        assert_eq!(
+            payload.get_len(file_size_flag),
+            payload.encode(file_size_flag).len() as u16,
+        )
     }
 
     #[rstest]

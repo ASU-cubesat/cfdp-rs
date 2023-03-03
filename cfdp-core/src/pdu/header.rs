@@ -63,6 +63,10 @@ pub enum TransmissionMode {
 impl PDUEncode for TransmissionMode {
     type PDUType = Self;
 
+    fn get_len(&self) -> u16 {
+        1
+    }
+
     fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
         let mut u8_buff = [0u8; 1];
         buffer.read_exact(&mut u8_buff)?;
@@ -184,20 +188,38 @@ pub enum MessageType {
     SFOFileStoreResponse = 0x46,
 }
 
+/// Provides utility functions for encoding and decoding byte streams
 pub trait PDUEncode {
     type PDUType;
+    /// Gets the encoded length must fit in a u16 for PDUs
+    fn get_len(&self) -> u16;
+
+    /// Encodes the PDU to a byte stream
     fn encode(self) -> Vec<u8>;
+
+    /// Attempts to decode a PDU from a byte stream
     fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType>;
 }
 
+/// Provides utility functions for encoding and decoding byte streams
+/// For PDUs which require knowledge of the file size
 pub trait FSSEncode {
     type PDUType;
+
+    /// Gets the encoded length must fit in a u16 for PDUs
+    fn get_len(&self, file_size_flag: FileSizeFlag) -> u16;
+
+    /// Encodes the PDU to a byte stream
     fn encode(self, file_size_flag: FileSizeFlag) -> Vec<u8>;
+
+    /// Attempts to decode a PDU from a byte stream
     fn decode<T: Read>(buffer: &mut T, file_size_flag: FileSizeFlag) -> PDUResult<Self::PDUType>;
 }
 
 pub trait SegmentEncode {
     type PDUType;
+
+    fn get_len(&self, file_size_flag: FileSizeFlag) -> u16;
     fn encode(self, file_size_flag: FileSizeFlag) -> Vec<u8>;
     fn decode<T: Read>(
         buffer: &mut T,
@@ -224,6 +246,18 @@ pub struct PDUHeader {
 impl PDUEncode for PDUHeader {
     type PDUType = Self;
 
+    fn get_len(&self) -> u16 {
+        // version, type, direction, mode, crc_flag, file size
+        1 +
+            // pdu data length
+            2
+            // segmentation control, entity ID len, segment metadata flag, sequence_number len
+            + 1
+            + self.source_entity_id.get_len()
+            + self.transaction_sequence_number.get_len()
+            + self.destination_entity_id.get_len()
+    }
+
     fn encode(self) -> Vec<u8> {
         let first_byte = ((self.version as u8) << 5)
             | ((self.pdu_type as u8) << 4)
@@ -239,9 +273,9 @@ impl PDUEncode for PDUHeader {
         });
         buffer.push(
             ((self.segmentation_control as u8) << 7)
-                | ((self.source_entity_id.get_len() - 1) << 4)
+                | ((self.source_entity_id.get_len() as u8 - 1) << 4)
                 | ((self.segment_metadata_flag as u8) << 3)
-                | (self.transaction_sequence_number.get_len() - 1),
+                | (self.transaction_sequence_number.get_len() as u8 - 1),
         );
         buffer.extend(self.source_entity_id.to_be_bytes());
         buffer.extend(self.transaction_sequence_number.to_be_bytes());

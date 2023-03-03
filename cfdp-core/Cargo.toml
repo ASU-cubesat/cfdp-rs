@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-uart = ["serialport"]
 ipc = ["interprocess"]
 
 
@@ -18,7 +17,6 @@ log = '~0.4'
 num-derive = "0.3"
 num-traits = "0.2"
 pathdiff = "~0.2"
-serialport = { version = "~4.2", optional = true }
 tempfile = "~3.3"
 thiserror = "~1.0"
 

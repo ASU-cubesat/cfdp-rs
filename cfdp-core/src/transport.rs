@@ -12,20 +12,8 @@ use std::{
 
 use crossbeam_channel::{Receiver, Sender};
 use log::error;
-#[cfg(feature = "uart")]
-use serialport::{Error as SerialError, SerialPort};
-use thiserror::Error;
 
 use crate::pdu::{PDUEncode, VariableID, PDU};
-
-#[derive(Error, Debug)]
-pub enum TransportError {
-    #[error("IO error during transport operation: {0}")]
-    Io(#[from] IoError),
-    #[cfg(feature = "uart")]
-    #[cfg_attr(feature = "uart", error("Serial port communcation error {0:}"))]
-    Serial(#[from] SerialError),
-}
 
 /// Transports are designed to run in a thread in the background
 /// inside a [Daemon](crate::daemon::Daemon) process
@@ -148,62 +136,6 @@ impl PDUTransport for UdpTransport {
             };
             thread::sleep(Duration::from_micros(500))
         }
-        Ok(())
-    }
-}
-
-#[cfg(feature = "uart")]
-impl<T: SerialPort> PDUTransport for T {
-    fn is_ready(&self) -> bool {
-        true
-    }
-
-    fn request(&mut self, _destination: VariableID, pdu: PDU) -> Result<(), IoError> {
-        self.write_all(pdu.encode().as_slice())
-    }
-
-    fn pdu_handler(
-        &mut self,
-        signal: Arc<AtomicBool>,
-        sender: Sender<PDU>,
-        recv: Receiver<(VariableID, PDU)>,
-    ) -> Result<(), IoError> {
-        while !signal.load(Ordering::Relaxed) {
-            // if there is anything in the read channel
-            // read one PDU at a time
-            // This gives a chance to send too without blocking
-            // if incoming data is persistent
-            if self.bytes_to_read()? > 0 {
-                match PDU::decode(self) {
-                    Ok(pdu) => {
-                        match sender.send(pdu) {
-                            Ok(()) => {}
-                            Err(error) => {
-                                error!("Transport found disconnect sending channel: {}", error);
-                                return Err(IoError::from(ErrorKind::ConnectionAborted));
-                            }
-                        };
-                    }
-                    Err(error) => {
-                        error!("Error decoding PDU: {}", error);
-                        // might need to stop depending on the error.
-                        // some are recoverable though
-                    }
-                }
-            };
-            match recv.try_recv() {
-                Ok((_entity, pdu)) => self.request(_entity, pdu)?,
-                Err(crossbeam_channel::TryRecvError::Empty) => {
-                    // nothing to do here
-                }
-                Err(err @ crossbeam_channel::TryRecvError::Disconnected) => {
-                    error!("Transport found disconnected channel: {}", err);
-                    return Err(IoError::from(ErrorKind::ConnectionAborted));
-                }
-            };
-            thread::sleep(Duration::from_micros(500))
-        }
-
         Ok(())
     }
 }

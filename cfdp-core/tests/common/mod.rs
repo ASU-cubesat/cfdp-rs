@@ -15,7 +15,7 @@ use std::{
 
 use camino::Utf8PathBuf;
 use cfdp_core::{
-    daemon::{Daemon, EntityConfig, PutRequest, Report, UserPrimitive, NakProcedure},
+    daemon::{Daemon, EntityConfig, NakProcedure, PutRequest, Report, UserPrimitive},
     filestore::{ChecksumType, FileStore, NativeFileStore},
     pdu::{
         CRCFlag, Condition, EntityID, FaultHandlerAction, PDUDirective, PDUEncode, PDUPayload,

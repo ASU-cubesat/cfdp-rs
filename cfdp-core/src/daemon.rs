@@ -341,7 +341,7 @@ impl Report {
 }
 
 /// The way the Nak procedure is implemented is the following:
-///  - In Immediate mode, upon reception of each file data PDU, if the received segment is at the end of the file and there is a gab
+///  - In Immediate mode, upon reception of each file data PDU, if the received segment is at the end of the file and there is a gap
 ///    between the previously received segment and the new segment, a nak is sent with the new gap.
 ///    If the NAK timer has timed out, the nak sent covers the gaps from the entire file, not only the last gap.
 ///    After the EOF is received, the procedure is the same as in deferred mode.

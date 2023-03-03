@@ -10,6 +10,11 @@ pub mod user;
 // Re-exported for convenience
 pub use crossbeam_channel::{Receiver, Sender, TryRecvError};
 
+// this import is necessary for the template macro in rstest_reuse as of v0.5.0
+#[cfg(test)]
+#[cfg_attr(test, allow(clippy::single_component_path_imports))]
+use rstest_reuse;
+
 #[cfg(test)]
 mod tests {
 

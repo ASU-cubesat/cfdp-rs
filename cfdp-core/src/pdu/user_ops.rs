@@ -32,14 +32,12 @@ impl ProxyOperation {
     pub fn get_message_type(&self) -> MessageType {
         match self {
             Self::ProxyPutRequest(_) => MessageType::ProxyPutRequest,
-            // Self::ProxyPutResponse(_) => MessageType::ProxyPutResponse,
             Self::ProxyMessageToUser(_) => MessageType::ProxyMessageToUser,
             Self::ProxyFileStoreRequest(_) => MessageType::ProxyFileStoreRequest,
             Self::ProxyFaultHandlerOverride(_) => MessageType::ProxyFaultHandlerOverride,
             Self::ProxyTransmissionMode(_) => MessageType::ProxyTransmissionMode,
             Self::ProxyFlowLabel(_) => MessageType::ProxyFlowLabel,
             Self::ProxySegmentationControl(_) => MessageType::ProxySegmentationControl,
-            // Self::ProxyFileStoreResponse(_) => MessageType::ProxyFileStoreResponse,
             Self::ProxyPutCancel => MessageType::ProxyPutCancel,
         }
     }
@@ -48,29 +46,24 @@ impl ProxyOperation {
         match self {
             Self::ProxyPutRequest(inner) => inner.get_len(),
             Self::ProxyMessageToUser(inner) => inner.get_len(),
-            Self::ProxyFileStoreRequest(inner) => inner.get_len(),
+            // add one here to account for the len field
+            Self::ProxyFileStoreRequest(inner) => 1 + inner.get_len(),
             Self::ProxyFaultHandlerOverride(inner) => inner.get_len(),
             Self::ProxyTransmissionMode(inner) => inner.get_len(),
             Self::ProxyFlowLabel(inner) => inner.get_len(),
             Self::ProxySegmentationControl(inner) => inner.get_len(),
-            Self::ProxyPutCancel => 1,
+            Self::ProxyPutCancel => 0,
         }
     }
     fn encode(self) -> Vec<u8> {
         match self {
             Self::ProxyPutRequest(msg) => msg.encode(),
-            // Self::ProxyPutResponse(msg) => msg.encode(),
             Self::ProxyMessageToUser(msg) => msg.encode(),
             Self::ProxyFileStoreRequest(msg) => {
                 let mut bytes = msg.encode();
                 bytes.insert(0, bytes.len() as u8);
                 bytes
             }
-            // Self::ProxyFileStoreResponse(msg) => {
-            //     let mut bytes = msg.encode();
-            //     bytes.insert(0, bytes.len() as u8);
-            //     bytes
-            // }
             Self::ProxyFaultHandlerOverride(msg) => msg.encode(),
             Self::ProxyTransmissionMode(msg) => msg.encode(),
             Self::ProxyFlowLabel(msg) => msg.encode(),
@@ -213,8 +206,10 @@ impl PDUEncode for UserOperation {
                 Self::SFOMessageToUser(inner) => inner.get_len(),
                 Self::SFOFlowLabel(inner) => inner.get_len(),
                 Self::SFOFaultHandlerOverride(inner) => inner.get_len(),
-                Self::SFOFileStoreRequest(inner) => inner.get_len(),
-                Self::SFOFileStoreResponse(inner) => inner.get_len(),
+                // add one to accound for the length field
+                Self::SFOFileStoreRequest(inner) => 1 + inner.get_len(),
+                // add one to accound for the length field
+                Self::SFOFileStoreResponse(inner) => 1 + inner.get_len(),
                 Self::SFOReport(inner) => inner.get_len(),
             }
     }
@@ -1231,6 +1226,7 @@ mod test {
     };
 
     use rstest::rstest;
+    use rstest_reuse::{self, template, *};
 
     #[rstest]
     #[case((0..5).collect(), vec![1u8, 3, 5, 7, 9], 3475392u32.to_be_bytes().to_vec(), 1948582103u64.to_be_bytes().to_vec(), 5, 255, Direction::ToReceiver, DeliveryCode::Complete,)]
@@ -1284,6 +1280,7 @@ mod test {
         )
     }
 
+    #[template]
     #[rstest]
     #[case::transaction_id(UserOperation::OriginatingTransactionIDMessage(
         OriginatingTransactionIDMessage{
@@ -1471,5 +1468,10 @@ mod test {
         let recovered = UserOperation::decode(&mut &buffer[..]).unwrap();
 
         assert_eq!(expected, recovered)
+    }
+
+    #[apply(user_op_roundtrip)]
+    fn user_ops_len(expected: UserOperation) {
+        assert_eq!(expected.get_len(), expected.encode().len() as u16)
     }
 }

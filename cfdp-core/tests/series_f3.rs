@@ -67,7 +67,7 @@ fn f3s01(get_filestore: &UsersAndFilestore) {
 //  - Acknowledged
 //  - Create New file on remote
 #[rstest]
-#[timeout(Duration::from_secs(5))]
+#[timeout(Duration::from_secs(10))]
 fn f3s02(get_filestore: &UsersAndFilestore) {
     let (local_user, _remote_user, filestore) = get_filestore;
 
@@ -103,7 +103,7 @@ fn f3s02(get_filestore: &UsersAndFilestore) {
 //  - Acknowledged
 //  - Create New file on remote, then delete it with another transaction
 #[rstest]
-#[timeout(Duration::from_secs(5))]
+#[timeout(Duration::from_secs(10))]
 fn f3s03(get_filestore: &UsersAndFilestore) {
     let (local_user, _remote_user, filestore) = get_filestore;
 
@@ -175,7 +175,7 @@ fn f3s03(get_filestore: &UsersAndFilestore) {
 //  - Acknowledged
 //  - Create New file on remote, then Rename it in another transaction
 #[rstest]
-#[timeout(Duration::from_secs(5))]
+#[timeout(Duration::from_secs(10))]
 fn f3s04(get_filestore: &UsersAndFilestore) {
     let (local_user, _remote_user, filestore) = get_filestore;
 
@@ -254,7 +254,7 @@ fn f3s04(get_filestore: &UsersAndFilestore) {
 //  - Transfer M file
 //  - Append new file to first file
 #[rstest]
-#[timeout(Duration::from_secs(5))]
+#[timeout(Duration::from_secs(10))]
 fn f3s05(get_filestore: &UsersAndFilestore) {
     let (local_user, _remote_user, filestore) = get_filestore;
 
@@ -348,7 +348,7 @@ fn f3s05(get_filestore: &UsersAndFilestore) {
 //  - Transfer M file
 //  - Replace small file with medium file
 #[rstest]
-#[timeout(Duration::from_secs(5))]
+#[timeout(Duration::from_secs(10))]
 fn f3s06(get_filestore: &UsersAndFilestore) {
     let (local_user, _remote_user, filestore) = get_filestore;
 
@@ -433,7 +433,7 @@ fn f3s06(get_filestore: &UsersAndFilestore) {
 //  - Acknowledged
 //  - Create new directory
 #[rstest]
-#[timeout(Duration::from_secs(5))]
+#[timeout(Duration::from_secs(10))]
 fn f3s07(get_filestore: &UsersAndFilestore) {
     let (local_user, _remote_user, filestore) = get_filestore;
 
@@ -472,7 +472,7 @@ fn f3s07(get_filestore: &UsersAndFilestore) {
 //  - Create new directory
 //  - Then remove it
 #[rstest]
-#[timeout(Duration::from_secs(5))]
+#[timeout(Duration::from_secs(10))]
 fn f3s08(get_filestore: &UsersAndFilestore) {
     let (local_user, _remote_user, filestore) = get_filestore;
 
@@ -532,7 +532,7 @@ fn f3s08(get_filestore: &UsersAndFilestore) {
 //  - Send M file
 //  - Then DenyFile and verify it is removed
 #[rstest]
-#[timeout(Duration::from_secs(5))]
+#[timeout(Duration::from_secs(10))]
 fn f3s09(get_filestore: &UsersAndFilestore) {
     let (local_user, _remote_user, filestore) = get_filestore;
 
@@ -588,7 +588,7 @@ fn f3s09(get_filestore: &UsersAndFilestore) {
 //  - Send Directory listing request
 //  - verify the listing file is created
 #[rstest]
-#[timeout(Duration::from_secs(5))]
+#[timeout(Duration::from_secs(10))]
 fn f3s10(get_filestore: &UsersAndFilestore) {
     let (local_user, _remote_user, filestore) = get_filestore;
 

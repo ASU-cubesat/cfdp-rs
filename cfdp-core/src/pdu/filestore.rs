@@ -247,7 +247,7 @@ pub struct FileStoreRequest {
 impl PDUEncode for FileStoreRequest {
     type PDUType = Self;
 
-    fn get_len(&self) -> u16 {
+    fn encoded_len(&self) -> u16 {
         // action code
         1_u16
         // first name 1 + len
@@ -318,7 +318,7 @@ impl FileStoreResponse {
 impl PDUEncode for FileStoreResponse {
     type PDUType = Self;
 
-    fn get_len(&self) -> u16 {
+    fn encoded_len(&self) -> u16 {
         // Status code
         1
         // First file name length + name (len of str is bytes)

@@ -95,7 +95,7 @@ impl VariableID {
 impl PDUEncode for VariableID {
     type PDUType = Self;
 
-    fn get_len(&self) -> u16 {
+    fn encoded_len(&self) -> u16 {
         // largest values supported are u64s so this should always
         // be castable down to a u8 even.
         match self {
@@ -107,7 +107,7 @@ impl PDUEncode for VariableID {
     }
 
     fn encode(self) -> Vec<u8> {
-        let mut buffer = vec![self.get_len() as u8 - 1_u8];
+        let mut buffer = vec![self.encoded_len() as u8 - 1_u8];
 
         buffer.extend(self.to_be_bytes());
         buffer
@@ -131,7 +131,7 @@ pub struct FlowLabel {
 impl PDUEncode for FlowLabel {
     type PDUType = Self;
 
-    fn get_len(&self) -> u16 {
+    fn encoded_len(&self) -> u16 {
         // len
         1
         // msg
@@ -156,7 +156,7 @@ pub struct MessageToUser {
 impl PDUEncode for MessageToUser {
     type PDUType = Self;
 
-    fn get_len(&self) -> u16 {
+    fn encoded_len(&self) -> u16 {
         // message len
         1
         // message
@@ -221,14 +221,14 @@ impl MetadataTLV {
 impl PDUEncode for MetadataTLV {
     type PDUType = Self;
 
-    fn get_len(&self) -> u16 {
+    fn encoded_len(&self) -> u16 {
         1 + match self {
-            Self::FileStoreRequest(req) => req.get_len(),
-            Self::FileStoreResponse(inner) => inner.get_len(),
-            Self::MessageToUser(inner) => inner.get_len(),
-            Self::FaultHandlerOverride(inner) => inner.get_len(),
-            Self::FlowLabel(inner) => inner.get_len(),
-            Self::EntityID(inner) => inner.get_len(),
+            Self::FileStoreRequest(req) => req.encoded_len(),
+            Self::FileStoreResponse(inner) => inner.encoded_len(),
+            Self::MessageToUser(inner) => inner.encoded_len(),
+            Self::FaultHandlerOverride(inner) => inner.encoded_len(),
+            Self::FlowLabel(inner) => inner.encoded_len(),
+            Self::EntityID(inner) => inner.encoded_len(),
         }
     }
 
@@ -303,7 +303,7 @@ pub struct UnsegmentedFileData {
 impl FSSEncode for UnsegmentedFileData {
     type PDUType = Self;
 
-    fn get_len(&self, file_size_flag: FileSizeFlag) -> u16 {
+    fn encoded_len(&self, file_size_flag: FileSizeFlag) -> u16 {
         self.file_data.len() as u16
             + match file_size_flag {
                 FileSizeFlag::Small => 4,
@@ -345,7 +345,7 @@ pub struct SegmentedFileData {
 impl FSSEncode for SegmentedFileData {
     type PDUType = Self;
 
-    fn get_len(&self, file_size_flag: FileSizeFlag) -> u16 {
+    fn encoded_len(&self, file_size_flag: FileSizeFlag) -> u16 {
         1 + self.segment_metadata.len() as u16
             + match file_size_flag {
                 FileSizeFlag::Small => 4,
@@ -407,10 +407,10 @@ pub enum FileDataPDU {
 impl SegmentEncode for FileDataPDU {
     type PDUType = Self;
 
-    fn get_len(&self, file_size_flag: FileSizeFlag) -> u16 {
+    fn encoded_len(&self, file_size_flag: FileSizeFlag) -> u16 {
         match self {
-            Self::Unsegmented(message) => message.get_len(file_size_flag),
-            Self::Segmented(message) => message.get_len(file_size_flag),
+            Self::Unsegmented(message) => message.encoded_len(file_size_flag),
+            Self::Segmented(message) => message.encoded_len(file_size_flag),
         }
     }
 
@@ -465,15 +465,15 @@ impl Operations {
 impl FSSEncode for Operations {
     type PDUType = Self;
 
-    fn get_len(&self, file_size_flag: FileSizeFlag) -> u16 {
+    fn encoded_len(&self, file_size_flag: FileSizeFlag) -> u16 {
         1 + match self {
-            Self::EoF(eof) => eof.get_len(file_size_flag),
-            Self::Finished(finished) => finished.get_len(),
-            Self::Ack(ack) => ack.get_len(),
-            Self::Metadata(metadata) => metadata.get_len(file_size_flag),
-            Self::Nak(nak) => nak.get_len(file_size_flag),
-            Self::Prompt(prompt) => prompt.get_len(),
-            Self::KeepAlive(keepalive) => keepalive.get_len(file_size_flag),
+            Self::EoF(eof) => eof.encoded_len(file_size_flag),
+            Self::Finished(finished) => finished.encoded_len(),
+            Self::Ack(ack) => ack.encoded_len(),
+            Self::Metadata(metadata) => metadata.encoded_len(file_size_flag),
+            Self::Nak(nak) => nak.encoded_len(file_size_flag),
+            Self::Prompt(prompt) => prompt.encoded_len(),
+            Self::KeepAlive(keepalive) => keepalive.encoded_len(file_size_flag),
         }
     }
 
@@ -523,7 +523,7 @@ pub struct EndOfFile {
 impl FSSEncode for EndOfFile {
     type PDUType = Self;
 
-    fn get_len(&self, file_size_flag: FileSizeFlag) -> u16 {
+    fn encoded_len(&self, file_size_flag: FileSizeFlag) -> u16 {
         //  condidition (4 bits + 4 bits spare)
         //  checksum (4 bytes)
         //  File_size (FSS)
@@ -533,7 +533,7 @@ impl FSSEncode for EndOfFile {
             FileSizeFlag::Large => 8,
         } + if let Some(fault) = self.fault_location {
             // Space for TLV code and the length field
-            2 + fault.get_len()
+            2 + fault.encoded_len()
         } else {
             0
         }
@@ -614,7 +614,7 @@ pub struct Finished {
 impl PDUEncode for Finished {
     type PDUType = Self;
 
-    fn get_len(&self) -> u16 {
+    fn encoded_len(&self) -> u16 {
         //  Condition + delivery coe + status (1 byte)
         //  Filestore Responses: TLV of each response
         //  Fault Location (0 or TLV)
@@ -627,11 +627,11 @@ impl PDUEncode for Finished {
                         + 1
                         // TLV Length
                         + 1
-                        + file_response.get_len()
+                        + file_response.encoded_len()
             })
             + if let Some(fault) = self.fault_location {
                 // Space for TLV code and the length field
-                2 + fault.get_len()
+                2 + fault.encoded_len()
             } else {
                 0
             }
@@ -750,7 +750,7 @@ pub(crate) type AckPDU = PositiveAcknowledgePDU;
 impl PDUEncode for PositiveAcknowledgePDU {
     type PDUType = Self;
 
-    fn get_len(&self) -> u16 {
+    fn encoded_len(&self) -> u16 {
         // Ack is 4 fields packed into 2 bytes
         2
     }
@@ -822,7 +822,7 @@ pub struct MetadataPDU {
 impl FSSEncode for MetadataPDU {
     type PDUType = Self;
 
-    fn get_len(&self, file_size_flag: FileSizeFlag) -> u16 {
+    fn encoded_len(&self, file_size_flag: FileSizeFlag) -> u16 {
         // closure + checksum (1 byte)
         // file size (FSS)
         // source filename (1 + len )
@@ -838,7 +838,7 @@ impl FSSEncode for MetadataPDU {
             + self
                 .options
                 .iter()
-                .fold(0_u16, |acc, opt| acc + opt.get_len())
+                .fold(0_u16, |acc, opt| acc + opt.encoded_len())
     }
 
     fn encode(self, file_size_flag: FileSizeFlag) -> Vec<u8> {
@@ -925,7 +925,7 @@ impl From<(u64, u64)> for SegmentRequestForm {
 impl FSSEncode for SegmentRequestForm {
     type PDUType = Self;
 
-    fn get_len(&self, file_size_flag: FileSizeFlag) -> u16 {
+    fn encoded_len(&self, file_size_flag: FileSizeFlag) -> u16 {
         match file_size_flag {
             FileSizeFlag::Small => 8,
             FileSizeFlag::Large => 16,
@@ -974,10 +974,10 @@ pub(crate) type NakPDU = NegativeAcknowledgmentPDU;
 impl FSSEncode for NegativeAcknowledgmentPDU {
     type PDUType = Self;
 
-    fn get_len(&self, file_size_flag: FileSizeFlag) -> u16 {
+    fn encoded_len(&self, file_size_flag: FileSizeFlag) -> u16 {
         self.segment_requests
             .iter()
-            .fold(0, |acc, seg| acc + seg.get_len(file_size_flag))
+            .fold(0, |acc, seg| acc + seg.encoded_len(file_size_flag))
             + match file_size_flag {
                 FileSizeFlag::Small => 8,
                 FileSizeFlag::Large => 16,
@@ -1038,7 +1038,8 @@ impl FSSEncode for NegativeAcknowledgmentPDU {
 impl NegativeAcknowledgmentPDU {
     /// returns the maximum number of nak segments which can fit into one PDU given the payload length
     pub fn max_nak_num(file_size_flag: FileSizeFlag, payload_len: u32) -> u32 {
-        (payload_len - 2 * file_size_flag.encoded_len()) / (2 * file_size_flag.encoded_len())
+        (payload_len - 2 * file_size_flag.encoded_len() as u32)
+            / (2 * file_size_flag.encoded_len() as u32)
     }
 }
 
@@ -1049,7 +1050,7 @@ pub struct PromptPDU {
 impl PDUEncode for PromptPDU {
     type PDUType = Self;
 
-    fn get_len(&self) -> u16 {
+    fn encoded_len(&self) -> u16 {
         1
     }
 
@@ -1074,7 +1075,7 @@ pub struct KeepAlivePDU {
 impl FSSEncode for KeepAlivePDU {
     type PDUType = Self;
 
-    fn get_len(&self, file_size_flag: FileSizeFlag) -> u16 {
+    fn encoded_len(&self, file_size_flag: FileSizeFlag) -> u16 {
         match file_size_flag {
             FileSizeFlag::Small => 4,
             FileSizeFlag::Large => 8,

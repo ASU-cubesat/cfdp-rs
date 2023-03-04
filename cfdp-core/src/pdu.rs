@@ -23,10 +23,10 @@ pub enum PDUPayload {
 }
 impl PDUPayload {
     /// computes the total length of the payload without additional encoding/copying
-    pub fn get_len(&self, file_size_flag: FileSizeFlag) -> u16 {
+    pub fn encoded_len(&self, file_size_flag: FileSizeFlag) -> u16 {
         match self {
-            Self::Directive(operation) => operation.get_len(file_size_flag),
-            Self::FileData(file_data) => file_data.get_len(file_size_flag),
+            Self::Directive(operation) => operation.encoded_len(file_size_flag),
+            Self::FileData(file_data) => file_data.encoded_len(file_size_flag),
         }
     }
 
@@ -66,8 +66,8 @@ pub struct PDU {
 impl PDUEncode for PDU {
     type PDUType = Self;
 
-    fn get_len(&self) -> u16 {
-        self.header.get_len() + self.payload.get_len(self.header.large_file_flag)
+    fn encoded_len(&self) -> u16 {
+        self.header.encoded_len() + self.payload.encoded_len(self.header.large_file_flag)
     }
 
     fn encode(self) -> Vec<u8> {
@@ -333,7 +333,7 @@ mod test {
         #[values(FileSizeFlag::Small, FileSizeFlag::Large)] file_size_flag: FileSizeFlag,
     ) {
         assert_eq!(
-            payload.get_len(file_size_flag),
+            payload.encoded_len(file_size_flag),
             payload.encode(file_size_flag).len() as u16,
         )
     }
@@ -357,7 +357,7 @@ mod test {
         #[case] payload: PDUPayload,
         #[values(CRCFlag::NotPresent, CRCFlag::Present)] crc_flag: CRCFlag,
     ) -> PDUResult<()> {
-        let pdu_data_field_length = payload.clone().encode(FileSizeFlag::Large).len() as u16;
+        let pdu_data_field_length = payload.encoded_len(FileSizeFlag::Large);
         let pdu_type = match &payload {
             PDUPayload::Directive(_) => PDUType::FileDirective,
             PDUPayload::FileData(_) => PDUType::FileData,

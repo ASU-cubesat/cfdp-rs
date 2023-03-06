@@ -334,7 +334,10 @@ mod ipc {
                     .primitive_handler(signal, sender)
                     .expect("Err in daemon user half.");
             });
-            thread::sleep(Duration::from_millis(5));
+
+            while !ipc_user.socket.as_std_path().exists() {
+                thread::sleep(Duration::from_millis(5));
+            }
             assert!(ipc_user.socket.as_std_path().exists());
 
             (ipc_user, handle, receiver)

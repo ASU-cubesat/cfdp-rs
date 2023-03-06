@@ -101,7 +101,7 @@ impl<T: FileStore> RecvTransaction<T> {
     pub fn new(
         // Configuation of this Transaction.
         config: TransactionConfig,
-        // Desired NAK procedure. This is most likely passed from and EntityConfig
+        // Desired NAK procedure. This is most likely passed from an EntityConfig
         nak_procedure: NakProcedure,
         // Connection to the local FileStore implementation.
         filestore: Arc<T>,

@@ -304,11 +304,7 @@ impl FSSEncode for UnsegmentedFileData {
     type PDUType = Self;
 
     fn encoded_len(&self, file_size_flag: FileSizeFlag) -> u16 {
-        self.file_data.len() as u16
-            + match file_size_flag {
-                FileSizeFlag::Small => 4,
-                FileSizeFlag::Large => 8,
-            }
+        self.file_data.len() as u16 + file_size_flag.encoded_len()
     }
 
     fn encode(self, file_size_flag: FileSizeFlag) -> Vec<u8> {
@@ -347,10 +343,7 @@ impl FSSEncode for SegmentedFileData {
 
     fn encoded_len(&self, file_size_flag: FileSizeFlag) -> u16 {
         1 + self.segment_metadata.len() as u16
-            + match file_size_flag {
-                FileSizeFlag::Small => 4,
-                FileSizeFlag::Large => 8,
-            }
+            + file_size_flag.encoded_len()
             + self.file_data.len() as u16
     }
 
@@ -528,15 +521,13 @@ impl FSSEncode for EndOfFile {
         //  checksum (4 bytes)
         //  File_size (FSS)
         //  Fault Location (0 or TLV of fault location)
-        5 + match file_size_flag {
-            FileSizeFlag::Small => 4,
-            FileSizeFlag::Large => 8,
-        } + if let Some(fault) = self.fault_location {
-            // Space for TLV code and the length field
-            2 + fault.encoded_len()
-        } else {
-            0
-        }
+        5 + file_size_flag.encoded_len()
+            + if let Some(fault) = self.fault_location {
+                // Space for TLV code and the length field
+                2 + fault.encoded_len()
+            } else {
+                0
+            }
     }
 
     fn encode(self, file_size_flag: FileSizeFlag) -> Vec<u8> {
@@ -828,10 +819,8 @@ impl FSSEncode for MetadataPDU {
         // source filename (1 + len )
         // destination filename (1 + len)
         // options (TLV per option)
-        1 + match file_size_flag {
-            FileSizeFlag::Small => 4,
-            FileSizeFlag::Large => 8,
-        } + 1
+        1 + file_size_flag.encoded_len()
+            + 1
             + self.source_filename.len() as u16
             + 1
             + self.destination_filename.len() as u16
@@ -926,10 +915,7 @@ impl FSSEncode for SegmentRequestForm {
     type PDUType = Self;
 
     fn encoded_len(&self, file_size_flag: FileSizeFlag) -> u16 {
-        match file_size_flag {
-            FileSizeFlag::Small => 8,
-            FileSizeFlag::Large => 16,
-        }
+        2 * file_size_flag.encoded_len()
     }
 
     fn encode(self, file_size_flag: FileSizeFlag) -> Vec<u8> {
@@ -978,10 +964,7 @@ impl FSSEncode for NegativeAcknowledgmentPDU {
         self.segment_requests
             .iter()
             .fold(0, |acc, seg| acc + seg.encoded_len(file_size_flag))
-            + match file_size_flag {
-                FileSizeFlag::Small => 8,
-                FileSizeFlag::Large => 16,
-            }
+            + 2 * file_size_flag.encoded_len()
     }
 
     fn encode(self, file_size_flag: FileSizeFlag) -> Vec<u8> {
@@ -1076,10 +1059,7 @@ impl FSSEncode for KeepAlivePDU {
     type PDUType = Self;
 
     fn encoded_len(&self, file_size_flag: FileSizeFlag) -> u16 {
-        match file_size_flag {
-            FileSizeFlag::Small => 4,
-            FileSizeFlag::Large => 8,
-        }
+        file_size_flag.encoded_len()
     }
 
     fn encode(self, file_size_flag: FileSizeFlag) -> Vec<u8> {

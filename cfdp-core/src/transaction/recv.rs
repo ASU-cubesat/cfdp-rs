@@ -95,10 +95,14 @@ pub struct RecvTransaction<T: FileStore> {
 
 impl<T: FileStore> RecvTransaction<T> {
     /// Start a new SendTransaction with the given [configuration](TransactionConfig)
-    /// and [Filestore Implementation](FileStore)
+    /// and [Filestore Implementation](FileStore).
+    ///
+    /// The [NakProcedure] is most likely passed from [EntityConfig](crate::daemon::EntityConfig)
     pub fn new(
         // Configuation of this Transaction.
         config: TransactionConfig,
+        // Desired NAK procedure. This is most likely passed from and EntityConfig
+        nak_procedure: NakProcedure,
         // Connection to the local FileStore implementation.
         filestore: Arc<T>,
         // Sender channel used to propagate Message To User back up to the Daemon Thread.
@@ -121,7 +125,7 @@ impl<T: FileStore> RecvTransaction<T> {
             message_tx,
             file_handle: None,
             saved_segments: Vec::new(),
-            nak_procedure: NakProcedure::Deferred,
+            nak_procedure,
             metadata: None,
             received_file_size,
             header: None,
@@ -1088,7 +1092,8 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
-        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
+        let mut transaction =
+            RecvTransaction::new(config, NakProcedure::Deferred, filestore, message_tx);
         let payload_len = 12;
         let expected = PDUHeader {
             version: U3::One,
@@ -1123,7 +1128,8 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
-        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
+        let mut transaction =
+            RecvTransaction::new(config, NakProcedure::Deferred, filestore, message_tx);
         assert_eq!(
             TransactionStatus::Undefined,
             transaction.get_status().clone()
@@ -1152,7 +1158,8 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
-        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
+        let mut transaction =
+            RecvTransaction::new(config, NakProcedure::Deferred, filestore, message_tx);
 
         let input = vec![0, 5, 255, 99];
         let data = FileDataPDU::Unsegmented(UnsegmentedFileData {
@@ -1189,7 +1196,12 @@ mod test {
             temp_buff
         };
 
-        let mut transaction = RecvTransaction::new(config, filestore.clone(), message_tx);
+        let mut transaction = RecvTransaction::new(
+            config,
+            NakProcedure::Deferred,
+            filestore.clone(),
+            message_tx,
+        );
         transaction.metadata = Some(Metadata {
             closure_requested: false,
             file_size: input.len() as u64,
@@ -1246,7 +1258,8 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
+        let mut transaction =
+            RecvTransaction::new(config, NakProcedure::Deferred, filestore, message_tx);
 
         let input = vec![0, 5, 255, 99];
         let data = FileDataPDU::Unsegmented(UnsegmentedFileData {
@@ -1313,7 +1326,12 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let mut transaction = RecvTransaction::new(config.clone(), filestore, message_tx);
+        let mut transaction = RecvTransaction::new(
+            config.clone(),
+            NakProcedure::Deferred,
+            filestore,
+            message_tx,
+        );
 
         let path = {
             let mut buf = Utf8PathBuf::new();
@@ -1374,7 +1392,8 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
+        let mut transaction =
+            RecvTransaction::new(config, NakProcedure::Deferred, filestore, message_tx);
 
         transaction.timer.restart_ack();
         transaction.timer.restart_inactivity();
@@ -1410,7 +1429,8 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
+        let mut transaction =
+            RecvTransaction::new(config, NakProcedure::Deferred, filestore, message_tx);
 
         transaction.timer.restart_ack();
         transaction.timer.restart_inactivity();
@@ -1462,7 +1482,12 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let mut transaction = RecvTransaction::new(config.clone(), filestore, message_tx);
+        let mut transaction = RecvTransaction::new(
+            config.clone(),
+            NakProcedure::Deferred,
+            filestore,
+            message_tx,
+        );
 
         let path = {
             let mut buf = Utf8PathBuf::new();
@@ -1519,7 +1544,12 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let mut transaction = RecvTransaction::new(config, filestore.clone(), message_tx);
+        let mut transaction = RecvTransaction::new(
+            config,
+            NakProcedure::Deferred,
+            filestore.clone(),
+            message_tx,
+        );
 
         let path = {
             let mut buf = Utf8PathBuf::new();
@@ -1618,7 +1648,8 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
+        let mut transaction =
+            RecvTransaction::new(config, NakProcedure::Deferred, filestore, message_tx);
 
         let path = {
             let mut path = Utf8PathBuf::new();
@@ -1703,7 +1734,8 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
+        let mut transaction =
+            RecvTransaction::new(config, NakProcedure::Deferred, filestore, message_tx);
 
         let path = {
             let mut path = Utf8PathBuf::new();
@@ -1758,7 +1790,8 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
+        let mut transaction =
+            RecvTransaction::new(config, NakProcedure::Deferred, filestore, message_tx);
 
         let path = {
             let mut path = Utf8PathBuf::new();
@@ -1820,7 +1853,8 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
+        let mut transaction =
+            RecvTransaction::new(config, NakProcedure::Deferred, filestore, message_tx);
 
         let path = {
             let mut path = Utf8PathBuf::new();
@@ -1893,7 +1927,8 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
+        let mut transaction =
+            RecvTransaction::new(config, NakProcedure::Deferred, filestore, message_tx);
 
         let path = {
             let mut path = Utf8PathBuf::new();
@@ -2064,7 +2099,8 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
+        let mut transaction =
+            RecvTransaction::new(config, NakProcedure::Deferred, filestore, message_tx);
         let path = {
             let mut buf = Utf8PathBuf::new();
             buf.push("test_file");
@@ -2160,7 +2196,8 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
+        let mut transaction =
+            RecvTransaction::new(config, NakProcedure::Deferred, filestore, message_tx);
         transaction.nak_procedure = NakProcedure::Immediate;
 
         let file_pdu1 = {

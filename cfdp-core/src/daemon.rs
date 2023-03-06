@@ -641,7 +641,8 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             "({:?}, {:?})",
             &config.source_entity_id, &config.sequence_number
         );
-        let mut transaction = RecvTransaction::new(config, filestore, message_tx);
+        let mut transaction =
+            RecvTransaction::new(config, entity_config.nak_procedure, filestore, message_tx);
         let id = transaction.id();
 
         let handle = thread::Builder::new().name(name).spawn(move || {

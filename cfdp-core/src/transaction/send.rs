@@ -356,7 +356,7 @@ impl<T: FileStore> SendTransaction<T> {
 
         // use take to limit the final segment from trying to read past the EoF.
         let data = {
-            let mut buff = Vec::<u8>::new();
+            let mut buff = Vec::<u8>::with_capacity(length as usize);
             handle
                 .take(length as u64)
                 .read_to_end(&mut buff)

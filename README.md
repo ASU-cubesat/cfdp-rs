@@ -4,7 +4,7 @@
 # cfdp-rs
 This project aims to be a feature-complete, cross-platform, open source Rust implementation of the CCSDS File Delivery Protocol (CFDP).
 
-The User interface is left as an application specific implementation with attaches to the underlying Daemon through the `User` trait interface.
+The User interface is left as an application specific implementation with attaches to the underlying Daemon through the primitive_tx channel in the Daemon constructor. As such, each implementation specific User is responsible for initializing and running the Daemon in the background.
 
 # Optional Features
 The following optional features are currently or planned to be impelemented

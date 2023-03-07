@@ -91,6 +91,14 @@ impl VariableID {
             VariableID::U64(val) => val.to_be_bytes().to_vec(),
         }
     }
+    pub fn to_u64(&self) -> u64 {
+        match self {
+            VariableID::U8(val) => *val as u64,
+            VariableID::U16(val) => *val as u64,
+            VariableID::U32(val) => *val as u64,
+            VariableID::U64(val) => *val,
+        }
+    }
 }
 impl PDUEncode for VariableID {
     type PDUType = Self;

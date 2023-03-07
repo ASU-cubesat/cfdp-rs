@@ -101,7 +101,7 @@ impl TestUserHalf {
     // apparently related https://github.com/rust-lang/rust/issues/46379
     #[allow(unused)]
     pub fn cancel(&self, transaction: TransactionID) -> Result<(), IoError> {
-        let primitive = UserPrimitive::Cancel(transaction.0, transaction.1);
+        let primitive = UserPrimitive::Cancel(transaction);
         let (send, _recv) = bounded(0);
         self.internal_tx.send((primitive, send)).map_err(|_| {
             IoError::new(
@@ -112,7 +112,7 @@ impl TestUserHalf {
     }
 
     pub fn report(&self, transaction: TransactionID) -> Result<Option<Report>, IoError> {
-        let primitive = UserPrimitive::Report(transaction.0, transaction.1);
+        let primitive = UserPrimitive::Report(transaction);
         let (send, recv) = bounded(0);
 
         self.internal_tx.send((primitive, send)).map_err(|_| {
@@ -170,7 +170,7 @@ impl User for TestDaemonHalf {
                                 )
                             })?;
                         }
-                        UserPrimitive::Cancel(_, _) => {
+                        UserPrimitive::Cancel(_) => {
                             sender.send((primitive, internal_send)).map_err(|_| {
                                 IoError::new(
                                     ErrorKind::ConnectionReset,
@@ -178,7 +178,7 @@ impl User for TestDaemonHalf {
                                 )
                             })?
                         }
-                        UserPrimitive::Suspend(_, _) => {
+                        UserPrimitive::Suspend(_) => {
                             sender.send((primitive, internal_send)).map_err(|_| {
                                 IoError::new(
                                     ErrorKind::ConnectionReset,
@@ -186,7 +186,7 @@ impl User for TestDaemonHalf {
                                 )
                             })?
                         }
-                        UserPrimitive::Resume(_, _) => {
+                        UserPrimitive::Resume(_) => {
                             sender.send((primitive, internal_send)).map_err(|_| {
                                 IoError::new(
                                     ErrorKind::ConnectionReset,
@@ -194,7 +194,7 @@ impl User for TestDaemonHalf {
                                 )
                             })?
                         }
-                        UserPrimitive::Report(_, _) => {
+                        UserPrimitive::Report(_) => {
                             sender.send((primitive, internal_send)).map_err(|_| {
                                 IoError::new(
                                     ErrorKind::ConnectionReset,

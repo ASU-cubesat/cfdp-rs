@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt};
 
 use camino::Utf8PathBuf;
 use num_derive::FromPrimitive;
@@ -7,11 +7,29 @@ use crate::{
     filestore::ChecksumType,
     pdu::{
         CRCFlag, Condition, EntityID, FaultHandlerAction, FileSizeFlag, FileStoreRequest,
-        MessageToUser, SegmentedData, TransactionSeqNum, TransmissionMode,
+        MessageToUser, SegmentedData, TransactionSeqNum, TransmissionMode, VariableID,
     },
 };
 
-pub type TransactionID = (EntityID, TransactionSeqNum);
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct TransactionID(pub EntityID, pub TransactionSeqNum);
+
+impl fmt::Display for TransactionID {
+    // This trait requires `fmt` with this exact signature.
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}.{}", self.0.to_u64(), self.1.to_u64())
+    }
+}
+
+impl TransactionID {
+    pub fn from<T, U>(entity_id: T, seq_num: U) -> Self
+    where
+        VariableID: From<T>,
+        VariableID: From<U>,
+    {
+        Self(EntityID::from(entity_id), TransactionSeqNum::from(seq_num))
+    }
+}
 
 #[repr(u8)]
 #[derive(Debug, Clone, PartialEq, Eq, FromPrimitive)]

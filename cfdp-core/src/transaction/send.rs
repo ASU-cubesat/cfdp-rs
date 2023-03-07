@@ -15,7 +15,7 @@ use super::{
     TransactionID,
 };
 use crate::{
-    daemon::{PutRequest, Report, UserPrimitive},
+    daemon::{PutRequest, Report, UserPrimitive, UserReturn},
     filestore::{FileChecksum, FileStore, FileStoreError},
     pdu::{
         ACKSubDirective, Condition, DeliveryCode, Direction, EndOfFile, FaultHandlerAction,
@@ -26,7 +26,6 @@ use crate::{
         VariableID, PDU, U3,
     },
     timer::Timer,
-    user::UserReturn,
 };
 
 #[derive(PartialEq, Debug)]
@@ -885,7 +884,7 @@ mod test {
     use super::*;
 
     use camino::{Utf8Path, Utf8PathBuf};
-    use crossbeam_channel::unbounded;
+    use crossbeam_channel::{bounded, unbounded};
     use rstest::{fixture, rstest};
     use std::thread;
     use tempfile::TempDir;

@@ -5,10 +5,8 @@ pub(crate) mod segments;
 pub(crate) mod timer;
 pub mod transaction;
 pub mod transport;
-pub mod user;
-
 // Re-exported for convenience
-pub use crossbeam_channel::{Receiver, Sender, TryRecvError};
+pub use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TryRecvError};
 
 // this import is necessary for the template macro in rstest_reuse as of v0.5.0
 #[cfg(test)]

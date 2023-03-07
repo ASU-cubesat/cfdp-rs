@@ -15,7 +15,7 @@ use std::{
 
 use camino::Utf8PathBuf;
 use cfdp_core::{
-    daemon::{Daemon, EntityConfig, NakProcedure, PutRequest, Report, UserPrimitive},
+    daemon::{Daemon, EntityConfig, NakProcedure, PutRequest, Report, UserPrimitive, UserReturn},
     filestore::{ChecksumType, FileStore, NativeFileStore},
     pdu::{
         CRCFlag, Condition, EntityID, FaultHandlerAction, PDUDirective, PDUEncode, PDUPayload,
@@ -23,7 +23,6 @@ use cfdp_core::{
     },
     transaction::TransactionID,
     transport::{PDUTransport, UdpTransport},
-    user::{User, UserReturn},
 };
 use crossbeam_channel::{bounded, Receiver, Sender};
 use log::error;
@@ -60,12 +59,12 @@ impl TestUser {
         }
     }
 
-    pub(crate) fn split(self) -> (TestUserHalf, TestDaemonHalf) {
+    pub(crate) fn split(self) -> (TestUserHalf, Receiver<(UserPrimitive, Sender<UserReturn>)>) {
         let TestUser {
             internal_tx,
             internal_rx,
         } = self;
-        (TestUserHalf { internal_tx }, TestDaemonHalf { internal_rx })
+        (TestUserHalf { internal_tx }, internal_rx)
     }
 }
 
@@ -134,96 +133,6 @@ impl TestUserHalf {
     }
 }
 
-pub(crate) struct TestDaemonHalf {
-    internal_rx: Receiver<(UserPrimitive, Sender<UserReturn>)>,
-}
-impl User for TestDaemonHalf {
-    fn primitive_handler(
-        &mut self,
-        signal: Arc<AtomicBool>,
-        sender: Sender<(UserPrimitive, Sender<UserReturn>)>,
-    ) -> Result<(), IoError> {
-        while !signal.load(Ordering::Relaxed) {
-            match self.internal_rx.recv_timeout(Duration::from_millis(250)) {
-                Ok((primitive, internal_return)) => {
-                    let (internal_send, internal_recv) = bounded(0);
-
-                    match primitive {
-                        UserPrimitive::Put(_) => {
-                            sender.send((primitive, internal_send)).map_err(|_| {
-                                IoError::new(
-                                    ErrorKind::ConnectionReset,
-                                    "Daemon Half of User disconnected.",
-                                )
-                            })?;
-                            let response = internal_recv.recv().map_err(|_| {
-                                IoError::new(
-                                    ErrorKind::ConnectionReset,
-                                    "Daemon Half of User disconnected.",
-                                )
-                            })?;
-
-                            internal_return.send(response).map_err(|_| {
-                                IoError::new(
-                                    ErrorKind::ConnectionReset,
-                                    "Daemon Half of User disconnected.",
-                                )
-                            })?;
-                        }
-                        UserPrimitive::Cancel(_) => {
-                            sender.send((primitive, internal_send)).map_err(|_| {
-                                IoError::new(
-                                    ErrorKind::ConnectionReset,
-                                    "Daemon Half of User disconnected.",
-                                )
-                            })?
-                        }
-                        UserPrimitive::Suspend(_) => {
-                            sender.send((primitive, internal_send)).map_err(|_| {
-                                IoError::new(
-                                    ErrorKind::ConnectionReset,
-                                    "Daemon Half of User disconnected.",
-                                )
-                            })?
-                        }
-                        UserPrimitive::Resume(_) => {
-                            sender.send((primitive, internal_send)).map_err(|_| {
-                                IoError::new(
-                                    ErrorKind::ConnectionReset,
-                                    "Daemon Half of User disconnected.",
-                                )
-                            })?
-                        }
-                        UserPrimitive::Report(_) => {
-                            sender.send((primitive, internal_send)).map_err(|_| {
-                                IoError::new(
-                                    ErrorKind::ConnectionReset,
-                                    "Daemon Half of User disconnected.",
-                                )
-                            })?;
-                            let response = internal_recv.recv().map_err(|_| {
-                                IoError::new(
-                                    ErrorKind::ConnectionReset,
-                                    "Daemon Half of User disconnected.",
-                                )
-                            })?;
-
-                            internal_return.send(response).map_err(|_| {
-                                IoError::new(
-                                    ErrorKind::ConnectionReset,
-                                    "Daemon Half of User disconnected.",
-                                )
-                            })?;
-                        }
-                    };
-                }
-                Err(_err) => {}
-            }
-        }
-        Ok(())
-    }
-}
-
 impl<'a, T> Drop for JoD<'a, T> {
     fn drop(&mut self) {
         self.signal.store(true, Ordering::Relaxed);
@@ -286,7 +195,7 @@ pub(crate) fn create_daemons<T: FileStore + Sync + Send + 'static>(
         remote_config.clone(),
         config.clone(),
         signal.clone(),
-        Box::new(local_daemonhalf),
+        local_daemonhalf,
     )
     .expect("Cannot create daemon listener.");
 
@@ -312,7 +221,7 @@ pub(crate) fn create_daemons<T: FileStore + Sync + Send + 'static>(
         remote_config,
         config,
         signal.clone(),
-        Box::new(remote_daemonhalf),
+        remote_daemonhalf,
     )
     .expect("Cannot create daemon listener.");
 

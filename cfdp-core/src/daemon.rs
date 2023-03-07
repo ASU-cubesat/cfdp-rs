@@ -33,7 +33,6 @@ use crate::{
         TransactionID, TransactionState,
     },
     transport::PDUTransport,
-    user::{User, UserReturn},
 };
 
 #[derive(Error, Debug)]
@@ -63,6 +62,16 @@ impl From<TransactionError> for PrimitiveError {
     fn from(err: TransactionError) -> Self {
         Self::Metadata(Box::new(err))
     }
+}
+
+#[derive(Debug)]
+/// Some User interactions require the ID to be returned to the user
+/// or the status report requested.
+// this enum allows us to send a one-off channel to the Daemon
+// then listen for the response.
+pub enum UserReturn {
+    ID(TransactionID),
+    Report(Option<Report>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -557,10 +566,9 @@ pub struct Daemon<T: FileStore + Send + 'static> {
     terminate: Arc<AtomicBool>,
     // channel to receive user primitives from the implemented User
     primitive_rx: Receiver<(UserPrimitive, Sender<UserReturn>)>,
-    // channel to send user primitives from the implemented User
-    // this is passed to SendTransactions in order to propagate up ProxyPutRequests
-    primitive_tx: Sender<(UserPrimitive, Sender<UserReturn>)>,
-    // history of transactions this daemon has participated in
+    // channel for transaction to initiate a primitive
+    transaction_primitive_tx: Sender<(UserPrimitive, Sender<UserReturn>)>,
+    transaction_primitive_rx: Receiver<(UserPrimitive, Sender<UserReturn>)>,
     history: HashMap<TransactionID, Report>,
 }
 impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
@@ -573,18 +581,11 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         entity_configs: HashMap<VariableID, EntityConfig>,
         default_config: EntityConfig,
         terminate: Arc<AtomicBool>,
-        user_interface: Box<dyn User + Send>,
+        primitive_rx: Receiver<(UserPrimitive, Sender<UserReturn>)>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let (primitive_tx, primitive_rx) = bounded(1);
-
-        let signal = terminate.clone();
-        let mut user_interface = user_interface;
-        let user_tx = primitive_tx.clone();
-        thread::spawn(move || user_interface.primitive_handler(signal, user_tx));
-
         let (message_tx, message_rx) = unbounded();
         let mut transport_tx_map: HashMap<EntityID, Sender<(VariableID, PDU)>> = HashMap::new();
-
+        let (transaction_primitive_tx, transaction_primitive_rx) = bounded(1);
         let (pdu_send, pdu_receive) = unbounded();
         for (vec, mut transport) in transport_map.into_iter() {
             let (remote_send, remote_receive) = bounded(1);
@@ -611,7 +612,8 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             proxy_id_map: HashMap::new(),
             terminate,
             primitive_rx,
-            primitive_tx,
+            transaction_primitive_rx,
+            transaction_primitive_tx,
             history: HashMap::new(),
         })
     }
@@ -863,18 +865,19 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         // the returned index will be used to determine which action to take.
 
         let mut selector = Select::new();
-        selector.recv(&self.message_rx);
-        selector.recv(&self.transport_rx);
-        selector.recv(&self.primitive_rx);
+        let user_msg = selector.recv(&self.message_rx);
+        let transport = selector.recv(&self.transport_rx);
+        let user_primitive = selector.recv(&self.primitive_rx);
+        let transaction_primitive = selector.recv(&self.transaction_primitive_rx);
 
         // mapping of unique transaction ids to channels used to talk to each transaction
         let mut transaction_channels: HashMap<TransactionID, Sender<Command>> = HashMap::new();
 
         let mut cleanup = Instant::now();
 
-        while !self.terminate.load(Ordering::Relaxed) {
-            match selector.select_timeout(Duration::from_millis(1000)) {
-                Ok(oper) if oper.index() == 0 => {
+        loop {
+            match selector.select() {
+                oper if oper.index() == user_msg => {
                     // this is a message to user
                     match oper.recv(&self.message_rx) {
                         Ok((origin_id, tx_mode, messages)) => {
@@ -901,7 +904,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                     sequence_number,
                                     self.entity_id,
                                     transport_tx,
-                                    self.primitive_tx.clone(),
+                                    self.transaction_primitive_tx.clone(),
                                     entity_config,
                                     self.filestore.clone(),
                                     true,
@@ -1022,7 +1025,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                                     sequence_number,
                                                     self.entity_id,
                                                     transport_tx,
-                                                    self.primitive_tx.clone(),
+                                                    self.transaction_primitive_tx.clone(),
                                                     entity_config,
                                                     self.filestore.clone(),
                                                     false,
@@ -1105,7 +1108,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                             sequence_number,
                                             self.entity_id,
                                             transport_tx,
-                                            self.primitive_tx.clone(),
+                                            self.transaction_primitive_tx.clone(),
                                             entity_config,
                                             self.filestore.clone(),
                                             false,
@@ -1179,7 +1182,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                             sequence_number,
                                             self.entity_id,
                                             transport_tx,
-                                            self.primitive_tx.clone(),
+                                            self.transaction_primitive_tx.clone(),
                                             entity_config,
                                             self.filestore.clone(),
                                             false,
@@ -1253,7 +1256,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                             sequence_number,
                                             self.entity_id,
                                             transport_tx,
-                                            self.primitive_tx.clone(),
+                                            self.transaction_primitive_tx.clone(),
                                             entity_config,
                                             self.filestore.clone(),
                                             false,
@@ -1277,21 +1280,12 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                 info!("Received Messages I can't decifer {:?}", message);
                             }
                         }
-                        // Err(TryRecvError::Empty) => {
-                        //     // was not actually ready, go back to selection
-                        // }
-                        // Err(TryRecvError::Disconnected) => {
-                        //     // The transport instance disconnected?
-                        //     // what do we do?
-                        //     // remove from possible selections
-                        //     selector.remove(oper.index());
-                        // }
                         Err(err) => {
                             info!("Error on user msg {err}")
                         }
                     };
                 }
-                Ok(oper) if oper.index() == 1 => {
+                oper if oper.index() == transport => {
                     match oper.recv(&self.transport_rx) {
                         Ok(pdu) => {
                             // find the entity this entity will be sending too.
@@ -1389,8 +1383,14 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                     };
                 }
                 // received a UserPrimitive from the user implementation
-                Ok(oper) if oper.index() == 2 => {
-                    match oper.recv(&self.primitive_rx) {
+                oper if oper.index() == user_primitive || oper.index() == transaction_primitive => {
+                    let index = oper.index();
+                    let receiver = if index == user_primitive {
+                        &self.primitive_rx
+                    } else {
+                        &self.transaction_primitive_rx
+                    };
+                    match oper.recv(receiver) {
                         Ok((primitive, internal_return)) => {
                             match primitive {
                                 UserPrimitive::Put(request) => {
@@ -1412,7 +1412,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         sequence_number,
                                         self.entity_id,
                                         transport_tx,
-                                        self.primitive_tx.clone(),
+                                        self.transaction_primitive_tx.clone(),
                                         entity_config,
                                         self.filestore.clone(),
                                         false,
@@ -1526,14 +1526,18 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                         }
                         Err(_err) => {
                             // The channel is disconnected
-                            error!("User interface disconnected from daemon.");
+                            // this is only an issue if the channel was the user interface
+                            if index == user_primitive {
+                                error!("User interface disconnected from daemon.");
+                                self.terminate.store(true, Ordering::Relaxed);
+                                break;
+                            }
                         }
                     }
                 }
-                Err(_) => {
-                    // timeout occurred
+                _ => {
+                    unreachable!()
                 }
-                Ok(_) => unreachable!(),
             };
 
             // join any handles that have completed

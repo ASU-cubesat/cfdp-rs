@@ -102,7 +102,7 @@ mod ipc {
                 let mut connection = LocalSocketStream::connect(self.socket.as_str())?;
                 connection.write_all(primitive.encode().as_slice())?;
 
-                (
+                TransactionID(
                     EntityID::decode(&mut connection)
                         .map_err(|_| IoError::from(ErrorKind::InvalidData))?,
                     TransactionSeqNum::decode(&mut connection)
@@ -114,22 +114,22 @@ mod ipc {
 
         /// Suspend the input transactin
         pub fn suspend(&self, transaction: TransactionID) -> Result<(), IoError> {
-            self.send(UserPrimitive::Suspend(transaction.0, transaction.1))
+            self.send(UserPrimitive::Suspend(transaction))
         }
 
         /// Resume the input transaction
         pub fn resume(&self, transaction: TransactionID) -> Result<(), IoError> {
-            self.send(UserPrimitive::Resume(transaction.0, transaction.1))
+            self.send(UserPrimitive::Resume(transaction))
         }
 
         /// Cancel the input transaction
         pub fn cancel(&self, transaction: TransactionID) -> Result<(), IoError> {
-            self.send(UserPrimitive::Cancel(transaction.0, transaction.1))
+            self.send(UserPrimitive::Cancel(transaction))
         }
 
         /// Receive the latest [Report] for the given transaction.
         pub fn report(&self, transaction: TransactionID) -> Result<Option<Report>, IoError> {
-            let primitive = UserPrimitive::Report(transaction.0, transaction.1);
+            let primitive = UserPrimitive::Report(transaction);
 
             let report = {
                 let mut connection = LocalSocketStream::connect(self.socket.as_str())?;
@@ -207,7 +207,7 @@ mod ipc {
                                     )?;
                                 }
                             }
-                            UserPrimitive::Cancel(_, _) => {
+                            UserPrimitive::Cancel(_) => {
                                 sender.send((primitive, internal_send)).map_err(|_| {
                                     IoError::new(
                                         ErrorKind::ConnectionReset,
@@ -215,7 +215,7 @@ mod ipc {
                                     )
                                 })?
                             }
-                            UserPrimitive::Suspend(_, _) => {
+                            UserPrimitive::Suspend(_) => {
                                 sender.send((primitive, internal_send)).map_err(|_| {
                                     IoError::new(
                                         ErrorKind::ConnectionReset,
@@ -223,7 +223,7 @@ mod ipc {
                                     )
                                 })?
                             }
-                            UserPrimitive::Resume(_, _) => {
+                            UserPrimitive::Resume(_) => {
                                 sender.send((primitive, internal_send)).map_err(|_| {
                                     IoError::new(
                                         ErrorKind::ConnectionReset,
@@ -231,7 +231,7 @@ mod ipc {
                                     )
                                 })?
                             }
-                            UserPrimitive::Report(_, _) => {
+                            UserPrimitive::Report(_) => {
                                 sender.send((primitive, internal_send)).map_err(|_| {
                                     IoError::new(
                                         ErrorKind::ConnectionReset,

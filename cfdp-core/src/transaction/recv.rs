@@ -21,7 +21,7 @@ use crate::{
         FileStatusCode, FileStoreResponse, Finished, KeepAlivePDU, MessageToUser, MetadataTLV,
         NakOrKeepAlive, NegativeAcknowledgmentPDU, Operations, PDUDirective, PDUHeader, PDUPayload,
         PDUType, PositiveAcknowledgePDU, PromptPDU, SegmentRequestForm, SegmentationControl,
-        TransactionSeqNum, TransactionStatus, TransmissionMode, VariableID, PDU, U3,
+        TransactionStatus, TransmissionMode, VariableID, PDU, U3,
     },
     segments,
     timer::Timer,
@@ -195,7 +195,7 @@ impl<T: FileStore> RecvTransaction<T> {
     pub fn handle_timeout(&mut self) -> TransactionResult<()> {
         if self.timer.inactivity.limit_reached() {
             if self.recv_state == RecvState::Cancelled {
-                warn!("Transaction {:?} Inactivity timeout limit reached in Cancelled state, abandoning", self.id());
+                warn!("Transaction {} inactivity timeout limit reached in Cancelled state, abandoning", self.id());
                 self.abandon();
             } else {
                 self.handle_fault(Condition::InactivityDetected)?;
@@ -221,7 +221,7 @@ impl<T: FileStore> RecvTransaction<T> {
             RecvState::Cancelled => {
                 if self.timer.ack.limit_reached() {
                     warn!(
-                        "Transaction {:?} ACK timeout limit reached in Cancelled state, abandoning",
+                        "Transaction {} ACK timeout limit reached in Cancelled state, abandoning",
                         self.id()
                     );
                     self.abandon();
@@ -339,8 +339,8 @@ impl<T: FileStore> RecvTransaction<T> {
         }
     }
 
-    pub fn id(&self) -> (VariableID, TransactionSeqNum) {
-        (self.config.source_entity_id, self.config.sequence_number)
+    pub fn id(&self) -> TransactionID {
+        TransactionID(self.config.source_entity_id, self.config.sequence_number)
     }
     fn initialize_tempfile(&mut self) -> TransactionResult<()> {
         self.file_handle = Some(self.filestore.open_tempfile()?);
@@ -416,13 +416,13 @@ impl<T: FileStore> RecvTransaction<T> {
     }
 
     pub fn abandon(&mut self) {
-        debug!("Transaction {0:?} abandoning.", self.id());
+        debug!("Transaction {0} abandoning.", self.id());
         self.status = TransactionStatus::Terminated;
         self.shutdown();
     }
 
     pub fn shutdown(&mut self) {
-        debug!("Transaction {0:?} shutting down.", self.id());
+        debug!("Transaction {0} shutting down.", self.id());
 
         self.state = TransactionState::Terminated;
         self.timer.ack.pause();
@@ -431,7 +431,7 @@ impl<T: FileStore> RecvTransaction<T> {
     }
 
     pub fn cancel(&mut self) -> TransactionResult<()> {
-        debug!("Transaction {0:?} canceling.", self.id());
+        debug!("Transaction {0} canceling.", self.id());
         self.condition = Condition::CancelReceived;
         self._cancel();
         Ok(())
@@ -588,7 +588,7 @@ impl<T: FileStore> RecvTransaction<T> {
             let pdu = PDU { header, payload };
 
             transport_tx.send((destination, pdu))?;
-            debug!("Transaction {0:?} sent Finished", self.id());
+            debug!("Transaction {0} sent Finished", self.id());
             self.set_finished_flag(false);
         }
         Ok(())
@@ -665,6 +665,7 @@ impl<T: FileStore> RecvTransaction<T> {
             end_of_scope: scope_end,
             segment_requests,
         };
+        debug!("Transaction {}: sending NAK for {} segments", self.id(), n);
 
         let payload = PDUPayload::Directive(Operations::Nak(nak));
         let payload_len = payload.encoded_len(self.config.file_size_flag);
@@ -742,7 +743,7 @@ impl<T: FileStore> RecvTransaction<T> {
     }
 
     pub fn process_pdu(&mut self, pdu: PDU) -> TransactionResult<()> {
-        self.timer.restart_inactivity();
+        self.timer.reset_inactivity();
         let PDU {
             header: _header,
             payload,

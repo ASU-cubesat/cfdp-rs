@@ -193,13 +193,13 @@ pub enum UserPrimitive {
     /// Initiate a Put transaction with the specificed [PutRequest] configuration.
     Put(PutRequest),
     /// Cancel the give transaction.
-    Cancel(EntityID, TransactionSeqNum),
+    Cancel(TransactionID),
     /// Suspend operations of the given transaction.
-    Suspend(EntityID, TransactionSeqNum),
+    Suspend(TransactionID),
     /// Resume operations of the given transaction.
-    Resume(EntityID, TransactionSeqNum),
+    Resume(TransactionID),
     /// Report progress of the given transaction.
-    Report(EntityID, TransactionSeqNum),
+    Report(TransactionID),
 }
 impl UserPrimitive {
     pub fn encode(self) -> Vec<u8> {
@@ -209,28 +209,28 @@ impl UserPrimitive {
                 buff.extend(request.encode());
                 buff
             }
-            Self::Cancel(id, seq) => {
+            Self::Cancel(id) => {
                 let mut buff: Vec<u8> = vec![1_u8];
-                buff.extend(id.encode());
-                buff.extend(seq.encode());
+                buff.extend(id.0.encode());
+                buff.extend(id.1.encode());
                 buff
             }
-            Self::Suspend(id, seq) => {
+            Self::Suspend(id) => {
                 let mut buff: Vec<u8> = vec![2_u8];
-                buff.extend(id.encode());
-                buff.extend(seq.encode());
+                buff.extend(id.0.encode());
+                buff.extend(id.1.encode());
                 buff
             }
-            Self::Resume(id, seq) => {
+            Self::Resume(id) => {
                 let mut buff: Vec<u8> = vec![3_u8];
-                buff.extend(id.encode());
-                buff.extend(seq.encode());
+                buff.extend(id.0.encode());
+                buff.extend(id.1.encode());
                 buff
             }
-            Self::Report(id, seq) => {
+            Self::Report(id) => {
                 let mut buff: Vec<u8> = vec![4_u8];
-                buff.extend(id.encode());
-                buff.extend(seq.encode());
+                buff.extend(id.0.encode());
+                buff.extend(id.1.encode());
                 buff
             }
         }
@@ -247,22 +247,22 @@ impl UserPrimitive {
             1 => {
                 let id = VariableID::decode(buffer)?;
                 let seq = VariableID::decode(buffer)?;
-                Ok(Self::Cancel(id, seq))
+                Ok(Self::Cancel(TransactionID(id, seq)))
             }
             2 => {
                 let id = VariableID::decode(buffer)?;
                 let seq = VariableID::decode(buffer)?;
-                Ok(Self::Suspend(id, seq))
+                Ok(Self::Suspend(TransactionID(id, seq)))
             }
             3 => {
                 let id = VariableID::decode(buffer)?;
                 let seq = VariableID::decode(buffer)?;
-                Ok(Self::Resume(id, seq))
+                Ok(Self::Resume(TransactionID(id, seq)))
             }
             4 => {
                 let id = VariableID::decode(buffer)?;
                 let seq = VariableID::decode(buffer)?;
-                Ok(Self::Report(id, seq))
+                Ok(Self::Report(TransactionID(id, seq)))
             }
             _ => Err(PrimitiveError::UnexpextedPrimitive),
         }
@@ -307,7 +307,7 @@ impl Report {
             let entity_id = EntityID::decode(buffer)?;
             let sequence_num = TransactionSeqNum::decode(buffer)?;
 
-            (entity_id, sequence_num)
+            TransactionID(entity_id, sequence_num)
         };
 
         let mut u8_buff = [0_u8; 1];
@@ -385,7 +385,7 @@ pub struct EntityConfig {
 }
 
 type SpawnerTuple = (
-    (EntityID, TransactionSeqNum),
+    TransactionID,
     Sender<Command>,
     JoinHandle<Result<Report, TransactionError>>,
 );
@@ -479,7 +479,10 @@ fn categorize_user_msg(
         .and_then(|_| {
             user_ops.iter().find_map(|msg| {
                 if let UserOperation::OriginatingTransactionIDMessage(origin) = msg {
-                    Some((origin.source_entity_id, origin.transaction_sequence_number))
+                    Some(TransactionID(
+                        origin.source_entity_id,
+                        origin.transaction_sequence_number,
+                    ))
                 } else {
                     None
                 }
@@ -713,8 +716,8 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
     }
 
     fn get_report(
-        id: (EntityID, TransactionSeqNum),
-        channels: &HashMap<(EntityID, TransactionSeqNum), Sender<Command>>,
+        id: TransactionID,
+        channels: &HashMap<TransactionID, Sender<Command>>,
     ) -> Option<Report> {
         channels
             .get(&id)
@@ -736,7 +739,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         send_proxy_response: bool,
     ) -> Result<SpawnerTuple, Box<dyn std::error::Error>> {
         let (transaction_tx, transaction_rx) = unbounded();
-        let id = (source_entity_id, sequence_number);
+        let id = TransactionID(source_entity_id, sequence_number);
 
         let destination_entity_id = request.destination_entity_id;
         let transmission_mode = request.transmission_mode;
@@ -801,7 +804,9 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                         }
                         Ok(id) => {
                             if tx_select_id == Some(id) {
+                                // println!("transport_tx capacity :{}", transport_tx.len());
                                 transaction.send_pdu(&transport_tx)?;
+                                // println!("dupa transport_tx capacity :{}", transport_tx.len());
                             } else if id == rx_select_id {
                                 match transaction_rx.try_recv() {
                                     Ok(command) => {
@@ -863,13 +868,12 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         selector.recv(&self.primitive_rx);
 
         // mapping of unique transaction ids to channels used to talk to each transaction
-        let mut transaction_channels: HashMap<(EntityID, TransactionSeqNum), Sender<Command>> =
-            HashMap::new();
+        let mut transaction_channels: HashMap<TransactionID, Sender<Command>> = HashMap::new();
 
         let mut cleanup = Instant::now();
 
         while !self.terminate.load(Ordering::Relaxed) {
-            match selector.select_timeout(Duration::from_micros(500)) {
+            match selector.select_timeout(Duration::from_millis(1000)) {
                 Ok(oper) if oper.index() == 0 => {
                     // this is a message to user
                     match oper.recv(&self.message_rx) {
@@ -1035,7 +1039,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                     }
                                     UserRequest::RemoteStatusReport(report_request) => {
                                         let report = Self::get_report(
-                                            (
+                                            TransactionID(
                                                 report_request.source_entity_id,
                                                 report_request.transaction_sequence_number,
                                             ),
@@ -1115,13 +1119,14 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         transaction_channels.insert(id, sender);
                                     }
                                     UserRequest::RemoteSuspend(suspend_req) => {
-                                        let suspend_indication = match transaction_channels.get(&(
-                                            suspend_req.source_entity_id,
-                                            suspend_req.transaction_sequence_number,
-                                        )) {
-                                            Some(chan) => chan.send(Command::Suspend).is_ok(),
-                                            None => false,
-                                        };
+                                        let suspend_indication =
+                                            match transaction_channels.get(&TransactionID(
+                                                suspend_req.source_entity_id,
+                                                suspend_req.transaction_sequence_number,
+                                            )) {
+                                                Some(chan) => chan.send(Command::Suspend).is_ok(),
+                                                None => false,
+                                            };
 
                                         let request = PutRequest {
                                             source_filename: "".into(),
@@ -1188,13 +1193,14 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         transaction_channels.insert(id, sender);
                                     }
                                     UserRequest::RemoteResume(resume_request) => {
-                                        let suspend_indication = match transaction_channels.get(&(
-                                            resume_request.source_entity_id,
-                                            resume_request.transaction_sequence_number,
-                                        )) {
-                                            Some(chan) => chan.send(Command::Resume).is_err(),
-                                            None => true,
-                                        };
+                                        let suspend_indication =
+                                            match transaction_channels.get(&TransactionID(
+                                                resume_request.source_entity_id,
+                                                resume_request.transaction_sequence_number,
+                                            )) {
+                                                Some(chan) => chan.send(Command::Resume).is_err(),
+                                                None => true,
+                                            };
 
                                         let request = PutRequest {
                                             source_filename: "".into(),
@@ -1296,7 +1302,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                 Direction::ToReceiver => pdu.header.source_entity_id,
                             };
 
-                            let key = (
+                            let key = TransactionID(
                                 pdu.header.source_entity_id,
                                 pdu.header.transaction_sequence_number,
                             );
@@ -1427,32 +1433,32 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                     // ignore the possible error if the user disconnected;
                                     let _ = internal_return.send(UserReturn::ID(id));
                                 }
-                                UserPrimitive::Cancel(id, seq) => {
-                                    if let Some(channel) = transaction_channels.get(&(id, seq)) {
+                                UserPrimitive::Cancel(id) => {
+                                    if let Some(channel) = transaction_channels.get(&id) {
                                         channel.send(Command::Cancel)?;
                                     }
                                 }
-                                UserPrimitive::Suspend(id, seq) => {
-                                    if let Some(channel) = transaction_channels.get(&(id, seq)) {
+                                UserPrimitive::Suspend(id) => {
+                                    if let Some(channel) = transaction_channels.get(&id) {
                                         channel.send(Command::Suspend)?;
                                     }
                                 }
-                                UserPrimitive::Resume(id, seq) => {
-                                    if let Some(channel) = transaction_channels.get(&(id, seq)) {
+                                UserPrimitive::Resume(id) => {
+                                    if let Some(channel) = transaction_channels.get(&id) {
                                         channel.send(Command::Resume)?;
                                     }
                                 }
-                                UserPrimitive::Report(id, seq) => {
-                                    let report = Self::get_report((id, seq), &transaction_channels);
+                                UserPrimitive::Report(id) => {
+                                    let report = Self::get_report(id, &transaction_channels);
                                     let response = match report {
                                         Some(data) => {
-                                            info!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", id, seq, data.state, data.status, data.condition);
+                                            info!("Status of Transaction {}. State: {:?}. Status: {:?}. Condition: {:?}.", id, data.state, data.status, data.condition);
                                             self.history.insert(data.id, data.clone());
                                             Some(data)
                                         }
-                                        None => match self.history.get(&(id, seq)) {
+                                        None => match self.history.get(&id) {
                                             Some(data) => {
-                                                info!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", id, seq, data.state, data.status, data.condition);
+                                                info!("Status of Transaction {}. State: {:?}. Status: {:?}. Condition: {:?}.", id, data.state, data.status, data.condition);
                                                 Some(data.clone())
                                             }
                                             None => {
@@ -1500,9 +1506,9 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
 
                                                     cleanup = Instant::now();
                                                 }
-                                                match self.history.get(&(id, seq)) {
+                                                match self.history.get(&id) {
                                                     Some(data) => {
-                                                        info!("Status of Transaction ({:?}, {:?}). State: {:?}. Status: {:?}. Condition: {:?}.", id, seq, data.state, data.status, data.condition);
+                                                        info!("Status of Transaction {}. State: {:?}. Status: {:?}. Condition: {:?}.", id, data.state, data.status, data.condition);
                                                         Some(data.clone())
                                                     }
                                                     None => {
@@ -1659,13 +1665,10 @@ mod test {
                     message_to_user: vec![MessageToUser{message_text: "do something".as_bytes().to_vec()}],
                 }
             ),
-            UserPrimitive::Cancel(EntityID::from(1_u8), TransactionSeqNum::from(3_u8)),
-            UserPrimitive::Suspend(EntityID::from(10_u16), TransactionSeqNum::from(400_u16)),
-            UserPrimitive::Resume(
-                EntityID::from(871838474_u64),
-                TransactionSeqNum::from(871838447_u64)
-            ),
-            UserPrimitive::Report(EntityID::from(12_u16), TransactionSeqNum::from(33_u16))
+            UserPrimitive::Cancel(TransactionID::from(1_u8, 3_u8)),
+            UserPrimitive::Suspend(TransactionID::from(10_u16, 400_u16)),
+            UserPrimitive::Resume(TransactionID::from(871838474_u64, 871838447_u64)),
+            UserPrimitive::Report(TransactionID::from(12_u16, 33_u16))
         )]
         expected: UserPrimitive,
     ) {
@@ -1677,7 +1680,7 @@ mod test {
 
     #[rstest]
     fn proxy_req(#[values(true, false)] use_mode: bool) {
-        let origin_id = (EntityID::from(55_u16), TransactionSeqNum::from(12_u16));
+        let origin_id = TransactionID::from(55_u16, 12_u16);
         let mut messages = vec![
             ProxyOperation::ProxyFileStoreRequest(FileStoreRequest {
                 action_code: FileStoreAction::CreateDirectory,
@@ -1749,7 +1752,7 @@ mod test {
 
     #[test]
     fn categorize_user_message() {
-        let origin_id = (EntityID::from(55_u16), TransactionSeqNum::from(12_u16));
+        let origin_id = TransactionID::from(55_u16, 12_u16);
         let proxy_ops = vec![
             ProxyOperation::ProxyFileStoreRequest(FileStoreRequest {
                 action_code: FileStoreAction::CreateDirectory,
@@ -1823,7 +1826,7 @@ mod test {
             message_text: "help".as_bytes().to_vec(),
         }];
 
-        let cancel_id: TransactionID = (EntityID::from(16_u16), TransactionSeqNum::from(3_u32));
+        let cancel_id = TransactionID::from(16_u16, 3_u32);
 
         let mut user_messages: Vec<MessageToUser> = proxy_ops
             .iter()

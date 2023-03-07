@@ -12,6 +12,7 @@ use log::{debug, info};
 use super::{
     config::{Metadata, TransactionConfig, TransactionState},
     error::{TransactionError, TransactionResult},
+    TransactionID,
 };
 use crate::{
     daemon::{PutRequest, Report, UserPrimitive},
@@ -21,8 +22,8 @@ use crate::{
         FileDataPDU, FileStatusCode, MessageToUser, MetadataPDU, MetadataTLV, Operations,
         PDUDirective, PDUEncode, PDUHeader, PDUPayload, PDUType, PositiveAcknowledgePDU,
         ProxyPutResponse, SegmentRequestForm, SegmentationControl, SegmentedData,
-        TransactionSeqNum, TransactionStatus, TransmissionMode, UnsegmentedFileData, UserOperation,
-        UserResponse, VariableID, PDU, U3,
+        TransactionStatus, TransmissionMode, UnsegmentedFileData, UserOperation, UserResponse,
+        VariableID, PDU, U3,
     },
     timer::Timer,
     user::UserReturn,
@@ -288,8 +289,8 @@ impl<T: FileStore> SendTransaction<T> {
         }
     }
 
-    pub fn id(&self) -> (VariableID, TransactionSeqNum) {
-        (self.config.source_entity_id, self.config.sequence_number)
+    pub fn id(&self) -> TransactionID {
+        TransactionID(self.config.source_entity_id, self.config.sequence_number)
     }
 
     fn get_checksum(&mut self) -> TransactionResult<u32> {
@@ -473,7 +474,7 @@ impl<T: FileStore> SendTransaction<T> {
             let pdu = PDU { header, payload };
 
             transport_tx.send((destination, pdu))?;
-            debug!("Transaction {0:?} sent EndOfFile.", self.id());
+            debug!("Transaction {0} sent EndOfFile.", self.id());
             self.set_eof_flag(false);
         }
         Ok(())
@@ -487,13 +488,13 @@ impl<T: FileStore> SendTransaction<T> {
     }
 
     pub fn abandon(&mut self) {
-        debug!("Transaction {0:?} abandoning.", self.id());
+        debug!("Transaction {0} abandoning.", self.id());
         self.status = TransactionStatus::Terminated;
         self.shutdown();
     }
 
     pub fn shutdown(&mut self) {
-        debug!("Transaction {0:?} shutting down.", self.id());
+        debug!("Transaction {0} shutting down.", self.id());
         self.state = TransactionState::Terminated;
         self.timer.ack.pause();
         self.timer.inactivity.pause();
@@ -585,7 +586,7 @@ impl<T: FileStore> SendTransaction<T> {
             let pdu = PDU { header, payload };
 
             transport_tx.send((destination, pdu))?;
-            debug!("Transaction {0:?} sent Ack(Finished).", self.id());
+            debug!("Transaction {0} sent Ack(Finished).", self.id());
             self.shutdown();
         }
         Ok(())
@@ -637,7 +638,7 @@ impl<T: FileStore> SendTransaction<T> {
                             self.send_state = SendState::Finished;
                             self.condition = finished.condition;
                             debug!(
-                                "Transaction {:?} received Finished ({:?})",
+                                "Transaction {} received Finished ({:?})",
                                 self.id(),
                                 self.condition
                             );
@@ -861,7 +862,7 @@ impl<T: FileStore> SendTransaction<T> {
         let pdu = PDU { header, payload };
 
         transport_tx.send((destination, pdu))?;
-        debug!("Transaction {0:?} sent Metadata.", self.id());
+        debug!("Transaction {0} sent Metadata.", self.id());
         Ok(())
     }
 }

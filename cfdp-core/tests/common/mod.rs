@@ -1,13 +1,13 @@
 use std::{
     collections::HashMap,
-    fs,
-    io::{Error as IoError, ErrorKind},
+    fs::{self, OpenOptions},
+    io::{Error as IoError, ErrorKind, Write},
     marker::PhantomData,
     net::{SocketAddr, ToSocketAddrs, UdpSocket},
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, RwLock,
     },
     thread::{self, JoinHandle},
     time::Duration,
@@ -18,14 +18,18 @@ use cfdp_core::{
     daemon::{Daemon, EntityConfig, NakProcedure, PutRequest, Report, UserPrimitive, UserReturn},
     filestore::{ChecksumType, FileStore, NativeFileStore},
     pdu::{
-        CRCFlag, Condition, EntityID, FaultHandlerAction, PDUDirective, PDUEncode, PDUPayload,
-        TransactionSeqNum, VariableID, PDU,
+        CRCFlag, Condition, DirectoryListingResponse, EntityID, FaultHandlerAction,
+        ListingResponseCode, MessageToUser, OriginatingTransactionIDMessage, PDUDirective,
+        PDUEncode, PDUPayload, ProxyOperation, ProxyPutRequest, RemoteStatusReportResponse,
+        RemoteSuspendResponse, TransactionSeqNum, TransactionStatus, TransmissionMode,
+        UserOperation, UserRequest, UserResponse, VariableID, PDU,
     },
     transaction::TransactionID,
     transport::{PDUTransport, UdpTransport},
 };
-use crossbeam_channel::{bounded, Receiver, Sender};
-use log::error;
+use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
+use itertools::{Either, Itertools};
+use log::{error, info};
 use signal_hook::{consts::TERM_SIGNALS, flag};
 use tempfile::TempDir;
 
@@ -46,33 +50,521 @@ impl<'a, T> From<(JoinHandle<T>, Arc<AtomicBool>)> for JoD<'a, T> {
     }
 }
 
+pub(crate) fn get_proxy_request(
+    origin_id: &TransactionID,
+    messages: &[ProxyOperation],
+) -> Vec<PutRequest> {
+    let mut out = vec![];
+    let proxy_puts: Vec<ProxyPutRequest> = messages
+        .iter()
+        .filter_map(|msg| match msg {
+            ProxyOperation::ProxyPutRequest(req) => Some(req.clone()),
+            _ => None,
+        })
+        .collect();
+
+    for put in proxy_puts {
+        let transmission_mode = messages
+            .iter()
+            .find_map(|msg| match msg {
+                ProxyOperation::ProxyTransmissionMode(mode) => Some(*mode),
+                _ => None,
+            })
+            .unwrap_or(TransmissionMode::Unacknowledged);
+
+        let filestore_requests = messages
+            .iter()
+            .filter_map(|msg| match msg {
+                ProxyOperation::ProxyFileStoreRequest(req) => Some(req.clone()),
+                _ => None,
+            })
+            .collect();
+
+        let mut message_to_user: Vec<MessageToUser> = messages
+            .iter()
+            .filter_map(|msg| match msg {
+                ProxyOperation::ProxyMessageToUser(req) => Some(req.clone()),
+                _ => None,
+            })
+            .collect();
+
+        // Should include an originating TransactionIDMessage
+        // But if the implementation doesn't let's not worry about it too much
+        message_to_user.push(MessageToUser::from(
+            UserOperation::OriginatingTransactionIDMessage(OriginatingTransactionIDMessage {
+                source_entity_id: origin_id.0,
+                transaction_sequence_number: origin_id.1,
+            }),
+        ));
+
+        let req = PutRequest {
+            source_filename: put.source_filename,
+            destination_filename: put.destination_filename,
+            destination_entity_id: put.destination_entity_id,
+            transmission_mode,
+            filestore_requests,
+            message_to_user,
+        };
+        out.push(req)
+    }
+
+    out
+}
+
+type UserMessageCategories = (
+    // proxy operations
+    Vec<PutRequest>,
+    // user requests
+    Vec<UserRequest>,
+    // responses to log
+    Vec<UserResponse>,
+    // Transaction ID to cancel
+    Option<TransactionID>,
+    // Others
+    Vec<MessageToUser>,
+);
+
+pub(crate) fn categorize_user_msg(
+    origin_id: &TransactionID,
+    messages: Vec<MessageToUser>,
+) -> UserMessageCategories {
+    let (user_ops, other_messages): (Vec<UserOperation>, Vec<MessageToUser>) =
+        messages.into_iter().partition_map(|msg| {
+            match UserOperation::decode(&mut msg.message_text.as_slice()) {
+                Ok(operation) => Either::Left(operation),
+                Err(_) => Either::Right(msg),
+            }
+        });
+
+    let cancel_id = user_ops
+        .iter()
+        .find(|&msg| msg == &UserOperation::ProxyOperation(ProxyOperation::ProxyPutCancel))
+        .and_then(|_| {
+            user_ops.iter().find_map(|msg| {
+                if let UserOperation::OriginatingTransactionIDMessage(origin) = msg {
+                    Some((origin.source_entity_id, origin.transaction_sequence_number))
+                } else {
+                    None
+                }
+            })
+        });
+    let proxy_ops: Vec<ProxyOperation> = user_ops
+        .iter()
+        .filter_map(|req| {
+            if let UserOperation::ProxyOperation(op) = req {
+                Some(op.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let other_reqs = user_ops
+        .iter()
+        .filter_map(|req| {
+            if let UserOperation::Request(request) = req {
+                Some(request.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let responses = user_ops
+        .iter()
+        .filter_map(|req| {
+            if let UserOperation::Response(response) = req {
+                Some(response.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    let proxy_reqs = get_proxy_request(origin_id, proxy_ops.as_slice());
+    (proxy_reqs, other_reqs, responses, cancel_id, other_messages)
+}
+
+type UserSplit = (
+    TestUserHalf,
+    Receiver<(UserPrimitive, Sender<UserReturn>)>,
+    Sender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
+);
+
 pub(crate) struct TestUser {
     internal_tx: Sender<(UserPrimitive, Sender<UserReturn>)>,
     internal_rx: Receiver<(UserPrimitive, Sender<UserReturn>)>,
+    message_tx: Sender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
+    // a mapping of originatin transacion ID to currently running IDs on the daemon
+    proxy_id_map: Arc<RwLock<HashMap<TransactionID, TransactionID>>>,
+    // a mapping of transaction IDs to the User messages generated by that transaction.
+    user_messages: Arc<RwLock<HashMap<TransactionID, Vec<MessageToUser>>>>,
+    handle: JoinHandle<()>,
 }
 impl TestUser {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new<T: FileStore + Send + Sync + 'static>(filestore: Arc<T>) -> Self {
+        let user_messages = Arc::new(RwLock::new(HashMap::new()));
+
         let (internal_tx, internal_rx) = bounded(1);
+        let (message_tx, message_rx) =
+            unbounded::<(TransactionID, TransmissionMode, Vec<MessageToUser>)>();
+
+        let proxy_id_map = Arc::new(RwLock::new(HashMap::new()));
+        let proxy_map = proxy_id_map.clone();
+
+        let message_writer = user_messages.clone();
+        let auto_sender = internal_tx.clone();
+        let handle = thread::spawn(move || {
+            while let Ok((origin_id, tx_mode, messages)) = message_rx.recv() {
+                println!("Received user messages");
+                let mut mapping = message_writer.write().unwrap();
+                {
+                    let values = (*mapping).entry(origin_id).or_insert_with(Vec::new);
+                    // we don't want to move out the messages or nothing will happen.
+                    values.append(&mut (messages.clone()));
+                }
+
+                let (put_requests, user_reqs, responses, cancel_id, other_messages) =
+                    categorize_user_msg(&origin_id, messages);
+
+                for request in put_requests {
+                    print!("Auto spawning put requests: {request:?}...");
+                    let (sender, recv) = bounded(0);
+                    auto_sender
+                        .send((UserPrimitive::Put(request), sender))
+                        .expect("Unable to send auto request");
+
+                    if let UserReturn::ID(id) = recv.recv().expect("Recv channel disconnected: ") {
+                        (*proxy_map.write().unwrap()).insert(origin_id, id);
+                    };
+                    println!("Adone");
+                }
+
+                if let Some(id) = cancel_id {
+                    let primitive = UserPrimitive::Cancel(id.0, id.1);
+                    let (send, _recv) = bounded(0);
+                    auto_sender
+                        .send((primitive, send))
+                        .map_err(|_| {
+                            IoError::new(
+                                ErrorKind::ConnectionReset,
+                                "Daemon Half of User disconnected.",
+                            )
+                        })
+                        .expect("Auto sender error ");
+                }
+
+                for req in user_reqs.into_iter() {
+                    let request = match req {
+                        UserRequest::DirectoryListing(directory_request) => {
+                            match filestore.list_directory(&directory_request.directory_name) {
+                                Ok(listing) => {
+                                    let outfile = directory_request
+                                        .directory_name
+                                        .as_path()
+                                        .with_extension(".listing");
+
+                                    let response_code = match filestore
+                                        .open(
+                                            &outfile,
+                                            OpenOptions::new()
+                                                .create(true)
+                                                .truncate(true)
+                                                .write(true),
+                                        )
+                                        .map(|mut handle| handle.write_all(listing.as_bytes()))
+                                    {
+                                        Ok(Ok(())) => ListingResponseCode::Successful,
+                                        _ => ListingResponseCode::Unsuccessful,
+                                    };
+                                    PutRequest {
+                                        source_filename: outfile,
+                                        destination_filename: directory_request
+                                            .directory_filename
+                                            .clone(),
+                                        destination_entity_id: origin_id.0,
+                                        transmission_mode: tx_mode,
+                                        filestore_requests: vec![],
+                                        message_to_user: vec![
+                                            MessageToUser::from(
+                                                UserOperation::OriginatingTransactionIDMessage(
+                                                    OriginatingTransactionIDMessage {
+                                                        source_entity_id: origin_id.0,
+                                                        transaction_sequence_number: origin_id.1,
+                                                    },
+                                                ),
+                                            ),
+                                            MessageToUser::from(UserOperation::Response(
+                                                UserResponse::DirectoryListing(
+                                                    DirectoryListingResponse {
+                                                        response_code,
+                                                        directory_name: directory_request
+                                                            .directory_name,
+                                                        directory_filename: directory_request
+                                                            .directory_filename,
+                                                    },
+                                                ),
+                                            )),
+                                        ],
+                                    }
+                                }
+                                Err(_) => PutRequest {
+                                    source_filename: "".into(),
+                                    destination_filename: "".into(),
+                                    destination_entity_id: origin_id.0,
+                                    transmission_mode: tx_mode,
+                                    filestore_requests: vec![],
+                                    message_to_user: vec![
+                                        MessageToUser::from(
+                                            UserOperation::OriginatingTransactionIDMessage(
+                                                OriginatingTransactionIDMessage {
+                                                    source_entity_id: origin_id.0,
+                                                    transaction_sequence_number: origin_id.1,
+                                                },
+                                            ),
+                                        ),
+                                        MessageToUser::from(UserOperation::Response(
+                                            UserResponse::DirectoryListing(
+                                                DirectoryListingResponse {
+                                                    response_code:
+                                                        ListingResponseCode::Unsuccessful,
+                                                    directory_name: directory_request
+                                                        .directory_name,
+                                                    directory_filename: directory_request
+                                                        .directory_filename,
+                                                },
+                                            ),
+                                        )),
+                                    ],
+                                },
+                            }
+                        }
+                        UserRequest::RemoteStatusReport(report_request) => {
+                            let primitive = UserPrimitive::Report(
+                                report_request.source_entity_id,
+                                report_request.transaction_sequence_number,
+                            );
+
+                            let (send, recv) = bounded(0);
+
+                            auto_sender
+                                .send((primitive, send))
+                                .map_err(|_| {
+                                    IoError::new(
+                                        ErrorKind::ConnectionReset,
+                                        "Daemon Half of User disconnected.",
+                                    )
+                                })
+                                .expect("error asking for report.");
+                            let response = recv
+                                .recv()
+                                .map_err(|_| {
+                                    IoError::new(
+                                        ErrorKind::ConnectionReset,
+                                        "Daemon Half of User disconnected.",
+                                    )
+                                })
+                                .expect("error receiving report");
+
+                            let report = match response {
+                                UserReturn::Report(report) => report,
+                                _ => unreachable!(),
+                            };
+
+                            let response = {
+                                match report {
+                                    Some(data) => RemoteStatusReportResponse {
+                                        transaction_status: data.status,
+                                        source_entity_id: data.id.0,
+                                        transaction_sequence_number: data.id.1,
+                                        response_code: true,
+                                    },
+                                    None => RemoteStatusReportResponse {
+                                        transaction_status: TransactionStatus::Unrecognized,
+                                        source_entity_id: report_request.source_entity_id,
+                                        transaction_sequence_number: report_request
+                                            .transaction_sequence_number,
+                                        response_code: false,
+                                    },
+                                }
+                            };
+                            PutRequest {
+                                source_filename: "".into(),
+                                destination_filename: "".into(),
+                                destination_entity_id: origin_id.0,
+                                transmission_mode: tx_mode,
+                                filestore_requests: vec![],
+                                message_to_user: vec![
+                                    MessageToUser::from(
+                                        UserOperation::OriginatingTransactionIDMessage(
+                                            OriginatingTransactionIDMessage {
+                                                source_entity_id: origin_id.0,
+                                                transaction_sequence_number: origin_id.1,
+                                            },
+                                        ),
+                                    ),
+                                    MessageToUser::from(UserOperation::Response(
+                                        UserResponse::RemoteStatusReport(response),
+                                    )),
+                                ],
+                            }
+                        }
+                        UserRequest::RemoteSuspend(suspend_req) => {
+                            let primitive = UserPrimitive::Suspend(
+                                suspend_req.source_entity_id,
+                                suspend_req.transaction_sequence_number,
+                            );
+
+                            let (send, _recv) = bounded(0);
+
+                            let suspend_indication = auto_sender
+                                .send((primitive, send))
+                                .map_err(|_| {
+                                    IoError::new(
+                                        ErrorKind::ConnectionReset,
+                                        "Daemon Half of User disconnected.",
+                                    )
+                                })
+                                .is_ok();
+
+                            PutRequest {
+                                source_filename: "".into(),
+                                destination_filename: "".into(),
+                                destination_entity_id: origin_id.0,
+                                transmission_mode: tx_mode,
+                                filestore_requests: vec![],
+                                message_to_user: vec![
+                                    MessageToUser::from(
+                                        UserOperation::OriginatingTransactionIDMessage(
+                                            OriginatingTransactionIDMessage {
+                                                source_entity_id: origin_id.0,
+                                                transaction_sequence_number: origin_id.1,
+                                            },
+                                        ),
+                                    ),
+                                    MessageToUser::from(UserOperation::Response(
+                                        UserResponse::RemoteSuspend(RemoteSuspendResponse {
+                                            suspend_indication,
+                                            transaction_status: TransactionStatus::Unrecognized,
+                                            source_entity_id: suspend_req.source_entity_id,
+                                            transaction_sequence_number: suspend_req
+                                                .transaction_sequence_number,
+                                        }),
+                                    )),
+                                ],
+                            }
+                        }
+                        UserRequest::RemoteResume(resume_request) => {
+                            let primitive = UserPrimitive::Resume(
+                                resume_request.source_entity_id,
+                                resume_request.transaction_sequence_number,
+                            );
+
+                            let (send, _recv) = bounded(0);
+
+                            let suspend_indication = auto_sender
+                                .send((primitive, send))
+                                .map_err(|_| {
+                                    IoError::new(
+                                        ErrorKind::ConnectionReset,
+                                        "Daemon Half of User disconnected.",
+                                    )
+                                })
+                                .is_ok();
+
+                            PutRequest {
+                                source_filename: "".into(),
+                                destination_filename: "".into(),
+                                destination_entity_id: origin_id.0,
+                                transmission_mode: tx_mode,
+                                filestore_requests: vec![],
+                                message_to_user: vec![
+                                    MessageToUser::from(
+                                        UserOperation::OriginatingTransactionIDMessage(
+                                            OriginatingTransactionIDMessage {
+                                                source_entity_id: origin_id.0,
+                                                transaction_sequence_number: origin_id.1,
+                                            },
+                                        ),
+                                    ),
+                                    MessageToUser::from(UserOperation::Response(
+                                        UserResponse::RemoteSuspend(RemoteSuspendResponse {
+                                            suspend_indication,
+                                            transaction_status: TransactionStatus::Unrecognized,
+                                            source_entity_id: resume_request.source_entity_id,
+                                            transaction_sequence_number: resume_request
+                                                .transaction_sequence_number,
+                                        }),
+                                    )),
+                                ],
+                            }
+                        }
+                    };
+                    let (sender, _recv) = bounded(0);
+                    auto_sender
+                        .send((UserPrimitive::Put(request), sender))
+                        .expect("Unable to send auto request");
+                }
+                for response in responses {
+                    // log indication of the response received!
+                    info!("Received User Operation Response: {:?}", response);
+                }
+                for message in other_messages {
+                    // also log this!
+                    info!("Received Messages I can't decifer {:?}", message);
+                }
+            }
+        });
         Self {
             internal_tx,
             internal_rx,
+            message_tx,
+            proxy_id_map,
+            user_messages,
+            handle,
         }
     }
 
-    pub(crate) fn split(self) -> (TestUserHalf, Receiver<(UserPrimitive, Sender<UserReturn>)>) {
+    pub(crate) fn split(self) -> UserSplit {
         let TestUser {
             internal_tx,
             internal_rx,
+            message_tx,
+            proxy_id_map,
+            user_messages,
+            handle,
         } = self;
-        (TestUserHalf { internal_tx }, internal_rx)
+        (
+            TestUserHalf {
+                internal_tx,
+                _proxy_id_map: proxy_id_map,
+                _user_messages: user_messages,
+                _auto_sender_handle: handle,
+            },
+            internal_rx,
+            message_tx,
+        )
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TestUserHalf {
     internal_tx: Sender<(UserPrimitive, Sender<UserReturn>)>,
+    _proxy_id_map: Arc<RwLock<HashMap<TransactionID, TransactionID>>>,
+    _user_messages: Arc<RwLock<HashMap<TransactionID, Vec<MessageToUser>>>>,
+    _auto_sender_handle: JoinHandle<()>,
 }
 impl TestUserHalf {
+    #[allow(unused)]
+    pub fn get_messages(&self, id: &TransactionID) -> Option<Vec<MessageToUser>> {
+        self._user_messages.read().unwrap().get(id).cloned()
+    }
+
+    #[allow(unused)]
+    pub fn clear_messages(&mut self, id: &TransactionID) -> Option<Vec<MessageToUser>> {
+        self._user_messages.write().unwrap().remove(id)
+    }
+
+    #[allow(unused)]
     pub fn put(&self, request: PutRequest) -> Result<TransactionID, IoError> {
         let primitive = UserPrimitive::Put(request);
 
@@ -110,6 +602,7 @@ impl TestUserHalf {
         })
     }
 
+    #[allow(unused)]
     pub fn report(&self, transaction: TransactionID) -> Result<Option<Report>, IoError> {
         let primitive = UserPrimitive::Report(transaction);
         let (send, recv) = bounded(0);
@@ -184,8 +677,8 @@ pub(crate) fn create_daemons<T: FileStore + Sync + Send + 'static>(
 
     let local_filestore = filestore.clone();
 
-    let local_user = TestUser::new();
-    let (local_userhalf, local_daemonhalf) = local_user.split();
+    let local_user = TestUser::new(local_filestore.clone());
+    let (local_userhalf, local_daemonhalf, message_tx) = local_user.split();
 
     let mut local_daemon = Daemon::new(
         EntityID::from(0_u16),
@@ -196,6 +689,7 @@ pub(crate) fn create_daemons<T: FileStore + Sync + Send + 'static>(
         config.clone(),
         signal.clone(),
         local_daemonhalf,
+        message_tx,
     )
     .expect("Cannot create daemon listener.");
 
@@ -209,10 +703,10 @@ pub(crate) fn create_daemons<T: FileStore + Sync + Send + 'static>(
         })
         .expect("Unable to spwan local.");
 
-    let remote_user = TestUser::new();
-    let (remote_userhalf, remote_daemonhalf) = remote_user.split();
-
     let remote_filestore = filestore;
+    let remote_user = TestUser::new(remote_filestore.clone());
+    let (remote_userhalf, remote_daemonhalf, remote_message_tx) = remote_user.split();
+
     let mut remote_daemon = Daemon::new(
         EntityID::from(1_u16),
         TransactionSeqNum::from(0_u16),
@@ -222,6 +716,7 @@ pub(crate) fn create_daemons<T: FileStore + Sync + Send + 'static>(
         config,
         signal.clone(),
         remote_daemonhalf,
+        remote_message_tx,
     )
     .expect("Cannot create daemon listener.");
 
@@ -352,15 +847,15 @@ fn make_entities(
     )
 }
 
-pub(crate) type UsersAndFilestore = (TestUserHalf, TestUserHalf, Arc<NativeFileStore>);
+pub(crate) type UsersAndFilestore = (
+    &'static TestUserHalf,
+    &'static TestUserHalf,
+    Arc<NativeFileStore>,
+);
 #[fixture]
 #[once]
 pub(crate) fn get_filestore(make_entities: &'static EntityConstructorReturn) -> UsersAndFilestore {
-    (
-        make_entities.0.clone(),
-        make_entities.1.clone(),
-        make_entities.2.clone(),
-    )
+    (&make_entities.0, &make_entities.1, make_entities.2.clone())
 }
 
 #[allow(dead_code)]

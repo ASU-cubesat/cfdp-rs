@@ -359,8 +359,8 @@ pub struct ReservedMessageHeader {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OriginatingTransactionIDMessage {
-    pub(crate) source_entity_id: EntityID,
-    pub(crate) transaction_sequence_number: TransactionSeqNum,
+    pub source_entity_id: EntityID,
+    pub transaction_sequence_number: TransactionSeqNum,
 }
 impl PDUEncode for OriginatingTransactionIDMessage {
     type PDUType = Self;

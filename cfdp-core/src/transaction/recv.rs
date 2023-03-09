@@ -843,6 +843,7 @@ impl<T: FileStore> RecvTransaction<T> {
                                             MetadataTLV::MessageToUser(req) => Some(req.clone()),
                                             _ => None,
                                         });
+                                    println!("Sending some messages.");
                                     // push each request up to the Daemon
                                     self.message_tx.send((
                                         self.id(),

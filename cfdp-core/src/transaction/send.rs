@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use crossbeam_channel::{bounded, Sender};
+use crossbeam_channel::Sender;
 use log::{debug, info};
 
 use super::{
@@ -15,15 +15,14 @@ use super::{
     TransactionID,
 };
 use crate::{
-    daemon::{PutRequest, Report, UserPrimitive, UserReturn},
+    daemon::Report,
     filestore::{FileChecksum, FileStore, FileStoreError},
     pdu::{
         ACKSubDirective, Condition, DeliveryCode, Direction, EndOfFile, FaultHandlerAction,
-        FileDataPDU, FileStatusCode, MessageToUser, MetadataPDU, MetadataTLV, Operations,
-        PDUDirective, PDUEncode, PDUHeader, PDUPayload, PDUType, PositiveAcknowledgePDU,
-        ProxyPutResponse, SegmentRequestForm, SegmentationControl, SegmentedData,
-        TransactionStatus, TransmissionMode, UnsegmentedFileData, UserOperation, UserResponse,
-        VariableID, PDU, U3,
+        FileDataPDU, FileStatusCode, MetadataPDU, MetadataTLV, Operations, PDUDirective, PDUHeader,
+        PDUPayload, PDUType, PositiveAcknowledgePDU, SegmentRequestForm, SegmentationControl,
+        SegmentedData, TransactionStatus, TransmissionMode, UnsegmentedFileData, VariableID, PDU,
+        U3,
     },
     timer::Timer,
 };
@@ -82,8 +81,6 @@ pub struct SendTransaction<T: FileStore> {
     // EoF prepared to be sent at the next opportunity if the bool is true
     eof: Option<(EndOfFile, bool)>,
     ack: Option<PositiveAcknowledgePDU>,
-    // a channel to propagate ProxyPutRequests up to the daemon.
-    primitive_tx: Sender<(UserPrimitive, Sender<UserReturn>)>,
 }
 impl<T: FileStore> SendTransaction<T> {
     /// Start a new SendTransaction with the given [configuration](TransactionConfig)
@@ -95,8 +92,6 @@ impl<T: FileStore> SendTransaction<T> {
         metadata: Metadata,
         // Connection to the local FileStore implementation.
         filestore: Arc<T>,
-        // Sender channel to propagate ProxyPutRequests up to the daemon
-        primitive_tx: Sender<(UserPrimitive, Sender<UserReturn>)>,
     ) -> Self {
         let received_file_size = 0_u64;
         let timer = Timer::new(
@@ -126,7 +121,6 @@ impl<T: FileStore> SendTransaction<T> {
             state: TransactionState::Active,
             eof: None,
             ack: None,
-            primitive_tx,
         }
     }
 
@@ -233,12 +227,12 @@ impl<T: FileStore> SendTransaction<T> {
         Ok(())
     }
 
-    pub fn get_status(&self) -> &TransactionStatus {
-        &self.status
+    pub fn get_status(&self) -> TransactionStatus {
+        self.status
     }
 
-    pub(crate) fn get_state(&self) -> &TransactionState {
-        &self.state
+    pub(crate) fn get_state(&self) -> TransactionState {
+        self.state
     }
 
     pub fn get_mode(&self) -> TransmissionMode {
@@ -247,8 +241,8 @@ impl<T: FileStore> SendTransaction<T> {
     pub fn generate_report(&self) -> Report {
         Report {
             id: self.id(),
-            state: self.get_state().clone(),
-            status: self.get_status().clone(),
+            state: self.get_state(),
+            status: self.get_status(),
             condition: self.condition,
         }
     }
@@ -278,7 +272,7 @@ impl<T: FileStore> SendTransaction<T> {
                 large_file_flag: self.config.file_size_flag,
                 pdu_data_field_length,
                 segmentation_control,
-                segment_metadata_flag: self.config.segment_metadata_flag.clone(),
+                segment_metadata_flag: self.config.segment_metadata_flag,
                 source_entity_id: self.config.source_entity_id,
                 transaction_sequence_number: self.config.sequence_number,
                 destination_entity_id: self.config.destination_entity_id,
@@ -565,7 +559,7 @@ impl<T: FileStore> SendTransaction<T> {
             directive: PDUDirective::Finished,
             directive_subtype_code: ACKSubDirective::Finished,
             condition: self.condition,
-            transaction_status: self.status.clone(),
+            transaction_status: self.status,
         });
     }
 
@@ -589,14 +583,6 @@ impl<T: FileStore> SendTransaction<T> {
             self.shutdown();
         }
         Ok(())
-    }
-
-    pub fn get_proxy_response(&mut self) -> ProxyPutResponse {
-        ProxyPutResponse {
-            condition: self.condition,
-            delivery_code: self.delivery_code.clone(),
-            file_status: self.file_status.clone(),
-        }
     }
 
     pub fn process_pdu(&mut self, pdu: PDU) -> TransactionResult<()> {
@@ -633,6 +619,7 @@ impl<T: FileStore> SendTransaction<T> {
                         )),
                         Operations::Finished(finished) => {
                             self.delivery_code = finished.delivery_code;
+                            self.file_status = finished.file_status;
                             self.prepare_ack();
                             self.send_state = SendState::Finished;
                             self.condition = finished.condition;
@@ -649,47 +636,7 @@ impl<T: FileStore> SendTransaction<T> {
                                         self.condition
                                     );
                                 }
-                                false => {
-                                    if self.config.send_proxy_response {
-                                        // if this originiated from a ProxyPutRequest
-                                        // originate a Put request to send the results back
-                                        if let Some(origin) = self.metadata.message_to_user.iter().find_map(|msg| {
-                                                match UserOperation::decode(&mut msg.message_text.as_slice()).ok()? {
-                                                    UserOperation::OriginatingTransactionIDMessage(id) => Some(id),
-                                                    _ => None,
-                                                }
-
-                                        }) {
-                                            let mut message_to_user = vec![
-                                                MessageToUser::from(UserOperation::Response(UserResponse::ProxyPut(
-                                                    self.get_proxy_response(),
-                                                ))),
-                                                MessageToUser::from(UserOperation::OriginatingTransactionIDMessage(
-                                                    origin.clone(),
-                                                )),
-                                            ];
-                                            finished.filestore_response.iter().for_each(|res| {
-                                                message_to_user.push(MessageToUser::from(UserOperation::Response(
-                                                    UserResponse::ProxyFileStore(res.clone()),
-                                                )))
-                                            });
-
-                                            let req = PutRequest {
-                                                source_filename: "".into(),
-                                                destination_filename: "".into(),
-                                                destination_entity_id: origin.source_entity_id,
-                                                transmission_mode: TransmissionMode::Unacknowledged,
-                                                filestore_requests: vec![],
-                                                message_to_user,
-                                            };
-                                            // we should be able to connect to the socket we are running
-                                            // just fine. but we can ignore errors per
-                                            // CCSDS 727.0-B-5  § 6.2.5.1.2
-                                            let (sender, _) = bounded(0);
-                                            let _ = self.primitive_tx.send_timeout((UserPrimitive::Put(req), sender), Duration::from_millis(100));
-                                        }
-                                    }
-                                }
+                                false => {}
                             }
                             Ok(())
                         }
@@ -884,7 +831,7 @@ mod test {
     use super::*;
 
     use camino::{Utf8Path, Utf8PathBuf};
-    use crossbeam_channel::{bounded, unbounded};
+    use crossbeam_channel::unbounded;
     use rstest::{fixture, rstest};
     use std::thread;
     use tempfile::TempDir;
@@ -901,9 +848,8 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
-        let (sender, _) = bounded(0);
         let metadata = test_metadata(10, Utf8PathBuf::from(""));
-        let mut transaction = SendTransaction::new(config, metadata, filestore, sender);
+        let mut transaction = SendTransaction::new(config, metadata, filestore);
 
         let payload_len = 12;
         let expected = PDUHeader {
@@ -938,10 +884,8 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
-        let (sender, _) = bounded(0);
-
         let metadata = test_metadata(600_u64, Utf8PathBuf::from("a"));
-        let transaction = SendTransaction::new(config, metadata, filestore, sender);
+        let transaction = SendTransaction::new(config, metadata, filestore);
 
         assert_eq!(
             TransactionStatus::Undefined,
@@ -961,9 +905,8 @@ mod test {
 
         let path = Utf8PathBuf::from("testfile");
 
-        let (sender, _) = bounded(0);
         let metadata = test_metadata(10, path.clone());
-        let mut transaction = SendTransaction::new(config, metadata, filestore.clone(), sender);
+        let mut transaction = SendTransaction::new(config, metadata, filestore.clone());
 
         let input = vec![0, 5, 255, 99];
 
@@ -1029,8 +972,7 @@ mod test {
         let path = Utf8PathBuf::from("testfile_missing");
         let metadata = test_metadata(10, path.clone());
 
-        let (sender, _) = bounded(0);
-        let mut transaction = SendTransaction::new(config, metadata, filestore, sender);
+        let mut transaction = SendTransaction::new(config, metadata, filestore);
 
         let input = vec![0, 5, 255, 99];
         let pdu = match &nak {
@@ -1114,9 +1056,8 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
-        let (sender, _) = bounded(0);
         let metadata = test_metadata(10, Utf8PathBuf::from(""));
-        let mut transaction = SendTransaction::new(config, metadata, filestore, sender);
+        let mut transaction = SendTransaction::new(config, metadata, filestore);
 
         let result = transaction
             .get_checksum()
@@ -1141,8 +1082,7 @@ mod test {
 
         let path = Utf8PathBuf::from("test_eof.dat");
         let metadata = test_metadata(input.as_bytes().len() as u64, path.clone());
-        let (sender, _) = bounded(0);
-        let mut transaction = SendTransaction::new(config, metadata, filestore.clone(), sender);
+        let mut transaction = SendTransaction::new(config, metadata, filestore.clone());
 
         let (checksum, _overflow) =
             input
@@ -1215,11 +1155,9 @@ mod test {
 
         let input = "Here is some test data to write!$*#*.\n";
 
-        let (sender, _) = bounded(0);
         let path = Utf8PathBuf::from(format!("test_eof_{:}.dat", config.transmission_mode as u8));
         let metadata = test_metadata(input.as_bytes().len() as u64, path.clone());
-        let mut transaction =
-            SendTransaction::new(config.clone(), metadata, filestore.clone(), sender);
+        let mut transaction = SendTransaction::new(config.clone(), metadata, filestore.clone());
 
         let (checksum, _overflow) =
             input
@@ -1290,9 +1228,8 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let (sender, _) = bounded(0);
         let metadata = test_metadata(0, Utf8PathBuf::from(""));
-        let mut transaction = SendTransaction::new(config, metadata, filestore, sender);
+        let mut transaction = SendTransaction::new(config, metadata, filestore);
 
         transaction.timer.restart_ack();
         transaction.timer.restart_inactivity();
@@ -1319,9 +1256,8 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
-        let (sender, _) = bounded(0);
         let metadata = test_metadata(0, Utf8PathBuf::from(""));
-        let mut transaction = SendTransaction::new(config, metadata, filestore, sender);
+        let mut transaction = SendTransaction::new(config, metadata, filestore);
 
         transaction.timer.restart_ack();
         transaction.timer.restart_inactivity();
@@ -1360,15 +1296,14 @@ mod test {
         let path = Utf8PathBuf::from(format!("test_eof_{:}.dat", config.transmission_mode as u8));
         let input = "Here is some test data to write!$*#*.\n";
 
-        let (sender, _) = bounded(0);
         let metadata = test_metadata(input.as_bytes().len() as u64, path);
-        let mut transaction = SendTransaction::new(config.clone(), metadata, filestore, sender);
+        let mut transaction = SendTransaction::new(config.clone(), metadata, filestore);
 
         let payload = PDUPayload::Directive(Operations::Ack(PositiveAcknowledgePDU {
             directive: PDUDirective::Finished,
             directive_subtype_code: ACKSubDirective::Finished,
             condition: Condition::NoError,
-            transaction_status: transaction.status.clone(),
+            transaction_status: transaction.status,
         }));
 
         let payload_len = payload.encoded_len(config.file_size_flag);
@@ -1454,9 +1389,8 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
-        let (sender, _) = bounded(0);
         let metadata = test_metadata(600, Utf8PathBuf::from("Test_file.txt"));
-        let mut transaction = SendTransaction::new(config, metadata, filestore, sender);
+        let mut transaction = SendTransaction::new(config, metadata, filestore);
 
         let payload = PDUPayload::Directive(operation);
         let payload_len = payload.encoded_len(transaction.config.file_size_flag);
@@ -1518,9 +1452,8 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
-        let (sender, _) = bounded(0);
         let metadata = test_metadata(600, Utf8PathBuf::from("Test_file.txt"));
-        let mut transaction = SendTransaction::new(config, metadata, filestore, sender);
+        let mut transaction = SendTransaction::new(config, metadata, filestore);
 
         let payload = PDUPayload::Directive(operation);
         let payload_len = payload.encoded_len(transaction.config.file_size_flag);
@@ -1558,9 +1491,8 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
-        let (sender, _) = bounded(0);
         let metadata = test_metadata(600, Utf8PathBuf::from("Test_file.txt"));
-        let mut transaction = SendTransaction::new(config, metadata, filestore, sender);
+        let mut transaction = SendTransaction::new(config, metadata, filestore);
 
         let payload = PDUPayload::FileData(FileDataPDU::Unsegmented(UnsegmentedFileData {
             offset: 12_u64,
@@ -1591,10 +1523,9 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
-        let (sender, _) = bounded(0);
         let path = Utf8PathBuf::from("test_file");
         let metadata = test_metadata(600, path);
-        let mut transaction = SendTransaction::new(config, metadata, filestore, sender);
+        let mut transaction = SendTransaction::new(config, metadata, filestore);
 
         let finished_pdu = {
             let payload = PDUPayload::Directive(Operations::Finished(Finished {
@@ -1664,9 +1595,8 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
-        let (sender, _) = bounded(0);
         let metadata = test_metadata(total_size, Utf8PathBuf::from("test_file"));
-        let mut transaction = SendTransaction::new(config, metadata, filestore, sender);
+        let mut transaction = SendTransaction::new(config, metadata, filestore);
 
         let nak_pdu = {
             let payload = PDUPayload::Directive(Operations::Nak(NegativeAcknowledgmentPDU {
@@ -1734,8 +1664,7 @@ mod test {
             checksum_type: ChecksumType::Null,
         };
 
-        let (sender, _) = bounded(0);
-        let mut transaction = SendTransaction::new(config, metadata, filestore, sender);
+        let mut transaction = SendTransaction::new(config, metadata, filestore);
 
         transaction.checksum = Some(0);
 
@@ -1810,8 +1739,7 @@ mod test {
             checksum_type: ChecksumType::Null,
         };
 
-        let (sender, _) = bounded(0);
-        let mut transaction = SendTransaction::new(config, metadata, filestore, sender);
+        let mut transaction = SendTransaction::new(config, metadata, filestore);
         transaction.checksum = Some(0);
 
         let keep_alive = {

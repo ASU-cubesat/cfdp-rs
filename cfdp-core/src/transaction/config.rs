@@ -32,7 +32,7 @@ impl TransactionID {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, PartialEq, Eq, FromPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive)]
 pub enum TransactionState {
     Active,
     Suspended,
@@ -87,8 +87,6 @@ pub struct TransactionConfig {
     pub nak_timeout: i64,
     /// Maximum amount timeof without activity before the ACK [Timer] increments its count.
     pub ack_timeout: i64,
-    // used when a proxy put request is received to originate a transaction
-    pub send_proxy_response: bool,
 }
 
 #[cfg(test)]
@@ -116,7 +114,6 @@ pub(crate) mod test {
             inactivity_timeout: 300_i64,
             ack_timeout: 300_i64,
             nak_timeout: 300_i64,
-            send_proxy_response: false,
         }
     }
 }

@@ -6,21 +6,23 @@ use std::{
     time::Duration,
 };
 
+use camino::Utf8PathBuf;
 use crossbeam_channel::Sender;
 use log::{debug, warn};
 
 use super::{
-    config::{Metadata, TransactionConfig, TransactionID, TransactionState},
+    config::{Metadata, TransactionConfig, TransactionState},
     error::{TransactionError, TransactionResult},
+    TransactionID,
 };
 use crate::{
-    daemon::{NakProcedure, Report},
+    daemon::{Indication, MetadataRecvIndication, NakProcedure, Report},
     filestore::{FileChecksum, FileStore, FileStoreError},
     pdu::{
         ACKSubDirective, Condition, DeliveryCode, Direction, FaultHandlerAction, FileDataPDU,
-        FileStatusCode, FileStoreResponse, Finished, KeepAlivePDU, MessageToUser, MetadataTLV,
-        NakOrKeepAlive, NegativeAcknowledgmentPDU, Operations, PDUDirective, PDUHeader, PDUPayload,
-        PDUType, PositiveAcknowledgePDU, PromptPDU, SegmentRequestForm, SegmentationControl,
+        FileStatusCode, FileStoreResponse, Finished, KeepAlivePDU, MetadataTLV, NakOrKeepAlive,
+        NegativeAcknowledgmentPDU, Operations, PDUDirective, PDUHeader, PDUPayload, PDUType,
+        PositiveAcknowledgePDU, PromptPDU, SegmentRequestForm, SegmentationControl,
         TransactionStatus, TransmissionMode, VariableID, PDU, U3,
     },
     segments,
@@ -45,8 +47,8 @@ pub struct RecvTransaction<T: FileStore> {
     config: TransactionConfig,
     /// The [FileStore] implementation used to interact with files on disk.
     filestore: Arc<T>,
-    /// Channel for message to users to propagate back up
-    message_tx: Sender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
+    /// Channel for Indications to propagate back up
+    indication_tx: Sender<Indication>,
     /// The current file being worked by this Transaction.
     file_handle: Option<File>,
     /// A sorted list of contiguous (start offset, end offset) non overlapping received segments to monitor progress and detect NAKs.
@@ -106,7 +108,7 @@ impl<T: FileStore> RecvTransaction<T> {
         // Connection to the local FileStore implementation.
         filestore: Arc<T>,
         // Sender channel used to propagate Message To User back up to the Daemon Thread.
-        message_tx: Sender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
+        indication_tx: Sender<Indication>,
     ) -> Self {
         let received_file_size = 0_u64;
         let timer = Timer::new(
@@ -122,7 +124,7 @@ impl<T: FileStore> RecvTransaction<T> {
             status: TransactionStatus::Undefined,
             config,
             filestore,
-            message_tx,
+            indication_tx,
             file_handle: None,
             saved_segments: Vec::new(),
             nak_procedure,
@@ -287,19 +289,19 @@ impl<T: FileStore> RecvTransaction<T> {
         self.file_size.is_some()
     }
 
-    pub fn get_status(&self) -> &TransactionStatus {
-        &self.status
+    pub fn get_status(&self) -> TransactionStatus {
+        self.status
     }
 
-    pub(crate) fn get_state(&self) -> &TransactionState {
-        &self.state
+    pub(crate) fn get_state(&self) -> TransactionState {
+        self.state
     }
 
     pub fn generate_report(&self) -> Report {
         Report {
             id: self.id(),
-            state: self.get_state().clone(),
-            status: self.get_status().clone(),
+            state: self.get_state(),
+            status: self.get_status(),
             condition: self.condition,
         }
     }
@@ -329,7 +331,7 @@ impl<T: FileStore> RecvTransaction<T> {
                 large_file_flag: self.config.file_size_flag,
                 pdu_data_field_length,
                 segmentation_control,
-                segment_metadata_flag: self.config.segment_metadata_flag.clone(),
+                segment_metadata_flag: self.config.segment_metadata_flag,
                 source_entity_id: self.config.source_entity_id,
                 transaction_sequence_number: self.config.sequence_number,
                 destination_entity_id: self.config.destination_entity_id,
@@ -516,7 +518,7 @@ impl<T: FileStore> RecvTransaction<T> {
             directive: PDUDirective::EoF,
             directive_subtype_code: ACKSubDirective::Other,
             condition: self.condition,
-            transaction_status: self.status.clone(),
+            transaction_status: self.status,
         });
     }
     fn send_ack_eof(&mut self, transport_tx: &Sender<(VariableID, PDU)>) -> TransactionResult<()> {
@@ -561,8 +563,8 @@ impl<T: FileStore> RecvTransaction<T> {
         self.finished = Some((
             Finished {
                 condition: self.condition,
-                delivery_code: self.delivery_code.clone(),
-                file_status: self.file_status.clone(),
+                delivery_code: self.delivery_code,
+                file_status: self.file_status,
                 filestore_response: self.filestore_response.clone(),
                 fault_location,
             },
@@ -843,25 +845,32 @@ impl<T: FileStore> RecvTransaction<T> {
                                             MetadataTLV::MessageToUser(req) => Some(req.clone()),
                                             _ => None,
                                         });
-                                    println!("Sending some messages.");
                                     // push each request up to the Daemon
-                                    self.message_tx.send((
-                                        self.id(),
-                                        self.config.transmission_mode,
-                                        message_to_user.clone().collect(),
+                                    let source_filename: Utf8PathBuf =
+                                        std::str::from_utf8(metadata.source_filename.as_slice())
+                                            .map_err(FileStoreError::UTF8)?
+                                            .into();
+
+                                    let destination_filename: Utf8PathBuf = std::str::from_utf8(
+                                        metadata.destination_filename.as_slice(),
+                                    )
+                                    .map_err(FileStoreError::UTF8)?
+                                    .into();
+
+                                    self.indication_tx.send(Indication::MetadataRecv(
+                                        MetadataRecvIndication {
+                                            id: self.id(),
+                                            source_filename: source_filename.clone(),
+                                            destination_filename: destination_filename.clone(),
+                                            file_size: metadata.file_size,
+                                            transmission_mode: self.config.transmission_mode,
+                                            user_messages: message_to_user.clone().collect(),
+                                        },
                                     ))?;
 
                                     self.metadata = Some(Metadata {
-                                        source_filename: std::str::from_utf8(
-                                            metadata.source_filename.as_slice(),
-                                        )
-                                        .map_err(FileStoreError::UTF8)?
-                                        .into(),
-                                        destination_filename: std::str::from_utf8(
-                                            metadata.destination_filename.as_slice(),
-                                        )
-                                        .map_err(FileStoreError::UTF8)?
-                                        .into(),
+                                        source_filename,
+                                        destination_filename,
                                         file_size: metadata.file_size,
                                         checksum_type: metadata.checksum_type,
                                         closure_requested: metadata.closure_requested,
@@ -976,23 +985,31 @@ impl<T: FileStore> RecvTransaction<T> {
                                             _ => None,
                                         });
                                     // push each request up to the Daemon
-                                    self.message_tx.send((
-                                        self.id(),
-                                        self.config.transmission_mode,
-                                        message_to_user.clone().collect(),
+                                    let source_filename: Utf8PathBuf =
+                                        std::str::from_utf8(metadata.source_filename.as_slice())
+                                            .map_err(FileStoreError::UTF8)?
+                                            .into();
+
+                                    let destination_filename: Utf8PathBuf = std::str::from_utf8(
+                                        metadata.destination_filename.as_slice(),
+                                    )
+                                    .map_err(FileStoreError::UTF8)?
+                                    .into();
+
+                                    self.indication_tx.send(Indication::MetadataRecv(
+                                        MetadataRecvIndication {
+                                            id: self.id(),
+                                            source_filename: source_filename.clone(),
+                                            destination_filename: destination_filename.clone(),
+                                            file_size: metadata.file_size,
+                                            transmission_mode: self.config.transmission_mode,
+                                            user_messages: message_to_user.clone().collect(),
+                                        },
                                     ))?;
 
                                     self.metadata = Some(Metadata {
-                                        source_filename: std::str::from_utf8(
-                                            metadata.source_filename.as_slice(),
-                                        )
-                                        .map_err(FileStoreError::UTF8)?
-                                        .into(),
-                                        destination_filename: std::str::from_utf8(
-                                            metadata.destination_filename.as_slice(),
-                                        )
-                                        .map_err(FileStoreError::UTF8)?
-                                        .into(),
+                                        source_filename,
+                                        destination_filename,
                                         file_size: metadata.file_size,
                                         checksum_type: metadata.checksum_type,
                                         closure_requested: metadata.closure_requested,
@@ -1067,7 +1084,8 @@ mod test {
         filestore::{ChecksumType, NativeFileStore},
         pdu::{
             CRCFlag, EndOfFile, FileSizeFlag, FileStoreAction, FileStoreRequest, FileStoreStatus,
-            MetadataPDU, PromptPDU, RenameStatus, SegmentedData, UnsegmentedFileData,
+            MessageToUser, MetadataPDU, PromptPDU, RenameStatus, SegmentedData,
+            UnsegmentedFileData,
         },
     };
 
@@ -1355,8 +1373,8 @@ mod test {
 
         let payload = PDUPayload::Directive(Operations::Finished(Finished {
             condition: Condition::CancelReceived,
-            delivery_code: transaction.delivery_code.clone(),
-            file_status: transaction.file_status.clone(),
+            delivery_code: transaction.delivery_code,
+            file_status: transaction.file_status,
             filestore_response: vec![],
             fault_location: None,
         }));
@@ -1513,7 +1531,7 @@ mod test {
             directive: PDUDirective::EoF,
             directive_subtype_code: ACKSubDirective::Other,
             condition: Condition::NoError,
-            transaction_status: transaction.status.clone(),
+            transaction_status: transaction.status,
         }));
 
         let payload_len = payload.encoded_len(config.file_size_flag);
@@ -1907,9 +1925,17 @@ mod test {
         transaction.process_pdu(pdu).unwrap();
         assert_eq!(expected, transaction.metadata);
 
-        let (_, _, user_msg) = message_rx.recv().unwrap();
-        assert_eq!(1, user_msg.len());
-        assert_eq!(expected_msg, user_msg[0])
+        let indication = message_rx.recv().unwrap();
+        if let Indication::MetadataRecv(MetadataRecvIndication {
+            user_messages: user_msg,
+            ..
+        }) = indication
+        {
+            assert_eq!(1, user_msg.len());
+            assert_eq!(expected_msg, user_msg[0])
+        } else {
+            panic!()
+        }
     }
 
     #[rstest]
@@ -2124,9 +2150,8 @@ mod test {
         transaction.file_size = Some(600);
 
         let prompt_pdu = {
-            let payload = PDUPayload::Directive(Operations::Prompt(PromptPDU {
-                nak_or_keep_alive: nak_or_keep_alive.clone(),
-            }));
+            let payload =
+                PDUPayload::Directive(Operations::Prompt(PromptPDU { nak_or_keep_alive }));
             let payload_len = payload.encoded_len(transaction.config.file_size_flag);
 
             let header = transaction.get_header(

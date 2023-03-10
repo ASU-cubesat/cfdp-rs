@@ -19,9 +19,10 @@ use thiserror::Error;
 use crate::{
     filestore::{ChecksumType, FileStore},
     pdu::{
-        error::PDUError, CRCFlag, Condition, Direction, EntityID, FaultHandlerAction, FileSizeFlag,
-        FileStoreRequest, MessageToUser, PDUEncode, PDUHeader, SegmentedData, TransactionSeqNum,
-        TransactionStatus, TransmissionMode, VariableID, PDU,
+        error::PDUError, CRCFlag, Condition, DeliveryCode, Direction, EntityID, FaultHandlerAction,
+        FileSizeFlag, FileStatusCode, FileStoreRequest, FileStoreResponse, MessageToUser,
+        PDUEncode, PDUHeader, SegmentedData, TransactionSeqNum, TransactionStatus,
+        TransmissionMode, VariableID, PDU,
     },
     transaction::{
         Metadata, RecvTransaction, SendTransaction, TransactionConfig, TransactionError,
@@ -57,16 +58,6 @@ impl From<TransactionError> for PrimitiveError {
     fn from(err: TransactionError) -> Self {
         Self::Metadata(Box::new(err))
     }
-}
-
-#[derive(Debug)]
-/// Some User interactions require the ID to be returned to the user
-/// or the status report requested.
-// this enum allows us to send a one-off channel to the Daemon
-// then listen for the response.
-pub enum UserReturn {
-    ID(TransactionID),
-    Report(Option<Report>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -302,7 +293,6 @@ impl Report {
         buff.push(self.state as u8);
         buff.push(self.status as u8);
         buff.push(self.condition as u8);
-
         buff
     }
 
@@ -342,6 +332,80 @@ impl Report {
             condition,
         })
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct MetadataRecvIndication {
+    pub id: TransactionID,
+    pub source_filename: Utf8PathBuf,
+    pub destination_filename: Utf8PathBuf,
+    pub file_size: u64,
+    pub transmission_mode: TransmissionMode,
+    pub user_messages: Vec<MessageToUser>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FileSegmentIndication {
+    pub id: TransactionID,
+    pub offset: u64,
+    pub length: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct FinishedIndication {
+    pub id: TransactionID,
+    pub report: Report,
+    pub file_status: FileStatusCode,
+    pub delivery_code: DeliveryCode,
+    pub filestore_responses: Vec<FileStoreResponse>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SuspendIndication {
+    pub id: TransactionID,
+    pub condition: Condition,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResumeIndication {
+    pub id: TransactionID,
+    pub progress: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct FaultIndication {
+    pub id: TransactionID,
+    pub condition: Condition,
+    pub progress: u64,
+}
+
+#[derive(Debug, Clone)]
+/// Indications how the Daemon and Transactions relay information back to the User application.
+/// Indications are issued at necessary points in each Transaction's lifetime.
+pub enum Indication {
+    /// A new transaction has been initiated as a result of a [PutRequest]
+    Transaction(TransactionID),
+    /// End of File has been Sent
+    EoFSent(TransactionID),
+    /// End of File PDU has been received
+    EoFRecv(TransactionID),
+    /// A running transaction has reached the Finished state.
+    /// Receipt of this indications starts and post transaction actions.
+    Finished(FinishedIndication),
+    /// Metadata has been received for a [RecvTransaction]
+    MetadataRecv(MetadataRecvIndication),
+    /// A new file segment has been received
+    FileSegmentRecv(FileSegmentIndication),
+    /// The associated Transaction has been suspended at the given progress point.
+    Suspended(SuspendIndication),
+    /// The associated Transaction has been resumed at the given progress point.
+    Resumed(ResumeIndication),
+    /// Last known status for the given transaction
+    Report(Option<Report>),
+    /// A Fault has been initiated for the given transaction
+    Fault(FaultIndication),
+    /// An Abandon Fault has been initiated for the given transaction
+    Abandon(FaultIndication),
 }
 
 /// The way the Nak procedure is implemented is the following:
@@ -405,14 +469,10 @@ pub struct Daemon<T: FileStore + Send + 'static> {
     transport_tx_map: HashMap<EntityID, Sender<(VariableID, PDU)>>,
     // the transport PDU rx channel connection
     transport_rx: Receiver<PDU>,
-    // // mapping of unique transaction ids to channels used to talk to each transaction
-    // transaction_channels: HashMap<(EntityID, Vec<u8>), Sender<Command>>,
     // the underlying filestore used by this Daemon
     filestore: Arc<T>,
-    // message reciept channel used to execute User Operations
-    // message_rx: Receiver<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
-    // message sender channel used to execute User Operations by Transactions
-    message_tx: Sender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
+    // message sender channel used to send Indications from Transactions to the User
+    indication_tx: Sender<Indication>,
     // a mapping of individual fault handler actions per remote entity
     entity_configs: HashMap<VariableID, EntityConfig>,
     // the default fault handling configuration
@@ -426,10 +486,8 @@ pub struct Daemon<T: FileStore + Send + 'static> {
     // termination signal sent to children threads
     terminate: Arc<AtomicBool>,
     // channel to receive user primitives from the implemented User
-    primitive_rx: Receiver<(UserPrimitive, Sender<UserReturn>)>,
-    // channel for transaction to initiate a primitive
-    transaction_primitive_tx: Sender<(UserPrimitive, Sender<UserReturn>)>,
-    transaction_primitive_rx: Receiver<(UserPrimitive, Sender<UserReturn>)>,
+    primitive_rx: Receiver<(UserPrimitive, Sender<Indication>)>,
+    // transaction report history for quicker responses for report requests.
     history: HashMap<TransactionID, Report>,
 }
 impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
@@ -442,12 +500,11 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         entity_configs: HashMap<VariableID, EntityConfig>,
         default_config: EntityConfig,
         terminate: Arc<AtomicBool>,
-        primitive_rx: Receiver<(UserPrimitive, Sender<UserReturn>)>,
-        message_tx: Sender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
+        primitive_rx: Receiver<(UserPrimitive, Sender<Indication>)>,
+        indication_tx: Sender<Indication>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // let (message_tx, message_rx) = unbounded();
         let mut transport_tx_map: HashMap<EntityID, Sender<(VariableID, PDU)>> = HashMap::new();
-        let (transaction_primitive_tx, transaction_primitive_rx) = bounded(1);
         let (pdu_send, pdu_receive) = unbounded();
         for (vec, mut transport) in transport_map.into_iter() {
             let (remote_send, remote_receive) = bounded(1);
@@ -465,7 +522,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             transport_tx_map,
             transport_rx: pdu_receive,
             filestore,
-            message_tx,
+            indication_tx,
             entity_configs,
             default_config,
             entity_id,
@@ -473,8 +530,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             proxy_id_map: HashMap::new(),
             terminate,
             primitive_rx,
-            transaction_primitive_rx,
-            transaction_primitive_tx,
             history: HashMap::new(),
         })
     }
@@ -483,7 +538,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         transport_tx: Sender<(VariableID, PDU)>,
         entity_config: EntityConfig,
         filestore: Arc<T>,
-        message_tx: Sender<(TransactionID, TransmissionMode, Vec<MessageToUser>)>,
+        indication_tx: Sender<Indication>,
     ) -> Result<SpawnerTuple, Box<dyn std::error::Error>> {
         let (transaction_tx, transaction_rx) = unbounded();
 
@@ -496,19 +551,22 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             fault_handler_override: entity_config.fault_handler_override.clone(),
             file_size_segment: entity_config.file_size_segment,
             crc_flag: header.crc_flag,
-            segment_metadata_flag: header.segment_metadata_flag.clone(),
+            segment_metadata_flag: header.segment_metadata_flag,
             max_count: entity_config.default_transaction_max_count,
             inactivity_timeout: entity_config.inactivity_timeout,
             ack_timeout: entity_config.ack_timeout,
             nak_timeout: entity_config.nak_timeout,
-            send_proxy_response: false,
         };
         let name = format!(
             "({:?}, {:?})",
             &config.source_entity_id, &config.sequence_number
         );
-        let mut transaction =
-            RecvTransaction::new(config, entity_config.nak_procedure, filestore, message_tx);
+        let mut transaction = RecvTransaction::new(
+            config,
+            entity_config.nak_procedure,
+            filestore,
+            indication_tx,
+        );
         let id = transaction.id();
 
         let handle = thread::Builder::new().name(name).spawn(move || {
@@ -517,7 +575,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
 
             let mut tx_select_id = Option::<usize>::None;
 
-            while transaction.get_state() != &TransactionState::Terminated {
+            while transaction.get_state() != TransactionState::Terminated {
                 if transaction.has_pdu_to_send() {
                     tx_select_id.get_or_insert_with(||sel.send(&transport_tx));
                 } else if let Some(idx) = tx_select_id.take() {
@@ -596,10 +654,8 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         sequence_number: TransactionSeqNum,
         source_entity_id: EntityID,
         transport_tx: Sender<(EntityID, PDU)>,
-        primtive_tx: Sender<(UserPrimitive, Sender<UserReturn>)>,
         entity_config: EntityConfig,
         filestore: Arc<T>,
-        send_proxy_response: bool,
     ) -> Result<SpawnerTuple, Box<dyn std::error::Error>> {
         let (transaction_tx, transaction_rx) = unbounded();
         let id = TransactionID(source_entity_id, sequence_number);
@@ -620,7 +676,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             inactivity_timeout: entity_config.inactivity_timeout,
             ack_timeout: entity_config.ack_timeout,
             nak_timeout: entity_config.nak_timeout,
-            send_proxy_response,
         };
         let mut metadata = construct_metadata(request, entity_config, 0_u64);
 
@@ -641,14 +696,13 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                     false => FileSizeFlag::Large,
                 };
 
-                let mut transaction =
-                    SendTransaction::new(config, metadata, filestore, primtive_tx);
+                let mut transaction = SendTransaction::new(config, metadata, filestore);
                 let mut sel = Select::new();
                 let rx_select_id = sel.recv(&transaction_rx);
 
                 let mut tx_select_id = Option::<usize>::None;
 
-                while transaction.get_state() != &TransactionState::Terminated {
+                while transaction.get_state() != TransactionState::Terminated {
                     if transaction.has_pdu_to_send() {
                         if tx_select_id.is_none() {
                             tx_select_id = Some(sel.send(&transport_tx));
@@ -728,7 +782,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         let mut selector = Select::new();
         let transport = selector.recv(&self.transport_rx);
         let user_primitive = selector.recv(&self.primitive_rx);
-        let transaction_primitive = selector.recv(&self.transaction_primitive_rx);
 
         // mapping of unique transaction ids to channels used to talk to each transaction
         let mut transaction_channels: HashMap<TransactionID, Sender<Command>> = HashMap::new();
@@ -773,7 +826,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                             .clone(),
                                         entity_config,
                                         self.filestore.clone(),
-                                        self.message_tx.clone(),
+                                        self.indication_tx.clone(),
                                     )
                                     .expect("Cannot spawn new Transaction.");
 
@@ -814,7 +867,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                                 .clone(),
                                             entity_config,
                                             self.filestore.clone(),
-                                            self.message_tx.clone(),
+                                            self.indication_tx.clone(),
                                         )?;
 
                                     let response = Self::get_report(id, &transaction_channels);
@@ -835,14 +888,8 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                     };
                 }
                 // received a UserPrimitive from the user implementation
-                oper if oper.index() == user_primitive || oper.index() == transaction_primitive => {
-                    let index = oper.index();
-                    let receiver = if index == user_primitive {
-                        &self.primitive_rx
-                    } else {
-                        &self.transaction_primitive_rx
-                    };
-                    match oper.recv(receiver) {
+                oper if oper.index() == user_primitive => {
+                    match oper.recv(&self.primitive_rx) {
                         Ok((primitive, internal_return)) => {
                             match primitive {
                                 UserPrimitive::Put(request) => {
@@ -864,10 +911,8 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         sequence_number,
                                         self.entity_id,
                                         transport_tx,
-                                        self.transaction_primitive_tx.clone(),
                                         entity_config,
                                         self.filestore.clone(),
-                                        false,
                                     )?;
 
                                     self.transaction_handles.push(handle);
@@ -883,7 +928,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                     }
 
                                     // ignore the possible error if the user disconnected;
-                                    let _ = internal_return.send(UserReturn::ID(id));
+                                    let _ = internal_return.send(Indication::Transaction(id));
                                 }
                                 UserPrimitive::Cancel(id) => {
                                     if let Some(channel) = transaction_channels.get(&id) {
@@ -930,6 +975,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                                                     // remove the channel for this transaction if it is complete
                                                                     let _ = transaction_channels
                                                                         .remove(&inner_report.id);
+
                                                                     // keep all proxy id maps where the finished transaction ID is not the entry
                                                                     self.proxy_id_map.retain(
                                                                         |_, value| {
@@ -939,7 +985,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                                                     );
                                                                     self.history.insert(
                                                                         inner_report.id,
-                                                                        inner_report,
+                                                                        inner_report.clone(),
                                                                     );
                                                                 }
                                                                 Ok(Err(err)) => {
@@ -972,18 +1018,16 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         },
                                     };
                                     // ignore the possible error if the user disconnected;
-                                    let _ = internal_return.send(UserReturn::Report(response));
+                                    let _ = internal_return.send(Indication::Report(response));
                                 }
                             };
                         }
                         Err(_err) => {
                             // The channel is disconnected
                             // this is only an issue if the channel was the user interface
-                            if index == user_primitive {
-                                error!("User interface disconnected from daemon.");
-                                self.terminate.store(true, Ordering::Relaxed);
-                                break;
-                            }
+                            error!("User interface disconnected from daemon.");
+                            self.terminate.store(true, Ordering::Relaxed);
+                            break;
                         }
                     }
                 }

@@ -16,7 +16,10 @@ use super::{
     TransactionID,
 };
 use crate::{
-    daemon::{Indication, MetadataRecvIndication, NakProcedure, Report},
+    daemon::{
+        FileSegmentIndication, FinishedIndication, Indication, MetadataRecvIndication,
+        NakProcedure, Report,
+    },
     filestore::{FileChecksum, FileStore, FileStoreError},
     pdu::{
         ACKSubDirective, Condition, DeliveryCode, Direction, FaultHandlerAction, FileDataPDU,
@@ -371,7 +374,9 @@ impl<T: FileStore> RecvTransaction<T> {
             FileDataPDU::Segmented(data) => (data.offset, data.file_data),
             FileDataPDU::Unsegmented(data) => (data.offset, data.file_data),
         };
+
         let length = file_data.len();
+
         if length > 0 {
             let handle = self.get_handle()?;
             handle
@@ -741,6 +746,15 @@ impl<T: FileStore> RecvTransaction<T> {
             }
             out
         };
+        // send indication this transaction is finished.
+        self.indication_tx
+            .send(Indication::Finished(FinishedIndication {
+                id: self.id(),
+                report: self.generate_report(),
+                file_status: self.file_status,
+                delivery_code: self.delivery_code,
+                filestore_responses: self.filestore_response.clone(),
+            }))?;
         Ok(())
     }
 
@@ -758,6 +772,13 @@ impl<T: FileStore> RecvTransaction<T> {
                         let prev_end = self.saved_segments.last().map(|(_, end)| *end).unwrap_or(0);
 
                         let (offset, length) = self.store_file_data(filedata)?;
+                        self.indication_tx.send(Indication::FileSegmentRecv(
+                            FileSegmentIndication {
+                                id: self.id(),
+                                offset,
+                                length: length as u64,
+                            },
+                        ))?;
                         // update the total received size if appropriate.
                         let size = offset + length as u64;
                         if self.received_file_size < size {
@@ -787,6 +808,8 @@ impl<T: FileStore> RecvTransaction<T> {
                                 self.condition = eof.condition;
                                 self.prepare_ack_eof();
                                 self.checksum = Some(eof.checksum);
+
+                                self.indication_tx.send(Indication::EoFRecv(self.id()))?;
 
                                 if self.condition == Condition::NoError {
                                     self.check_file_size(eof.file_size)?;
@@ -916,6 +939,13 @@ impl<T: FileStore> RecvTransaction<T> {
                     PDUPayload::FileData(filedata) => {
                         // Issue notice of recieved? Log it.
                         let (offset, length) = self.store_file_data(filedata)?;
+                        self.indication_tx.send(Indication::FileSegmentRecv(
+                            FileSegmentIndication {
+                                id: self.id(),
+                                offset,
+                                length: length as u64,
+                            },
+                        ))?;
                         // update the total received size if appropriate.
                         let size = offset + length as u64;
                         if self.received_file_size < size {
@@ -951,9 +981,13 @@ impl<T: FileStore> RecvTransaction<T> {
                             Operations::EoF(eof) => {
                                 self.condition = eof.condition;
                                 self.checksum = Some(eof.checksum);
+
+                                self.indication_tx.send(Indication::EoFRecv(self.id()))?;
+
                                 if self.condition == Condition::NoError {
                                     self.check_file_size(eof.file_size)?;
                                     self.finalize_receive()?;
+
                                     // if closure was requested send a finished PDU
                                     if self
                                         .metadata
@@ -1558,7 +1592,7 @@ mod test {
 
     #[rstest]
     fn finalize_receive(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (message_tx, _) = unbounded();
+        let (message_tx, _message_rx) = unbounded();
         let config = default_config.clone();
 
         let filestore = Arc::new(NativeFileStore::new(
@@ -1803,7 +1837,7 @@ mod test {
         #[values(TransmissionMode::Unacknowledged, TransmissionMode::Acknowledged)]
         transmission_mode: TransmissionMode,
     ) {
-        let (message_tx, _) = unbounded();
+        let (message_tx, _message_rx) = unbounded();
         let mut config = default_config.clone();
         config.transmission_mode = transmission_mode;
 
@@ -1946,7 +1980,7 @@ mod test {
         transmission_mode: TransmissionMode,
     ) {
         let (transport_tx, transport_rx) = unbounded();
-        let (message_tx, _) = unbounded();
+        let (message_tx, _message_rx) = unbounded();
         let mut config = default_config.clone();
         config.transmission_mode = transmission_mode;
 
@@ -2118,7 +2152,7 @@ mod test {
         #[values(NakOrKeepAlive::Nak, NakOrKeepAlive::KeepAlive)] nak_or_keep_alive: NakOrKeepAlive,
     ) {
         let (transport_tx, transport_rx) = unbounded();
-        let (message_tx, _) = unbounded();
+        let (message_tx, _message_rx) = unbounded();
         let mut config = default_config.clone();
         config.transmission_mode = TransmissionMode::Acknowledged;
 
@@ -2213,7 +2247,7 @@ mod test {
     #[rstest]
     fn nak_split(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
         let (transport_tx, transport_rx) = unbounded();
-        let (message_tx, _) = unbounded();
+        let (message_tx, _message_rx) = unbounded();
         let mut config = default_config.clone();
         config.file_size_segment = 16;
         config.transmission_mode = TransmissionMode::Acknowledged;

@@ -95,7 +95,7 @@ impl PDUEncode for PDU {
             remaining_buffer,
             header.pdu_type.clone(),
             header.large_file_flag,
-            header.segment_metadata_flag.clone(),
+            header.segment_metadata_flag,
         )?;
 
         let received_pdu = Self { header, payload };

@@ -4,9 +4,9 @@ use crossbeam_channel::SendError;
 use thiserror::Error;
 
 use crate::{
-    daemon::Report,
+    daemon::{Indication, Report},
     filestore::FileStoreError,
-    pdu::{MessageToUser, TransactionSeqNum, TransmissionMode, VariableID, PDU},
+    pdu::{TransactionSeqNum, TransmissionMode, VariableID, PDU},
 };
 
 use super::config::TransactionID;
@@ -20,8 +20,8 @@ pub enum TransactionError {
     #[error("Error Communicating with transport: {0}")]
     Transport(#[from] Box<SendError<(VariableID, PDU)>>),
 
-    #[error("Error transfering UserMessage {0}")]
-    UserMessage(#[from] Box<SendError<(TransactionID, TransmissionMode, Vec<MessageToUser>)>>),
+    #[error("Error transfering Indication {0}")]
+    UserMessage(#[from] Box<SendError<Indication>>),
 
     #[error("No open file in transaction: {0:?}")]
     NoFile(TransactionID),
@@ -60,8 +60,8 @@ impl From<SendError<(VariableID, PDU)>> for TransactionError {
         Self::Transport(Box::new(error))
     }
 }
-impl From<SendError<(TransactionID, TransmissionMode, Vec<MessageToUser>)>> for TransactionError {
-    fn from(error: SendError<(TransactionID, TransmissionMode, Vec<MessageToUser>)>) -> Self {
+impl From<SendError<Indication>> for TransactionError {
+    fn from(error: SendError<Indication>) -> Self {
         Self::UserMessage(Box::new(error))
     }
 }

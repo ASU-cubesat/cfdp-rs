@@ -111,35 +111,35 @@ impl FileSizeFlag {
     }
 }
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum SegmentationControl {
     NotPreserved = 0,
     Preserved = 1,
 }
 
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum SegmentedData {
     NotPresent = 0,
     Present = 1,
 }
 
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum NakOrKeepAlive {
     Nak = 0,
     KeepAlive = 1,
 }
 
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum DeliveryCode {
     Complete = 0,
     Incomplete = 1,
 }
 
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum FileStatusCode {
     Discarded = 0b00,
     FileStoreRejection = 0b01,
@@ -148,7 +148,7 @@ pub enum FileStatusCode {
 }
 
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
 pub enum TransactionStatus {
     Undefined = 0b00,
     Active = 0b01,

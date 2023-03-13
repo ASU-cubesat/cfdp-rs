@@ -908,6 +908,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         .get(&request.destination_entity_id)
                                         .expect("No transport for Entity ID.")
                                         .clone();
+                                    println!("Put request: {request:?}");
                                     let (id, sender, handle) = Self::spawn_send_transaction(
                                         request,
                                         sequence_number,
@@ -924,10 +925,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                     let response = Self::get_report(id, &transaction_channels);
                                     if let Some(report) = response {
                                         self.history.insert(id, report.clone());
-                                        // // Send back the initial report with the ID and state.
-                                        // // but abandon if the user ends up busy
-                                        // self.report_tx
-                                        //     .send_timeout(report, Duration::from_millis(100))?;
                                     }
 
                                     // ignore the possible error if the user disconnected;

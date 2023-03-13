@@ -145,7 +145,10 @@ pub(crate) fn categorize_user_msg(
         .and_then(|_| {
             user_ops.iter().find_map(|msg| {
                 if let UserOperation::OriginatingTransactionIDMessage(origin) = msg {
-                    Some((origin.source_entity_id, origin.transaction_sequence_number))
+                    Some(TransactionID(
+                        origin.source_entity_id,
+                        origin.transaction_sequence_number,
+                    ))
                 } else {
                     None
                 }
@@ -187,15 +190,11 @@ pub(crate) fn categorize_user_msg(
     (proxy_reqs, other_reqs, responses, cancel_id, other_messages)
 }
 
-type UserSplit = (
-    TestUserHalf,
-    Receiver<(UserPrimitive, Sender<Indication>)>,
-    Sender<Indication>,
-);
+type UserSplit = (TestUserHalf, Receiver<UserPrimitive>, Sender<Indication>);
 
 pub(crate) struct TestUser {
-    internal_tx: Sender<(UserPrimitive, Sender<Indication>)>,
-    internal_rx: Receiver<(UserPrimitive, Sender<Indication>)>,
+    internal_tx: Sender<UserPrimitive>,
+    internal_rx: Receiver<UserPrimitive>,
     // channel for daemon to indicate a finished transaction
     indication_tx: Sender<Indication>,
     // Indication listener thread
@@ -203,7 +202,7 @@ pub(crate) struct TestUser {
 }
 impl TestUser {
     pub(crate) fn new<T: FileStore + Send + Sync + 'static>(filestore: Arc<T>) -> Self {
-        let (internal_tx, internal_rx) = bounded::<(UserPrimitive, Sender<Indication>)>(1);
+        let (internal_tx, internal_rx) = bounded::<UserPrimitive>(1);
         let (indication_tx, indication_rx) = unbounded::<Indication>();
 
         let auto_sender = internal_tx.clone();
@@ -226,21 +225,17 @@ impl TestUser {
                             let (put_sender, put_recv) = bounded(1);
 
                             auto_sender
-                                .send((UserPrimitive::Put(request), put_sender))
+                                .send(UserPrimitive::Put(request, put_sender))
                                 .expect("Unable to send auto request");
 
-                            if let Indication::Transaction(id) =
-                                put_recv.recv().expect("Recv channel disconnected: ")
-                            {
-                                proxy_map.insert(id, origin_id);
-                            };
+                            let id = put_recv.recv().expect("Recv channel disconnected: ");
+                            proxy_map.insert(id, origin_id);
                         }
 
                         if let Some(id) = cancel_id {
-                            let primitive = UserPrimitive::Cancel(id.0, id.1);
-                            let (send, _recv) = bounded(0);
+                            let primitive = UserPrimitive::Cancel(id);
                             auto_sender
-                                .send((primitive, send))
+                                .send(primitive)
                                 .map_err(|_| {
                                     IoError::new(
                                         ErrorKind::ConnectionReset,
@@ -337,15 +332,17 @@ impl TestUser {
                                     },
                                 },
                                 UserRequest::RemoteStatusReport(report_request) => {
+                                    let (report_tx, report_rx) = bounded(0);
                                     let primitive = UserPrimitive::Report(
-                                        report_request.source_entity_id,
-                                        report_request.transaction_sequence_number,
+                                        TransactionID(
+                                            report_request.source_entity_id,
+                                            report_request.transaction_sequence_number,
+                                        ),
+                                        report_tx,
                                     );
 
-                                    let (send, recv) = bounded(0);
-
                                     auto_sender
-                                        .send((primitive, send))
+                                        .send(primitive)
                                         .map_err(|_| {
                                             IoError::new(
                                                 ErrorKind::ConnectionReset,
@@ -353,7 +350,8 @@ impl TestUser {
                                             )
                                         })
                                         .expect("error asking for report.");
-                                    let response = recv
+
+                                    let report = report_rx
                                         .recv()
                                         .map_err(|_| {
                                             IoError::new(
@@ -362,11 +360,6 @@ impl TestUser {
                                             )
                                         })
                                         .expect("error receiving report");
-
-                                    let report = match response {
-                                        Indication::Report(report) => report,
-                                        _ => unreachable!(),
-                                    };
 
                                     let response = {
                                         match report {
@@ -407,15 +400,13 @@ impl TestUser {
                                     }
                                 }
                                 UserRequest::RemoteSuspend(suspend_req) => {
-                                    let primitive = UserPrimitive::Suspend(
+                                    let primitive = UserPrimitive::Suspend(TransactionID(
                                         suspend_req.source_entity_id,
                                         suspend_req.transaction_sequence_number,
-                                    );
-
-                                    let (send, _recv) = bounded(0);
+                                    ));
 
                                     let suspend_indication = auto_sender
-                                        .send((primitive, send))
+                                        .send(primitive)
                                         .map_err(|_| {
                                             IoError::new(
                                                 ErrorKind::ConnectionReset,
@@ -456,15 +447,13 @@ impl TestUser {
                                     }
                                 }
                                 UserRequest::RemoteResume(resume_request) => {
-                                    let primitive = UserPrimitive::Resume(
+                                    let primitive = UserPrimitive::Resume(TransactionID(
                                         resume_request.source_entity_id,
                                         resume_request.transaction_sequence_number,
-                                    );
-
-                                    let (send, _recv) = bounded(0);
+                                    ));
 
                                     let suspend_indication = auto_sender
-                                        .send((primitive, send))
+                                        .send(primitive)
                                         .map_err(|_| {
                                             IoError::new(
                                                 ErrorKind::ConnectionReset,
@@ -507,7 +496,7 @@ impl TestUser {
                             };
                             let (sender, _recv) = bounded(0);
                             auto_sender
-                                .send((UserPrimitive::Put(request), sender))
+                                .send(UserPrimitive::Put(request, sender))
                                 .expect("Unable to send auto request");
                         }
                         for response in responses {
@@ -564,7 +553,7 @@ impl TestUser {
                             let (sender, _) = bounded(0);
                             let _ =
                                 auto_sender
-                                    .send((UserPrimitive::Put(req), sender))
+                                    .send(UserPrimitive::Put(req, sender))
                                     .map_err(|_| {
                                         IoError::new(
                                             ErrorKind::ConnectionReset,
@@ -638,32 +627,27 @@ impl TestUser {
 
 #[derive(Debug)]
 pub struct TestUserHalf {
-    internal_tx: Sender<(UserPrimitive, Sender<Indication>)>,
+    internal_tx: Sender<UserPrimitive>,
     _indication_handle: JoinHandle<()>,
 }
 impl TestUserHalf {
     #[allow(unused)]
     pub fn put(&self, request: PutRequest) -> Result<TransactionID, IoError> {
-        let primitive = UserPrimitive::Put(request);
+        let (put_send, put_recv) = bounded(1);
+        let primitive = UserPrimitive::Put(request, put_send);
 
-        let (send, recv) = bounded(0);
-
-        self.internal_tx.send((primitive, send)).map_err(|_| {
+        self.internal_tx.send(primitive).map_err(|_| {
             IoError::new(
                 ErrorKind::ConnectionReset,
                 "Daemon Half of User disconnected.",
             )
         })?;
-        let response = recv.recv().map_err(|_| {
+        put_recv.recv().map_err(|_| {
             IoError::new(
                 ErrorKind::ConnectionReset,
                 "Daemon Half of User disconnected.",
             )
-        })?;
-        match response {
-            Indication::Transaction(id) => Ok(id),
-            _ => unreachable!(),
-        }
+        })
     }
 
     // this function is actually used in series_f1 but series_f2 and f3 generate an unused warning
@@ -671,8 +655,7 @@ impl TestUserHalf {
     #[allow(unused)]
     pub fn cancel(&self, transaction: TransactionID) -> Result<(), IoError> {
         let primitive = UserPrimitive::Cancel(transaction);
-        let (send, _recv) = bounded(0);
-        self.internal_tx.send((primitive, send)).map_err(|_| {
+        self.internal_tx.send(primitive).map_err(|_| {
             IoError::new(
                 ErrorKind::ConnectionReset,
                 "Daemon Half of User disconnected.",
@@ -682,25 +665,22 @@ impl TestUserHalf {
 
     #[allow(unused)]
     pub fn report(&self, transaction: TransactionID) -> Result<Option<Report>, IoError> {
-        let primitive = UserPrimitive::Report(transaction);
-        let (send, recv) = bounded(0);
+        let (report_tx, report_rx) = bounded(1);
+        let primitive = UserPrimitive::Report(transaction, report_tx);
 
-        self.internal_tx.send((primitive, send)).map_err(|_| {
+        self.internal_tx.send(primitive).map_err(|_| {
             IoError::new(
                 ErrorKind::ConnectionReset,
                 "Daemon Half of User disconnected.",
             )
         })?;
-        let response = recv.recv().map_err(|_| {
+        let response = report_rx.recv().map_err(|_| {
             IoError::new(
                 ErrorKind::ConnectionReset,
                 "Daemon Half of User disconnected.",
             )
         })?;
-        match response {
-            Indication::Report(report) => Ok(report),
-            _ => unreachable!(),
-        }
+        Ok(response)
     }
 }
 

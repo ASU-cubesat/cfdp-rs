@@ -605,9 +605,9 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                                 Err(err) => return Err(err),
                                             }
                                         }
-                                        Command::Resume => transaction.resume(),
+                                        Command::Resume => transaction.resume()?,
                                         Command::Cancel => transaction.cancel()?,
-                                        Command::Suspend => transaction.suspend(),
+                                        Command::Suspend => transaction.suspend()?,
                                         Command::Abandon => transaction.shutdown(),
                                         Command::Report(sender) => {
                                             sender.send(transaction.generate_report())?
@@ -744,9 +744,9 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                                     }
                                                 }
                                             }
-                                            Command::Resume => transaction.resume(),
+                                            Command::Resume => transaction.resume()?,
                                             Command::Cancel => transaction.cancel()?,
-                                            Command::Suspend => transaction.suspend(),
+                                            Command::Suspend => transaction.suspend()?,
                                             Command::Abandon => transaction.shutdown(),
                                             Command::Report(sender) => {
                                                 sender.send(transaction.generate_report())?

@@ -18,7 +18,7 @@ use super::{
 use crate::{
     daemon::{
         FileSegmentIndication, FinishedIndication, Indication, MetadataRecvIndication,
-        NakProcedure, Report,
+        NakProcedure, Report, ResumeIndication, SuspendIndication,
     },
     filestore::{FileChecksum, FileStore, FileStoreError},
     pdu::{
@@ -466,14 +466,22 @@ impl<T: FileStore> RecvTransaction<T> {
         // make some kind of log/indication
     }
 
-    pub fn suspend(&mut self) {
+    pub fn suspend(&mut self) -> TransactionResult<()> {
         self.timer.ack.pause();
         self.timer.nak.pause();
         self.timer.inactivity.pause();
         self.state = TransactionState::Suspended;
+
+        self.indication_tx
+            .send(Indication::Suspended(SuspendIndication {
+                id: self.id(),
+                condition: self.condition,
+            }))?;
+
+        Ok(())
     }
 
-    pub fn resume(&mut self) {
+    pub fn resume(&mut self) -> TransactionResult<()> {
         self.timer.reset_inactivity();
         match self.recv_state {
             RecvState::ReceiveData => {
@@ -485,6 +493,12 @@ impl<T: FileStore> RecvTransaction<T> {
             RecvState::Finished | RecvState::Cancelled => self.timer.reset_ack(),
         }
         self.state = TransactionState::Active;
+        self.indication_tx
+            .send(Indication::Resumed(ResumeIndication {
+                id: self.id(),
+                progress: self.get_progress(),
+            }))?;
+        Ok(())
     }
 
     /// Take action according to the defined handler mapping.
@@ -508,7 +522,7 @@ impl<T: FileStore> RecvTransaction<T> {
             }
 
             FaultHandlerAction::Suspend => {
-                self.suspend();
+                self.suspend()?;
                 Ok(false)
             }
             FaultHandlerAction::Abandon => {
@@ -772,6 +786,7 @@ impl<T: FileStore> RecvTransaction<T> {
                         let prev_end = self.saved_segments.last().map(|(_, end)| *end).unwrap_or(0);
 
                         let (offset, length) = self.store_file_data(filedata)?;
+
                         self.indication_tx.send(Indication::FileSegmentRecv(
                             FileSegmentIndication {
                                 id: self.id(),
@@ -779,6 +794,7 @@ impl<T: FileStore> RecvTransaction<T> {
                                 length: length as u64,
                             },
                         ))?;
+
                         // update the total received size if appropriate.
                         let size = offset + length as u64;
                         if self.received_file_size < size {
@@ -937,7 +953,6 @@ impl<T: FileStore> RecvTransaction<T> {
             TransmissionMode::Unacknowledged => {
                 match payload {
                     PDUPayload::FileData(filedata) => {
-                        // Issue notice of recieved? Log it.
                         let (offset, length) = self.store_file_data(filedata)?;
                         self.indication_tx.send(Indication::FileSegmentRecv(
                             FileSegmentIndication {
@@ -1018,7 +1033,7 @@ impl<T: FileStore> RecvTransaction<T> {
                                             MetadataTLV::MessageToUser(req) => Some(req.clone()),
                                             _ => None,
                                         });
-                                    // push each request up to the Daemon
+
                                     let source_filename: Utf8PathBuf =
                                         std::str::from_utf8(metadata.source_filename.as_slice())
                                             .map_err(FileStoreError::UTF8)?
@@ -1440,7 +1455,7 @@ mod test {
 
     #[rstest]
     fn suspend(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (message_tx, _) = unbounded();
+        let (message_tx, _message_rx) = unbounded();
         let config = default_config.clone();
 
         let filestore = Arc::new(NativeFileStore::new(
@@ -1464,7 +1479,7 @@ mod test {
             });
         }
 
-        transaction.suspend();
+        transaction.suspend().unwrap();
 
         let timers = [
             &transaction.timer.ack,
@@ -1477,7 +1492,7 @@ mod test {
 
     #[rstest]
     fn resume(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (message_tx, _) = unbounded();
+        let (message_tx, _message_rx) = unbounded();
         let config = default_config.clone();
 
         let filestore = Arc::new(NativeFileStore::new(
@@ -1501,7 +1516,7 @@ mod test {
             });
         }
 
-        transaction.suspend();
+        transaction.suspend().unwrap();
 
         let timers = [
             &transaction.timer.ack,
@@ -1510,7 +1525,7 @@ mod test {
         ];
         timers.iter().for_each(|timer| assert!(!timer.is_ticking()));
 
-        transaction.resume();
+        transaction.resume().unwrap();
         assert_eq!(TransactionState::Active, transaction.state);
 
         assert!(transaction.timer.inactivity.is_ticking());
@@ -1518,12 +1533,12 @@ mod test {
         assert!(!transaction.timer.nak.is_ticking());
 
         transaction.recv_state = RecvState::Finished;
-        transaction.resume();
+        transaction.resume().unwrap();
         assert!(transaction.timer.ack.is_ticking());
 
         transaction.recv_state = RecvState::ReceiveData;
         transaction.nak_procedure = NakProcedure::Immediate;
-        transaction.resume();
+        transaction.resume().unwrap();
         assert!(transaction.timer.nak.is_ticking());
     }
 

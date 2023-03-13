@@ -15,7 +15,7 @@ use super::{
     TransactionID,
 };
 use crate::{
-    daemon::Report,
+    daemon::{FinishedIndication, Indication, Report},
     filestore::{FileChecksum, FileStore, FileStoreError},
     pdu::{
         ACKSubDirective, Condition, DeliveryCode, Direction, EndOfFile, FaultHandlerAction,
@@ -65,22 +65,27 @@ pub struct SendTransaction<T: FileStore> {
     delivery_code: DeliveryCode,
     // Status of the current File
     file_status: FileStatusCode,
-    // Timer used to track if the Nak limit has been reached
-    // inactivity has occurred
-    // or the ACK limit is reached
+    /// Timer used to track if the Nak limit has been reached
+    /// inactivity has occurred
+    /// or the ACK limit is reached
     timer: Timer,
-    // checksum cache to reduce I/0
-    // doubles as stored checksum in received mode
+    //. checksum cache to reduce I/0
+    //. doubles as stored checksum in received mode
     checksum: Option<u32>,
-    // The current general state of the transaction.
-    // Used to determine when the thread should be killed
+    /// The current general state of the transaction.
+    /// Used to determine when the thread should be killed
     state: TransactionState,
-    // The detailed sub-state valid when state = TransactionState::Active
-    // Used to control the state machine
+    /// The detailed sub-state valid when state = TransactionState::Active
+    /// Used to control the state machine
     send_state: SendState,
-    // EoF prepared to be sent at the next opportunity if the bool is true
+    /// EoF prepared to be sent at the next opportunity if the bool is true
     eof: Option<(EndOfFile, bool)>,
     ack: Option<PositiveAcknowledgePDU>,
+    /// Channel for Indications to propagate back up
+    indication_tx: Sender<Indication>,
+    /// flag to track if the initial EoFSent Indication has been sent.
+    /// This indication only needs to be delivered for the initial EoF transmission
+    send_eof_indication: bool,
 }
 impl<T: FileStore> SendTransaction<T> {
     /// Start a new SendTransaction with the given [configuration](TransactionConfig)
@@ -92,7 +97,9 @@ impl<T: FileStore> SendTransaction<T> {
         metadata: Metadata,
         // Connection to the local FileStore implementation.
         filestore: Arc<T>,
-    ) -> Self {
+        // Sender channel used to propagate Message To User back up to the Daemon Thread.
+        indication_tx: Sender<Indication>,
+    ) -> TransactionResult<Self> {
         let received_file_size = 0_u64;
         let timer = Timer::new(
             config.inactivity_timeout,
@@ -103,7 +110,7 @@ impl<T: FileStore> SendTransaction<T> {
             config.max_count,
         );
 
-        Self {
+        let me = Self {
             status: TransactionStatus::Undefined,
             config,
             filestore,
@@ -121,7 +128,11 @@ impl<T: FileStore> SendTransaction<T> {
             state: TransactionState::Active,
             eof: None,
             ack: None,
-        }
+            indication_tx,
+            send_eof_indication: true,
+        };
+        me.indication_tx.send(Indication::Transaction(me.id()))?;
+        Ok(me)
     }
 
     pub(crate) fn has_pdu_to_send(&self) -> bool {
@@ -180,7 +191,26 @@ impl<T: FileStore> SendTransaction<T> {
                     self.send_missing_data(transport_tx)?;
                 } else {
                     self.send_eof(transport_tx)?;
+
+                    // EoFSent indication only needs to be sent for the initial EoF transmission
+                    if self.send_eof_indication {
+                        self.indication_tx.send(Indication::EoFSent(self.id()))?;
+                        self.send_eof_indication = false;
+                    }
+
                     if self.get_mode() == TransmissionMode::Unacknowledged {
+                        // if closure is not requested, this transaction is finished.
+                        // indicate as much to the User
+                        if !self.metadata.closure_requested {
+                            self.indication_tx
+                                .send(Indication::Finished(FinishedIndication {
+                                    id: self.id(),
+                                    report: self.generate_report(),
+                                    filestore_responses: vec![],
+                                    file_status: self.file_status,
+                                    delivery_code: self.delivery_code,
+                                }))?;
+                        }
                         self.shutdown();
                     }
                 }
@@ -628,6 +658,16 @@ impl<T: FileStore> SendTransaction<T> {
                                 self.id(),
                                 self.condition
                             );
+
+                            self.indication_tx
+                                .send(Indication::Finished(FinishedIndication {
+                                    id: self.id(),
+                                    report: self.generate_report(),
+                                    filestore_responses: finished.filestore_response,
+                                    file_status: self.file_status,
+                                    delivery_code: self.delivery_code,
+                                }))?;
+
                             match self.condition != Condition::NoError {
                                 true => {
                                     info!(
@@ -748,6 +788,16 @@ impl<T: FileStore> SendTransaction<T> {
                             }
                             self.condition = finished.condition;
                             self.delivery_code = finished.delivery_code;
+
+                            self.indication_tx
+                                .send(Indication::Finished(FinishedIndication {
+                                    id: self.id(),
+                                    report: self.generate_report(),
+                                    filestore_responses: finished.filestore_response,
+                                    file_status: self.file_status,
+                                    delivery_code: self.delivery_code,
+                                }))?;
+
                             self.shutdown();
                             Ok(())
                         }
@@ -848,8 +898,10 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
+        let (indication_tx, _indication_rx) = unbounded();
         let metadata = test_metadata(10, Utf8PathBuf::from(""));
-        let mut transaction = SendTransaction::new(config, metadata, filestore);
+        let mut transaction = SendTransaction::new(config, metadata, filestore, indication_tx)
+            .expect("unable to start transaction.");
 
         let payload_len = 12;
         let expected = PDUHeader {
@@ -884,8 +936,9 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
+        let (indication_tx, _indication_rx) = unbounded();
         let metadata = test_metadata(600_u64, Utf8PathBuf::from("a"));
-        let transaction = SendTransaction::new(config, metadata, filestore);
+        let transaction = SendTransaction::new(config, metadata, filestore, indication_tx).unwrap();
 
         assert_eq!(
             TransactionStatus::Undefined,
@@ -905,8 +958,10 @@ mod test {
 
         let path = Utf8PathBuf::from("testfile");
 
+        let (indication_tx, _indication_rx) = unbounded();
         let metadata = test_metadata(10, path.clone());
-        let mut transaction = SendTransaction::new(config, metadata, filestore.clone());
+        let mut transaction =
+            SendTransaction::new(config, metadata, filestore.clone(), indication_tx).unwrap();
 
         let input = vec![0, 5, 255, 99];
 
@@ -972,7 +1027,9 @@ mod test {
         let path = Utf8PathBuf::from("testfile_missing");
         let metadata = test_metadata(10, path.clone());
 
-        let mut transaction = SendTransaction::new(config, metadata, filestore);
+        let (indication_tx, _indication_rx) = unbounded();
+        let mut transaction =
+            SendTransaction::new(config, metadata, filestore, indication_tx).unwrap();
 
         let input = vec![0, 5, 255, 99];
         let pdu = match &nak {
@@ -1056,8 +1113,10 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
+        let (indication_tx, _indication_rx) = unbounded();
         let metadata = test_metadata(10, Utf8PathBuf::from(""));
-        let mut transaction = SendTransaction::new(config, metadata, filestore);
+        let mut transaction =
+            SendTransaction::new(config, metadata, filestore, indication_tx).unwrap();
 
         let result = transaction
             .get_checksum()
@@ -1080,9 +1139,11 @@ mod test {
 
         let input = "Here is some test data to write!$*#*.\n";
 
+        let (indication_tx, _indication_rx) = unbounded();
         let path = Utf8PathBuf::from("test_eof.dat");
         let metadata = test_metadata(input.as_bytes().len() as u64, path.clone());
-        let mut transaction = SendTransaction::new(config, metadata, filestore.clone());
+        let mut transaction =
+            SendTransaction::new(config, metadata, filestore.clone(), indication_tx).unwrap();
 
         let (checksum, _overflow) =
             input
@@ -1155,9 +1216,12 @@ mod test {
 
         let input = "Here is some test data to write!$*#*.\n";
 
+        let (indication_tx, _indication_rx) = unbounded();
         let path = Utf8PathBuf::from(format!("test_eof_{:}.dat", config.transmission_mode as u8));
         let metadata = test_metadata(input.as_bytes().len() as u64, path.clone());
-        let mut transaction = SendTransaction::new(config.clone(), metadata, filestore.clone());
+        let mut transaction =
+            SendTransaction::new(config.clone(), metadata, filestore.clone(), indication_tx)
+                .unwrap();
 
         let (checksum, _overflow) =
             input
@@ -1228,8 +1292,10 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
+        let (indication_tx, _indication_rx) = unbounded();
         let metadata = test_metadata(0, Utf8PathBuf::from(""));
-        let mut transaction = SendTransaction::new(config, metadata, filestore);
+        let mut transaction =
+            SendTransaction::new(config, metadata, filestore, indication_tx).unwrap();
 
         transaction.timer.restart_ack();
         transaction.timer.restart_inactivity();
@@ -1256,8 +1322,10 @@ mod test {
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
+        let (indication_tx, _indication_rx) = unbounded();
         let metadata = test_metadata(0, Utf8PathBuf::from(""));
-        let mut transaction = SendTransaction::new(config, metadata, filestore);
+        let mut transaction =
+            SendTransaction::new(config, metadata, filestore, indication_tx).unwrap();
 
         transaction.timer.restart_ack();
         transaction.timer.restart_inactivity();
@@ -1296,8 +1364,10 @@ mod test {
         let path = Utf8PathBuf::from(format!("test_eof_{:}.dat", config.transmission_mode as u8));
         let input = "Here is some test data to write!$*#*.\n";
 
+        let (indication_tx, _indication_rx) = unbounded();
         let metadata = test_metadata(input.as_bytes().len() as u64, path);
-        let mut transaction = SendTransaction::new(config.clone(), metadata, filestore);
+        let mut transaction =
+            SendTransaction::new(config.clone(), metadata, filestore, indication_tx).unwrap();
 
         let payload = PDUPayload::Directive(Operations::Ack(PositiveAcknowledgePDU {
             directive: PDUDirective::Finished,
@@ -1389,8 +1459,10 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
+        let (indication_tx, _indication_rx) = unbounded();
         let metadata = test_metadata(600, Utf8PathBuf::from("Test_file.txt"));
-        let mut transaction = SendTransaction::new(config, metadata, filestore);
+        let mut transaction =
+            SendTransaction::new(config, metadata, filestore, indication_tx).unwrap();
 
         let payload = PDUPayload::Directive(operation);
         let payload_len = payload.encoded_len(transaction.config.file_size_flag);
@@ -1452,8 +1524,10 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
+        let (indication_tx, _indication_rx) = unbounded();
         let metadata = test_metadata(600, Utf8PathBuf::from("Test_file.txt"));
-        let mut transaction = SendTransaction::new(config, metadata, filestore);
+        let mut transaction =
+            SendTransaction::new(config, metadata, filestore, indication_tx).unwrap();
 
         let payload = PDUPayload::Directive(operation);
         let payload_len = payload.encoded_len(transaction.config.file_size_flag);
@@ -1491,8 +1565,10 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
+        let (indication_tx, _indication_rx) = unbounded();
         let metadata = test_metadata(600, Utf8PathBuf::from("Test_file.txt"));
-        let mut transaction = SendTransaction::new(config, metadata, filestore);
+        let mut transaction =
+            SendTransaction::new(config, metadata, filestore, indication_tx).unwrap();
 
         let payload = PDUPayload::FileData(FileDataPDU::Unsegmented(UnsegmentedFileData {
             offset: 12_u64,
@@ -1523,9 +1599,11 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
+        let (indication_tx, _indication_rx) = unbounded();
         let path = Utf8PathBuf::from("test_file");
         let metadata = test_metadata(600, path);
-        let mut transaction = SendTransaction::new(config, metadata, filestore);
+        let mut transaction =
+            SendTransaction::new(config, metadata, filestore, indication_tx).unwrap();
 
         let finished_pdu = {
             let payload = PDUPayload::Directive(Operations::Finished(Finished {
@@ -1595,8 +1673,10 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
+        let (indication_tx, _indication_rx) = unbounded();
         let metadata = test_metadata(total_size, Utf8PathBuf::from("test_file"));
-        let mut transaction = SendTransaction::new(config, metadata, filestore);
+        let mut transaction =
+            SendTransaction::new(config, metadata, filestore, indication_tx).unwrap();
 
         let nak_pdu = {
             let payload = PDUPayload::Directive(Operations::Nak(NegativeAcknowledgmentPDU {
@@ -1664,7 +1744,9 @@ mod test {
             checksum_type: ChecksumType::Null,
         };
 
-        let mut transaction = SendTransaction::new(config, metadata, filestore);
+        let (indication_tx, _indication_rx) = unbounded();
+        let mut transaction =
+            SendTransaction::new(config, metadata, filestore, indication_tx).unwrap();
 
         transaction.checksum = Some(0);
 
@@ -1739,7 +1821,9 @@ mod test {
             checksum_type: ChecksumType::Null,
         };
 
-        let mut transaction = SendTransaction::new(config, metadata, filestore);
+        let (indication_tx, _indication_rx) = unbounded();
+        let mut transaction =
+            SendTransaction::new(config, metadata, filestore, indication_tx).unwrap();
         transaction.checksum = Some(0);
 
         let keep_alive = {

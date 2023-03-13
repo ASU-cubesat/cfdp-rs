@@ -656,6 +656,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         transport_tx: Sender<(EntityID, PDU)>,
         entity_config: EntityConfig,
         filestore: Arc<T>,
+        indication_tx: Sender<Indication>,
     ) -> Result<SpawnerTuple, Box<dyn std::error::Error>> {
         let (transaction_tx, transaction_rx) = unbounded();
         let id = TransactionID(source_entity_id, sequence_number);
@@ -696,7 +697,8 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                     false => FileSizeFlag::Large,
                 };
 
-                let mut transaction = SendTransaction::new(config, metadata, filestore);
+                let mut transaction =
+                    SendTransaction::new(config, metadata, filestore, indication_tx)?;
                 let mut sel = Select::new();
                 let rx_select_id = sel.recv(&transaction_rx);
 
@@ -913,6 +915,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         transport_tx,
                                         entity_config,
                                         self.filestore.clone(),
+                                        self.indication_tx.clone(),
                                     )?;
 
                                     self.transaction_handles.push(handle);

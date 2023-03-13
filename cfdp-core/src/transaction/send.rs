@@ -15,7 +15,7 @@ use super::{
     TransactionID,
 };
 use crate::{
-    daemon::{FinishedIndication, Indication, Report},
+    daemon::{FinishedIndication, Indication, Report, ResumeIndication, SuspendIndication},
     filestore::{FileChecksum, FileStore, FileStoreError},
     pdu::{
         ACKSubDirective, Condition, DeliveryCode, Direction, EndOfFile, FaultHandlerAction,
@@ -534,13 +534,20 @@ impl<T: FileStore> SendTransaction<T> {
         self.prepare_eof(Some(self.config.source_entity_id))
     }
 
-    pub fn suspend(&mut self) {
+    pub fn suspend(&mut self) -> TransactionResult<()> {
         self.timer.ack.pause();
         self.timer.inactivity.pause();
         self.state = TransactionState::Suspended;
+
+        self.indication_tx
+            .send(Indication::Suspended(SuspendIndication {
+                id: self.id(),
+                condition: self.condition,
+            }))?;
+        Ok(())
     }
 
-    pub fn resume(&mut self) {
+    pub fn resume(&mut self) -> TransactionResult<()> {
         match self.send_state {
             SendState::SendEof | SendState::Cancelled => {
                 self.timer.restart_ack();
@@ -550,6 +557,18 @@ impl<T: FileStore> SendTransaction<T> {
         }
 
         self.state = TransactionState::Active;
+
+        // use the current location in the file as the progress
+        let progress = {
+            let handle = self.get_handle()?;
+            handle.stream_position().map_err(FileStoreError::IO)?
+        };
+        self.indication_tx
+            .send(Indication::Resumed(ResumeIndication {
+                id: self.id(),
+                progress,
+            }))?;
+        Ok(())
     }
 
     /// Take action according to the defined handler mapping.
@@ -575,7 +594,7 @@ impl<T: FileStore> SendTransaction<T> {
             }
 
             FaultHandlerAction::Suspend => {
-                self.suspend();
+                self.suspend()?;
             }
             FaultHandlerAction::Abandon => {
                 self.abandon();
@@ -1308,7 +1327,7 @@ mod test {
             });
         }
 
-        transaction.suspend();
+        transaction.suspend().unwrap();
 
         let timers = [&transaction.timer.ack, &transaction.timer.inactivity];
         timers.iter().for_each(|timer| assert!(!timer.is_ticking()));
@@ -1337,18 +1356,18 @@ mod test {
             });
         }
 
-        transaction.suspend();
+        transaction.suspend().unwrap();
 
         let timers = [&transaction.timer.ack, &transaction.timer.inactivity];
         timers.iter().for_each(|timer| assert!(!timer.is_ticking()));
 
-        transaction.resume();
+        transaction.resume().unwrap();
         assert_eq!(TransactionState::Active, transaction.state);
 
         assert!(!transaction.timer.ack.is_ticking());
 
         transaction.send_state = SendState::SendEof;
-        transaction.resume();
+        transaction.resume().unwrap();
         assert!(transaction.timer.ack.is_ticking());
     }
 

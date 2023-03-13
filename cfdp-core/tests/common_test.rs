@@ -16,7 +16,7 @@ use rstest::rstest;
 
 #[rstest]
 fn proxy_req(#[values(true, false)] use_mode: bool) {
-    let origin_id = (EntityID::from(55_u16), TransactionSeqNum::from(12_u16));
+    let origin_id = TransactionID(EntityID::from(55_u16), TransactionSeqNum::from(12_u16));
     let mut messages = vec![
         ProxyOperation::ProxyFileStoreRequest(FileStoreRequest {
             action_code: FileStoreAction::CreateDirectory,
@@ -88,7 +88,7 @@ fn proxy_req(#[values(true, false)] use_mode: bool) {
 
 #[test]
 fn categorize_user_message() {
-    let origin_id = (EntityID::from(55_u16), TransactionSeqNum::from(12_u16));
+    let origin_id = TransactionID(EntityID::from(55_u16), TransactionSeqNum::from(12_u16));
     let proxy_ops = vec![
         ProxyOperation::ProxyFileStoreRequest(FileStoreRequest {
             action_code: FileStoreAction::CreateDirectory,
@@ -162,7 +162,8 @@ fn categorize_user_message() {
         message_text: "help".as_bytes().to_vec(),
     }];
 
-    let cancel_id: TransactionID = (EntityID::from(16_u16), TransactionSeqNum::from(3_u32));
+    let cancel_id: TransactionID =
+        TransactionID(EntityID::from(16_u16), TransactionSeqNum::from(3_u32));
 
     let mut user_messages: Vec<MessageToUser> = proxy_ops
         .iter()

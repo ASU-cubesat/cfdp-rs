@@ -76,96 +76,6 @@ pub struct PutRequest {
     /// Any Messages to user received either from the metadataPDU or as input
     pub message_to_user: Vec<MessageToUser>,
 }
-impl PutRequest {
-    pub(crate) fn encode(self) -> Vec<u8> {
-        let mut buffer: Vec<u8> = vec![];
-
-        {
-            let vec = self.source_filename.as_str().as_bytes();
-            buffer.push(vec.len() as u8);
-            buffer.extend_from_slice(vec)
-        }
-        {
-            let vec = self.destination_filename.as_str().as_bytes();
-            buffer.push(vec.len() as u8);
-            buffer.extend_from_slice(vec)
-        }
-        buffer.push(self.destination_entity_id.encoded_len() as u8);
-        buffer.extend(self.destination_entity_id.to_be_bytes());
-
-        buffer.push(self.transmission_mode as u8);
-
-        buffer.push(self.filestore_requests.len() as u8);
-        self.filestore_requests
-            .into_iter()
-            .for_each(|req| buffer.extend(req.encode()));
-
-        buffer.push(self.message_to_user.len() as u8);
-        self.message_to_user
-            .into_iter()
-            .for_each(|msg| buffer.extend(msg.encode()));
-
-        buffer
-    }
-
-    pub(crate) fn decode<T: Read>(buffer: &mut T) -> PrimitiveResult<Self> {
-        let mut u8buff = [0_u8; 1];
-
-        let source_filename = {
-            buffer.read_exact(&mut u8buff)?;
-            let mut vec = vec![0_u8; u8buff[0] as usize];
-            buffer.read_exact(vec.as_mut_slice())?;
-            Utf8PathBuf::from(String::from_utf8(vec)?)
-        };
-        let destination_filename = {
-            buffer.read_exact(&mut u8buff)?;
-            let mut vec = vec![0_u8; u8buff[0] as usize];
-            buffer.read_exact(vec.as_mut_slice())?;
-            Utf8PathBuf::from(String::from_utf8(vec)?)
-        };
-
-        let destination_entity_id = {
-            buffer.read_exact(&mut u8buff)?;
-            let mut vec = vec![0_u8; u8buff[0] as usize];
-            buffer.read_exact(vec.as_mut_slice())?;
-            EntityID::try_from(vec)?
-        };
-
-        let transmission_mode = {
-            buffer.read_exact(&mut u8buff)?;
-            let possible = u8buff[0];
-            TransmissionMode::from_u8(possible)
-                .ok_or(PDUError::InvalidTransmissionMode(possible))?
-        };
-
-        let filestore_requests = {
-            buffer.read_exact(&mut u8buff)?;
-            let mut vec = Vec::with_capacity(u8buff[0] as usize);
-            for _ind in 0..vec.capacity() {
-                vec.push(FileStoreRequest::decode(buffer)?)
-            }
-            vec
-        };
-
-        let message_to_user = {
-            buffer.read_exact(&mut u8buff)?;
-            let mut vec = Vec::with_capacity(u8buff[0] as usize);
-            for _ind in 0..vec.capacity() {
-                vec.push(MessageToUser::decode(buffer)?)
-            }
-            vec
-        };
-
-        Ok(Self {
-            source_filename,
-            destination_filename,
-            destination_entity_id,
-            transmission_mode,
-            filestore_requests,
-            message_to_user,
-        })
-    }
-}
 
 fn construct_metadata(req: PutRequest, config: EntityConfig, file_size: u64) -> Metadata {
     Metadata {
@@ -179,14 +89,12 @@ fn construct_metadata(req: PutRequest, config: EntityConfig, file_size: u64) -> 
     }
 }
 
-type PrimitiveResult<T> = Result<T, PrimitiveError>;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 /// Possible User Primitives sent from a end user application to the
 /// interprocess pipe.
 pub enum UserPrimitive {
     /// Initiate a Put transaction with the specificed [PutRequest] configuration.
-    Put(PutRequest),
+    Put(PutRequest, Sender<TransactionID>),
     /// Cancel the give transaction.
     Cancel(TransactionID),
     /// Suspend operations of the given transaction.
@@ -194,74 +102,7 @@ pub enum UserPrimitive {
     /// Resume operations of the given transaction.
     Resume(TransactionID),
     /// Report progress of the given transaction.
-    Report(TransactionID),
-}
-impl UserPrimitive {
-    pub fn encode(self) -> Vec<u8> {
-        match self {
-            Self::Put(request) => {
-                let mut buff: Vec<u8> = vec![0_u8];
-                buff.extend(request.encode());
-                buff
-            }
-            Self::Cancel(id) => {
-                let mut buff: Vec<u8> = vec![1_u8];
-                buff.extend(id.0.encode());
-                buff.extend(id.1.encode());
-                buff
-            }
-            Self::Suspend(id) => {
-                let mut buff: Vec<u8> = vec![2_u8];
-                buff.extend(id.0.encode());
-                buff.extend(id.1.encode());
-                buff
-            }
-            Self::Resume(id) => {
-                let mut buff: Vec<u8> = vec![3_u8];
-                buff.extend(id.0.encode());
-                buff.extend(id.1.encode());
-                buff
-            }
-            Self::Report(id) => {
-                let mut buff: Vec<u8> = vec![4_u8];
-                buff.extend(id.0.encode());
-                buff.extend(id.1.encode());
-                buff
-            }
-        }
-    }
-
-    pub fn decode<T: Read>(buffer: &mut T) -> PrimitiveResult<Self> {
-        let mut u8buff = [0_u8];
-        buffer.read_exact(&mut u8buff)?;
-        match u8buff[0] {
-            0 => {
-                let request = PutRequest::decode(buffer)?;
-                Ok(Self::Put(request))
-            }
-            1 => {
-                let id = VariableID::decode(buffer)?;
-                let seq = VariableID::decode(buffer)?;
-                Ok(Self::Cancel(TransactionID(id, seq)))
-            }
-            2 => {
-                let id = VariableID::decode(buffer)?;
-                let seq = VariableID::decode(buffer)?;
-                Ok(Self::Suspend(TransactionID(id, seq)))
-            }
-            3 => {
-                let id = VariableID::decode(buffer)?;
-                let seq = VariableID::decode(buffer)?;
-                Ok(Self::Resume(TransactionID(id, seq)))
-            }
-            4 => {
-                let id = VariableID::decode(buffer)?;
-                let seq = VariableID::decode(buffer)?;
-                Ok(Self::Report(TransactionID(id, seq)))
-            }
-            _ => Err(PrimitiveError::UnexpextedPrimitive),
-        }
-    }
+    Report(TransactionID, Sender<Option<Report>>),
 }
 
 /// Lightweight commands
@@ -486,7 +327,7 @@ pub struct Daemon<T: FileStore + Send + 'static> {
     // termination signal sent to children threads
     terminate: Arc<AtomicBool>,
     // channel to receive user primitives from the implemented User
-    primitive_rx: Receiver<(UserPrimitive, Sender<Indication>)>,
+    primitive_rx: Receiver<UserPrimitive>,
     // transaction report history for quicker responses for report requests.
     history: HashMap<TransactionID, Report>,
 }
@@ -500,7 +341,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         entity_configs: HashMap<VariableID, EntityConfig>,
         default_config: EntityConfig,
         terminate: Arc<AtomicBool>,
-        primitive_rx: Receiver<(UserPrimitive, Sender<Indication>)>,
+        primitive_rx: Receiver<UserPrimitive>,
         indication_tx: Sender<Indication>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // let (message_tx, message_rx) = unbounded();
@@ -892,9 +733,9 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                 // received a UserPrimitive from the user implementation
                 oper if oper.index() == user_primitive => {
                     match oper.recv(&self.primitive_rx) {
-                        Ok((primitive, internal_return)) => {
+                        Ok(primitive) => {
                             match primitive {
-                                UserPrimitive::Put(request) => {
+                                UserPrimitive::Put(request, put_sender) => {
                                     let sequence_number = sequence_num.get_and_increment();
 
                                     let entity_config = self
@@ -928,7 +769,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                     }
 
                                     // ignore the possible error if the user disconnected;
-                                    let _ = internal_return.send(Indication::Transaction(id));
+                                    let _ = put_sender.send(id);
                                 }
                                 UserPrimitive::Cancel(id) => {
                                     if let Some(channel) = transaction_channels.get(&id) {
@@ -945,7 +786,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         channel.send(Command::Resume)?;
                                     }
                                 }
-                                UserPrimitive::Report(id) => {
+                                UserPrimitive::Report(id, report_sender) => {
                                     let report = Self::get_report(id, &transaction_channels);
                                     let response = match report {
                                         Some(data) => {
@@ -1018,7 +859,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         },
                                     };
                                     // ignore the possible error if the user disconnected;
-                                    let _ = internal_return.send(Indication::Report(response));
+                                    let _ = report_sender.send(response);
                                 }
                             };
                         }
@@ -1082,96 +923,5 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             };
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    use crate::pdu::{FileStoreAction, FileStoreRequest};
-
-    use rstest::rstest;
-
-    #[rstest]
-    #[case("", "")]
-    #[case("a_first/name.txt", "")]
-    #[case("a_first/name.txt", "b/second/name.txt")]
-    #[case("", "b/second/name.txt")]
-    fn put_encode(
-        #[case] source_filename: Utf8PathBuf,
-        #[case] destination_filename: Utf8PathBuf,
-        #[values(vec![], vec![
-            FileStoreRequest{
-                action_code: FileStoreAction::AppendFile,
-                first_filename: "some_name_here.txt".into(),
-                second_filename: "another_name.txt".into(),
-            },
-            FileStoreRequest{
-                action_code: FileStoreAction::RenameFile,
-                first_filename: "some_name_here.txt".into(),
-                second_filename: "another_name.txt".into(),
-            }
-        ])]
-        filestore_requests: Vec<FileStoreRequest>,
-        #[values(vec![], vec![
-            MessageToUser{message_text: "some text billy!".as_bytes().to_vec()},
-            MessageToUser{message_text: "cfdp \nmessage here!".as_bytes().to_vec()}
-
-        ])]
-        message_to_user: Vec<MessageToUser>,
-        #[values(TransmissionMode::Unacknowledged, TransmissionMode::Acknowledged)]
-        transmission_mode: TransmissionMode,
-        #[values(
-            EntityID::from(1_u8),
-            EntityID::from(300_u16),
-            EntityID::from(105748_u32),
-            EntityID::from(846372858564_u64)
-        )]
-        destination_entity_id: EntityID,
-    ) {
-        let expected = PutRequest {
-            source_filename,
-            destination_filename,
-            filestore_requests,
-            message_to_user,
-            destination_entity_id,
-            transmission_mode,
-        };
-
-        let buffer = expected.clone().encode();
-        let recovered = PutRequest::decode(&mut &buffer[..]).unwrap();
-
-        assert_eq!(expected, recovered)
-    }
-
-    #[rstest]
-    fn primitive_encode(
-        #[values(
-            UserPrimitive::Put(
-                PutRequest{
-                    source_filename: "test".into(),
-                    destination_filename: "out_file".into(),
-                    destination_entity_id: EntityID::from(32_u32),
-                    transmission_mode: TransmissionMode::Acknowledged,
-                    filestore_requests: vec![
-                        FileStoreRequest{
-                            action_code:FileStoreAction::CreateDirectory,
-                            first_filename:"/tmp/help".into(),
-                            second_filename:"".into()}],
-                    message_to_user: vec![MessageToUser{message_text: "do something".as_bytes().to_vec()}],
-                }
-            ),
-            UserPrimitive::Cancel(TransactionID::from(1_u8, 3_u8)),
-            UserPrimitive::Suspend(TransactionID::from(10_u16, 400_u16)),
-            UserPrimitive::Resume(TransactionID::from(871838474_u64, 871838447_u64)),
-            UserPrimitive::Report(TransactionID::from(12_u16, 33_u16))
-        )]
-        expected: UserPrimitive,
-    ) {
-        let buffer = expected.clone().encode();
-        let recovered = UserPrimitive::decode(&mut &buffer[..]).unwrap();
-
-        assert_eq!(expected, recovered)
     }
 }

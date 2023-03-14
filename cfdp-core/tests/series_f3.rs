@@ -149,7 +149,7 @@ fn f3s03(get_filestore: &UsersAndFilestore) {
         .expect("Unable to send Report Request.")
         .is_none()
     {
-        thread::sleep(Duration::from_millis(5))
+        thread::sleep(Duration::from_millis(1))
     }
 
     let mut report = local_user
@@ -158,7 +158,7 @@ fn f3s03(get_filestore: &UsersAndFilestore) {
         .unwrap();
 
     while report.state != TransactionState::Terminated {
-        thread::sleep(Duration::from_millis(5));
+        thread::sleep(Duration::from_millis(1));
         report = local_user
             .report(id)
             .expect("Unable to send Report Request.")
@@ -224,7 +224,7 @@ fn f3s04(get_filestore: &UsersAndFilestore) {
         .expect("Unable to send Report Request.")
         .is_none()
     {
-        thread::sleep(Duration::from_millis(5))
+        thread::sleep(Duration::from_millis(1))
     }
 
     let mut report = local_user
@@ -233,7 +233,7 @@ fn f3s04(get_filestore: &UsersAndFilestore) {
         .unwrap();
 
     while report.state != TransactionState::Terminated {
-        thread::sleep(Duration::from_millis(5));
+        thread::sleep(Duration::from_millis(1));
         report = local_user
             .report(id)
             .expect("Unable to send Report Request.")
@@ -269,11 +269,18 @@ fn f3s05(get_filestore: &UsersAndFilestore) {
             destination_filename: new_file.clone(),
             destination_entity_id: EntityID::from(1_u16),
             transmission_mode: TransmissionMode::Acknowledged,
-            filestore_requests: vec![FileStoreRequest {
-                action_code: FileStoreAction::CreateFile,
-                first_filename: out_file.clone(),
-                second_filename: "".into(),
-            }],
+            filestore_requests: vec![
+                FileStoreRequest {
+                    action_code: FileStoreAction::CreateFile,
+                    first_filename: out_file.clone(),
+                    second_filename: "".into(),
+                },
+                FileStoreRequest {
+                    action_code: FileStoreAction::AppendFile,
+                    first_filename: out_file.clone(),
+                    second_filename: new_file.clone(),
+                },
+            ],
             message_to_user: vec![],
         })
         .expect("unable to send put request.");
@@ -283,14 +290,14 @@ fn f3s05(get_filestore: &UsersAndFilestore) {
         .expect("unable to get report.")
         .is_none()
     {
-        thread::sleep(Duration::from_millis(150))
+        thread::sleep(Duration::from_millis(1))
     }
     let mut report = local_user
         .report(id)
         .expect("unable to get report.")
         .unwrap();
     while report.state != TransactionState::Terminated {
-        thread::sleep(Duration::from_millis(150));
+        thread::sleep(Duration::from_millis(1));
         report = local_user
             .report(id)
             .expect("unable to get report.")
@@ -299,30 +306,6 @@ fn f3s05(get_filestore: &UsersAndFilestore) {
 
     assert!(path_to_out.exists());
     assert!(path_to_new.exists());
-
-    let id = local_user
-        .put(PutRequest {
-            source_filename: "".into(),
-            destination_filename: "".into(),
-            destination_entity_id: EntityID::from(1_u16),
-            transmission_mode: TransmissionMode::Acknowledged,
-            filestore_requests: vec![FileStoreRequest {
-                action_code: FileStoreAction::AppendFile,
-                first_filename: out_file.clone(),
-                second_filename: new_file.clone(),
-            }],
-            message_to_user: vec![],
-        })
-        .expect("unable to send put request.");
-    while local_user
-        .report(id)
-        .expect("Unable to obtain report.")
-        .unwrap()
-        .state
-        != TransactionState::Terminated
-    {
-        thread::sleep(Duration::from_millis(5))
-    }
 
     let checksum1 = filestore
         .open(out_file, OpenOptions::new().read(true))
@@ -393,7 +376,7 @@ fn f3s06(get_filestore: &UsersAndFilestore) {
         .expect("Unable to send Report Request.")
         .is_none()
     {
-        thread::sleep(Duration::from_millis(5))
+        thread::sleep(Duration::from_millis(1))
     }
 
     let mut report = local_user
@@ -402,7 +385,7 @@ fn f3s06(get_filestore: &UsersAndFilestore) {
         .unwrap();
 
     while report.state != TransactionState::Terminated {
-        thread::sleep(Duration::from_millis(5));
+        thread::sleep(Duration::from_millis(1));
         report = local_user
             .report(id)
             .expect("Unable to send Report Request.")

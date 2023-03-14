@@ -322,8 +322,6 @@ pub struct Daemon<T: FileStore + Send + 'static> {
     entity_id: EntityID,
     // current running count of the sequence numbers of transaction initiated by this entity
     sequence_num: TransactionSeqNum,
-    // a mapping of originating transaction IDs to currently running Proxy Transactions
-    proxy_id_map: HashMap<TransactionID, TransactionID>,
     // termination signal sent to children threads
     terminate: Arc<AtomicBool>,
     // channel to receive user primitives from the implemented User
@@ -344,7 +342,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         primitive_rx: Receiver<UserPrimitive>,
         indication_tx: Sender<Indication>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        // let (message_tx, message_rx) = unbounded();
         let mut transport_tx_map: HashMap<EntityID, Sender<(VariableID, PDU)>> = HashMap::new();
         let (pdu_send, pdu_receive) = unbounded();
         for (vec, mut transport) in transport_map.into_iter() {
@@ -368,7 +365,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             default_config,
             entity_id,
             sequence_num,
-            proxy_id_map: HashMap::new(),
             terminate,
             primitive_rx,
             history: HashMap::new(),
@@ -608,7 +604,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                 }
                             }
                         }
-                    }
+                    };
                 }
                 Ok(transaction.generate_report())
             })?;
@@ -749,7 +745,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         .get(&request.destination_entity_id)
                                         .expect("No transport for Entity ID.")
                                         .clone();
-                                    println!("Put request: {request:?}");
+
                                     let (id, sender, handle) = Self::spawn_send_transaction(
                                         request,
                                         sequence_number,
@@ -788,6 +784,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                 }
                                 UserPrimitive::Report(id, report_sender) => {
                                     let report = Self::get_report(id, &transaction_channels);
+
                                     let response = match report {
                                         Some(data) => {
                                             info!("Status of Transaction {}. State: {:?}. Status: {:?}. Condition: {:?}.", id, data.state, data.status, data.condition);
@@ -817,13 +814,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                                                     let _ = transaction_channels
                                                                         .remove(&inner_report.id);
 
-                                                                    // keep all proxy id maps where the finished transaction ID is not the entry
-                                                                    self.proxy_id_map.retain(
-                                                                        |_, value| {
-                                                                            *value
-                                                                                != inner_report.id
-                                                                        },
-                                                                    );
                                                                     self.history.insert(
                                                                         inner_report.id,
                                                                         inner_report.clone(),
@@ -889,7 +879,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                 // remove the channel for this transaction if it is complete
                                 let _ = transaction_channels.remove(&report.id);
                                 // keep all proxy id maps where the finished transaction ID is not the entry
-                                self.proxy_id_map.retain(|_, value| *value != report.id);
                                 self.history.insert(report.id, report);
                             }
                             Ok(Err(err)) => {
@@ -913,7 +902,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                     // remove the channel for this transaction if it is complete
                     let _ = transaction_channels.remove(&report.id);
                     // keep all proxy id maps where the finished transaction ID is not the entry
-                    self.proxy_id_map.retain(|_, value| *value != report.id);
                     self.history.insert(report.id, report);
                 }
                 Ok(Err(err)) => {

@@ -460,7 +460,7 @@ fn f1s7(get_filestore: &UsersAndFilestore) {
 #[rstest]
 #[timeout(Duration::from_secs(10))]
 // Series F1
-// Sequence 7 Test
+// Sequence 8 Test
 // Test goal:
 //  - Check User Cancel Functionality
 // Configuration:
@@ -486,7 +486,6 @@ fn f1s8(get_filestore: &UsersAndFilestore) {
         thread::sleep(Duration::from_millis(1));
     }
     local_user.cancel(id).expect("unable to cancel.");
-    thread::sleep(Duration::from_millis(5));
 
     let mut report = local_user
         .report(id)
@@ -494,7 +493,7 @@ fn f1s8(get_filestore: &UsersAndFilestore) {
         .unwrap();
 
     while report.condition != Condition::CancelReceived {
-        thread::sleep(Duration::from_millis(5));
+        thread::sleep(Duration::from_millis(1));
         report = local_user
             .report(id)
             .expect("Unable to send Report Request.")
@@ -509,7 +508,7 @@ fn f1s8(get_filestore: &UsersAndFilestore) {
 #[rstest]
 #[timeout(Duration::from_secs(30))]
 // Series F1
-// Sequence 7 Test
+// Sequence 9 Test
 // Test goal:
 //  - Check User Cancel Functionality
 // Configuration:
@@ -537,9 +536,7 @@ fn f1s9(get_filestore: &UsersAndFilestore) {
     {
         thread::sleep(Duration::from_micros(1));
     }
-    thread::sleep(Duration::from_millis(1));
     remote_user.cancel(id).expect("unable to cancel.");
-    thread::sleep(Duration::from_millis(5));
 
     let mut report = remote_user
         .report(id)
@@ -547,7 +544,7 @@ fn f1s9(get_filestore: &UsersAndFilestore) {
         .unwrap();
 
     while report.condition != Condition::CancelReceived {
-        thread::sleep(Duration::from_millis(5));
+        thread::sleep(Duration::from_millis(1));
         report = remote_user
             .report(id)
             .expect("Unable to send Report Request.")
@@ -562,7 +559,7 @@ fn f1s9(get_filestore: &UsersAndFilestore) {
 #[rstest]
 #[timeout(Duration::from_secs(10))]
 // Series F1
-// Sequence 7 Test
+// Sequence 10 Test
 // Test goal:
 //  - Check User Cancel Functionality
 // Configuration:
@@ -590,7 +587,6 @@ fn f1s10(get_filestore: &UsersAndFilestore) {
     }
 
     local_user.cancel(id).expect("unable to cancel.");
-    thread::sleep(Duration::from_millis(5));
 
     let mut report = local_user
         .report(id)
@@ -598,7 +594,7 @@ fn f1s10(get_filestore: &UsersAndFilestore) {
         .unwrap();
 
     while report.condition != Condition::CancelReceived {
-        thread::sleep(Duration::from_millis(5));
+        thread::sleep(Duration::from_millis(1));
         report = local_user
             .report(id)
             .expect("Unable to send Report Request.")

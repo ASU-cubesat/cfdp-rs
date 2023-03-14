@@ -373,7 +373,7 @@ fn f3s06(get_filestore: &UsersAndFilestore) {
 
     while local_user
         .report(id)
-        .expect("Unable to send Report Request.")
+        .expect("Unable to send None Report Request.")
         .is_none()
     {
         thread::sleep(Duration::from_millis(1))
@@ -381,14 +381,14 @@ fn f3s06(get_filestore: &UsersAndFilestore) {
 
     let mut report = local_user
         .report(id)
-        .expect("Unable to send Report Request.")
+        .expect("Unable to send First Report Request.")
         .unwrap();
 
     while report.state != TransactionState::Terminated {
         thread::sleep(Duration::from_millis(1));
         report = local_user
             .report(id)
-            .expect("Unable to send Report Request.")
+            .expect("Unable to send Intrim Report Request.")
             .unwrap();
     }
     assert!(path_to_new.exists());

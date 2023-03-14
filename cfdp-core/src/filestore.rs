@@ -292,7 +292,6 @@ impl FileStore for NativeFileStore {
         {
             let mut open_file1 = File::options().append(true).open(full_path1)?;
             open_file1.write_all(fs::read(full_path2)?.as_slice())?;
-            open_file1.sync_all()?;
         }
 
         Ok(())
@@ -487,17 +486,18 @@ mod test {
 
     #[rstest]
     fn create_file(test_filestore: &NativeFileStore) {
-        let path = Utf8Path::new("junk.txt");
+        let path = Utf8Path::new("create_file.txt");
 
         test_filestore.create_file(path).unwrap();
 
         let full_path = test_filestore.get_native_path(path);
+
         assert!(full_path.exists())
     }
 
     #[rstest]
     fn delete_file(test_filestore: &NativeFileStore) {
-        let path = Utf8Path::new("junk.txt");
+        let path = Utf8Path::new("delete_file.txt");
 
         test_filestore.create_file(path).unwrap();
 
@@ -511,8 +511,8 @@ mod test {
 
     #[rstest]
     fn rename_file(test_filestore: &NativeFileStore) {
-        let path = Utf8Path::new("junk.txt");
-        let new_path = Utf8Path::new("new.dat");
+        let path = Utf8Path::new("rename_init.txt");
+        let new_path = Utf8Path::new("rename_new.dat");
 
         test_filestore.create_file(path).unwrap();
 
@@ -527,33 +527,35 @@ mod test {
 
     #[rstest]
     fn append_file(test_filestore: &NativeFileStore) {
+        let path = "append+_path1.txt";
+
         let mut options = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .to_owned();
-        let path = "test_path1.txt";
         {
             let mut file = test_filestore.open(path, &mut options).unwrap();
             file.write_all("test text".as_bytes()).unwrap();
         }
 
-        let path2 = "test_path2.txt";
+        let path2 = "append_path2.txt";
         {
             let mut file = test_filestore.open(path2, &mut options).unwrap();
             file.write_all("new text".as_bytes()).unwrap();
         }
-        let expected = "test textnew text".to_owned();
 
         test_filestore.append_file(path, path2).unwrap();
 
-        let mut recovered_text = String::new();
+        let expected = "test textnew text".to_owned();
+
+        let mut recovered_text = String::with_capacity(expected.len());
         test_filestore
             .open(path, OpenOptions::new().read(true))
             .unwrap()
             .read_to_string(&mut recovered_text)
             .unwrap();
-
+        println!("{:?}", test_filestore.get_native_path(path));
         assert_eq!(expected, recovered_text)
     }
 
@@ -564,13 +566,13 @@ mod test {
             .create(true)
             .truncate(true)
             .to_owned();
-        let path = "test_path1.txt";
+        let path = "replace_path1.txt";
         {
             let mut file = test_filestore.open(path, &mut options).unwrap();
             file.write_all("test text".as_bytes()).unwrap();
         }
 
-        let path2 = "test_path2.txt";
+        let path2 = "replace_path2.txt";
         {
             let mut file = test_filestore.open(path2, &mut options).unwrap();
             file.write_all("new text".as_bytes()).unwrap();

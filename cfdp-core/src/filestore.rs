@@ -292,6 +292,7 @@ impl FileStore for NativeFileStore {
         {
             let mut open_file1 = File::options().append(true).open(full_path1)?;
             open_file1.write_all(fs::read(full_path2)?.as_slice())?;
+            open_file1.sync_all()?;
         }
 
         Ok(())

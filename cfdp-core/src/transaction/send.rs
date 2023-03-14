@@ -559,10 +559,14 @@ impl<T: FileStore> SendTransaction<T> {
         self.state = TransactionState::Active;
 
         // use the current location in the file as the progress
-        let progress = {
-            let handle = self.get_handle()?;
-            handle.stream_position().map_err(FileStoreError::IO)?
+        let progress = match self.is_file_transfer() {
+            true => {
+                let handle = self.get_handle()?;
+                handle.stream_position().map_err(FileStoreError::IO)?
+            }
+            false => 0,
         };
+
         self.indication_tx
             .send(Indication::Resumed(ResumeIndication {
                 id: self.id(),

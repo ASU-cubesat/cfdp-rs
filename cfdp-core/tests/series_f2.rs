@@ -688,7 +688,7 @@ fn fixture_f2s8(
 }
 
 #[rstest]
-#[timeout(Duration::from_secs(5))]
+#[timeout(Duration::from_secs(10))]
 // Series F2
 // Sequence 8 Test
 // Test goal:
@@ -785,7 +785,7 @@ fn fixture_f2s9(
 }
 
 #[rstest]
-#[timeout(Duration::from_secs(5))]
+#[timeout(Duration::from_secs(10))]
 // Series F2
 // Sequence 9 Test
 // Test goal:

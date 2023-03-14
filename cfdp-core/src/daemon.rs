@@ -102,7 +102,7 @@ pub enum UserPrimitive {
     /// Resume operations of the given transaction.
     Resume(TransactionID),
     /// Report progress of the given transaction.
-    Report(TransactionID, Sender<Option<Report>>),
+    Report(TransactionID, Sender<Report>),
 }
 
 /// Lightweight commands
@@ -242,7 +242,7 @@ pub enum Indication {
     /// The associated Transaction has been resumed at the given progress point.
     Resumed(ResumeIndication),
     /// Last known status for the given transaction
-    Report(Option<Report>),
+    Report(Report),
     /// A Fault has been initiated for the given transaction
     Fault(FaultIndication),
     /// An Abandon Fault has been initiated for the given transaction
@@ -296,7 +296,7 @@ pub struct EntityConfig {
 type SpawnerTuple = (
     TransactionID,
     Sender<Command>,
-    JoinHandle<Result<Report, TransactionError>>,
+    JoinHandle<Result<TransactionID, TransactionError>>,
 );
 
 /// The CFDP Daemon is responsible for connecting [PDUTransport](crate::transport::PDUTransport) implementation
@@ -305,7 +305,7 @@ type SpawnerTuple = (
 /// PDUs are sent from each Transaction directly to their respective PDUTransport implementations.
 pub struct Daemon<T: FileStore + Send + 'static> {
     // The collection of all current transactions
-    transaction_handles: Vec<JoinHandle<Result<Report, TransactionError>>>,
+    transaction_handles: Vec<JoinHandle<Result<TransactionID, TransactionError>>>,
     // the vector of transportation tx channel connections
     transport_tx_map: HashMap<EntityID, Sender<(VariableID, PDU)>>,
     // the transport PDU rx channel connection
@@ -326,8 +326,6 @@ pub struct Daemon<T: FileStore + Send + 'static> {
     terminate: Arc<AtomicBool>,
     // channel to receive user primitives from the implemented User
     primitive_rx: Receiver<UserPrimitive>,
-    // transaction report history for quicker responses for report requests.
-    history: HashMap<TransactionID, Report>,
 }
 impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
     #[allow(clippy::too_many_arguments)]
@@ -367,7 +365,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             sequence_num,
             terminate,
             primitive_rx,
-            history: HashMap::new(),
         })
     }
     fn spawn_receive_transaction(
@@ -407,6 +404,8 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         let id = transaction.id();
 
         let handle = thread::Builder::new().name(name).spawn(move || {
+            transaction.send_report(None)?;
+
             let mut sel = Select::new();
             let rx_select_id = sel.recv(&transaction_rx);
 
@@ -447,7 +446,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         Command::Suspend => transaction.suspend()?,
                                         Command::Abandon => transaction.shutdown(),
                                         Command::Report(sender) => {
-                                            sender.send(transaction.generate_report())?
+                                            transaction.send_report(Some(sender))?
                                         }
                                     }
                                 }
@@ -467,24 +466,13 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                     }
                 }
             }
-            Ok(transaction.generate_report())
+            transaction.send_report(None)?;
+            Ok(transaction.id())
         })?;
 
         Ok((id, transaction_tx, handle))
     }
 
-    fn get_report(
-        id: TransactionID,
-        channels: &HashMap<TransactionID, Sender<Command>>,
-    ) -> Option<Report> {
-        channels
-            .get(&id)
-            .and_then(|chan| {
-                let (tx, rx) = bounded(1);
-                chan.send(Command::Report(tx)).map(|_| rx.recv().ok()).ok()
-            })
-            .flatten()
-    }
     #[allow(clippy::too_many_arguments)]
     fn spawn_send_transaction(
         request: PutRequest,
@@ -536,6 +524,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
 
                 let mut transaction =
                     SendTransaction::new(config, metadata, filestore, indication_tx)?;
+                transaction.send_report(None)?;
                 let mut sel = Select::new();
                 let rx_select_id = sel.recv(&transaction_rx);
 
@@ -586,7 +575,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                             Command::Suspend => transaction.suspend()?,
                                             Command::Abandon => transaction.shutdown(),
                                             Command::Report(sender) => {
-                                                sender.send(transaction.generate_report())?
+                                                transaction.send_report(Some(sender))?
                                             }
                                         }
                                     }
@@ -606,7 +595,8 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                         }
                     };
                 }
-                Ok(transaction.generate_report())
+                transaction.send_report(None)?;
+                Ok(id)
             })?;
         Ok((id, transaction_tx, handle))
     }
@@ -656,7 +646,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         .unwrap_or(&self.default_config)
                                         .clone();
 
-                                    let (id, channel, handle) = Self::spawn_receive_transaction(
+                                    let (_id, channel, handle) = Self::spawn_receive_transaction(
                                         &pdu.header,
                                         // TODO! Fill in this error
                                         self.transport_tx_map
@@ -669,17 +659,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                     )
                                     .expect("Cannot spawn new Transaction.");
 
-                                    // can't use the get_report function here due to double borrow
-                                    let (tx, rx) = bounded(1);
-                                    let response = channel
-                                        .send(Command::Report(tx))
-                                        .map(|_| rx.recv().ok())
-                                        .ok()
-                                        .flatten();
-
-                                    if let Some(report) = response {
-                                        self.history.insert(id, report);
-                                    }
                                     self.transaction_handles.push(handle);
                                     channel
                                 });
@@ -697,7 +676,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         .unwrap_or(&self.default_config)
                                         .clone();
 
-                                    let (id, new_channel, handle) =
+                                    let (_id, new_channel, handle) =
                                         Self::spawn_receive_transaction(
                                             &pdu.header,
                                             self.transport_tx_map
@@ -709,10 +688,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                             self.indication_tx.clone(),
                                         )?;
 
-                                    let response = Self::get_report(id, &transaction_channels);
-                                    if let Some(report) = response {
-                                        self.history.insert(id, report);
-                                    }
                                     self.transaction_handles.push(handle);
                                     new_channel.send(Command::Pdu(pdu.clone()))?;
                                     // update the dict to have the new channel
@@ -759,11 +734,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                     self.transaction_handles.push(handle);
                                     transaction_channels.insert(id, sender);
 
-                                    let response = Self::get_report(id, &transaction_channels);
-                                    if let Some(report) = response {
-                                        self.history.insert(id, report.clone());
-                                    }
-
                                     // ignore the possible error if the user disconnected;
                                     let _ = put_sender.send(id);
                                 }
@@ -783,73 +753,13 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                     }
                                 }
                                 UserPrimitive::Report(id, report_sender) => {
-                                    let report = Self::get_report(id, &transaction_channels);
-
-                                    let response = match report {
-                                        Some(data) => {
-                                            info!("Status of Transaction {}. State: {:?}. Status: {:?}. Condition: {:?}.", id, data.state, data.status, data.condition);
-                                            self.history.insert(data.id, data.clone());
-                                            Some(data)
-                                        }
-                                        None => match self.history.get(&id) {
-                                            Some(data) => {
-                                                info!("Status of Transaction {}. State: {:?}. Status: {:?}. Condition: {:?}.", id, data.state, data.status, data.condition);
-                                                Some(data.clone())
-                                            }
-                                            None => {
-                                                {
-                                                    thread::sleep(Duration::from_millis(5));
-                                                    // force a cleanup check then try again
-                                                    let mut ind = 0;
-                                                    while ind < self.transaction_handles.len() {
-                                                        if self.transaction_handles[ind]
-                                                            .is_finished()
-                                                        {
-                                                            let handle = self
-                                                                .transaction_handles
-                                                                .remove(ind);
-                                                            match handle.join() {
-                                                                Ok(Ok(inner_report)) => {
-                                                                    // remove the channel for this transaction if it is complete
-                                                                    let _ = transaction_channels
-                                                                        .remove(&inner_report.id);
-
-                                                                    self.history.insert(
-                                                                        inner_report.id,
-                                                                        inner_report.clone(),
-                                                                    );
-                                                                }
-                                                                Ok(Err(err)) => {
-                                                                    info!("Error occured during transaction: {err}");
-                                                                }
-                                                                Err(_err) => {
-                                                                    error!(
-                                                                        "Unable to join handle!"
-                                                                    );
-                                                                }
-                                                            };
-                                                        } else {
-                                                            ind += 1;
-                                                        }
-                                                    }
-
-                                                    cleanup = Instant::now();
-                                                }
-                                                match self.history.get(&id) {
-                                                    Some(data) => {
-                                                        info!("Status of Transaction {}. State: {:?}. Status: {:?}. Condition: {:?}.", id, data.state, data.status, data.condition);
-                                                        Some(data.clone())
-                                                    }
-                                                    None => {
-                                                        info!("Cannot find information on requested transaction.");
-                                                        None
-                                                    }
-                                                }
-                                            }
-                                        },
-                                    };
-                                    // ignore the possible error if the user disconnected;
-                                    let _ = report_sender.send(response);
+                                    if let Some(channel) = transaction_channels.get(&id) {
+                                        // It's possible for the user to ask for a report after the Transaction is finished
+                                        // but before the channel is cleaned up.
+                                        // for now ignore errors until a better solution is found.
+                                        // maybe possible to trigger a cleanup immediately after a transaction finishes?
+                                        let _ = channel.send(Command::Report(report_sender));
+                                    }
                                 }
                             };
                         }
@@ -875,11 +785,9 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                     if self.transaction_handles[ind].is_finished() {
                         let handle = self.transaction_handles.remove(ind);
                         match handle.join() {
-                            Ok(Ok(report)) => {
+                            Ok(Ok(id)) => {
                                 // remove the channel for this transaction if it is complete
-                                let _ = transaction_channels.remove(&report.id);
-                                // keep all proxy id maps where the finished transaction ID is not the entry
-                                self.history.insert(report.id, report);
+                                let _ = transaction_channels.remove(&id);
                             }
                             Ok(Err(err)) => {
                                 info!("Error occured during transaction: {}", err)
@@ -898,11 +806,9 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         // a final cleanup
         while let Some(handle) = self.transaction_handles.pop() {
             match handle.join() {
-                Ok(Ok(report)) => {
+                Ok(Ok(id)) => {
                     // remove the channel for this transaction if it is complete
-                    let _ = transaction_channels.remove(&report.id);
-                    // keep all proxy id maps where the finished transaction ID is not the entry
-                    self.history.insert(report.id, report);
+                    let _ = transaction_channels.remove(&id);
                 }
                 Ok(Err(err)) => {
                     info!("Error occured during transaction: {}", err)

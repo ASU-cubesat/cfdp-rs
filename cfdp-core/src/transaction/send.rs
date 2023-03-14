@@ -268,13 +268,23 @@ impl<T: FileStore> SendTransaction<T> {
     pub fn get_mode(&self) -> TransmissionMode {
         self.config.transmission_mode
     }
-    pub fn generate_report(&self) -> Report {
+    fn generate_report(&self) -> Report {
         Report {
             id: self.id(),
             state: self.get_state(),
             status: self.get_status(),
             condition: self.condition,
         }
+    }
+
+    pub fn send_report(&self, sender: Option<Sender<Report>>) -> TransactionResult<()> {
+        let report = self.generate_report();
+        if let Some(channel) = sender {
+            channel.send(report.clone())?;
+        }
+        self.indication_tx.send(Indication::Report(report))?;
+
+        Ok(())
     }
     fn get_header(
         &mut self,

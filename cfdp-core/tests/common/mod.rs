@@ -7,7 +7,7 @@ use std::{
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, RwLock,
     },
     thread::{self, JoinHandle},
     time::Duration,
@@ -199,12 +199,15 @@ pub(crate) struct TestUser {
     indication_tx: Sender<Indication>,
     // Indication listener thread
     indication_handle: JoinHandle<()>,
+    history: Arc<RwLock<HashMap<TransactionID, Report>>>,
 }
 impl TestUser {
     pub(crate) fn new<T: FileStore + Send + Sync + 'static>(filestore: Arc<T>) -> Self {
         let (internal_tx, internal_rx) = bounded::<UserPrimitive>(1);
         let (indication_tx, indication_rx) = unbounded::<Indication>();
+        let history = Arc::new(RwLock::new(HashMap::<TransactionID, Report>::new()));
 
+        let auto_history = history.clone();
         let auto_sender = internal_tx.clone();
 
         let indication_handle = thread::spawn(move || {
@@ -333,13 +336,11 @@ impl TestUser {
                                 },
                                 UserRequest::RemoteStatusReport(report_request) => {
                                     let (report_tx, report_rx) = bounded(0);
-                                    let primitive = UserPrimitive::Report(
-                                        TransactionID(
-                                            report_request.source_entity_id,
-                                            report_request.transaction_sequence_number,
-                                        ),
-                                        report_tx,
+                                    let id = TransactionID(
+                                        report_request.source_entity_id,
+                                        report_request.transaction_sequence_number,
                                     );
+                                    let primitive = UserPrimitive::Report(id, report_tx);
 
                                     auto_sender
                                         .send(primitive)
@@ -351,16 +352,16 @@ impl TestUser {
                                         })
                                         .expect("error asking for report.");
 
-                                    let report = report_rx
-                                        .recv()
-                                        .map_err(|_| {
-                                            IoError::new(
-                                                ErrorKind::ConnectionReset,
-                                                "Daemon Half of User disconnected.",
-                                            )
-                                        })
-                                        .expect("error receiving report");
-
+                                    let report = match report_rx.recv().map_err(|_| {
+                                        IoError::new(
+                                            ErrorKind::ConnectionReset,
+                                            "Daemon Half of User disconnected.",
+                                        )
+                                    }) {
+                                        Ok(report) => Some(report),
+                                        // try to get from history here
+                                        Err(_) => auto_history.read().unwrap().get(&id).cloned(),
+                                    };
                                     let response = {
                                         match report {
                                             Some(data) => RemoteStatusReportResponse {
@@ -562,6 +563,9 @@ impl TestUser {
                                     });
                         }
                     }
+                    Indication::Report(report) => {
+                        auto_history.write().unwrap().insert(report.id, report);
+                    }
                     // ignore everything else for now.
                     _ => {}
                 };
@@ -573,6 +577,7 @@ impl TestUser {
             internal_rx,
             indication_tx,
             indication_handle,
+            history,
         }
     }
 
@@ -582,11 +587,13 @@ impl TestUser {
             internal_rx,
             indication_tx,
             indication_handle,
+            history,
         } = self;
         (
             TestUserHalf {
                 internal_tx,
                 _indication_handle: indication_handle,
+                history,
             },
             internal_rx,
             indication_tx,
@@ -629,6 +636,7 @@ impl TestUser {
 pub struct TestUserHalf {
     internal_tx: Sender<UserPrimitive>,
     _indication_handle: JoinHandle<()>,
+    history: Arc<RwLock<HashMap<TransactionID, Report>>>,
 }
 impl TestUserHalf {
     #[allow(unused)]
@@ -668,18 +676,17 @@ impl TestUserHalf {
         let (report_tx, report_rx) = bounded(1);
         let primitive = UserPrimitive::Report(transaction, report_tx);
 
-        self.internal_tx.send(primitive).map_err(|_| {
+        self.internal_tx.send(primitive).map_err(|err| {
             IoError::new(
                 ErrorKind::ConnectionReset,
-                "Daemon Half of User disconnected.",
+                format!("Daemon Half of User disconnected on send: {err}"),
             )
         })?;
-        let response = report_rx.recv().map_err(|_| {
-            IoError::new(
-                ErrorKind::ConnectionReset,
-                "Daemon Half of User disconnected.",
-            )
-        })?;
+        let response = match report_rx.recv() {
+            Ok(report) => Some(report),
+            // if the channel disconnects because the transaction is finished then just get from history.
+            Err(_) => self.history.read().unwrap().get(&transaction).cloned(),
+        };
         Ok(response)
     }
 }

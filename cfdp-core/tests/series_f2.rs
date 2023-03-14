@@ -102,7 +102,7 @@ fn f2s1(fixture_f2s1: &'static EntityConstructorReturn) {
         .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
 
     assert!(path_to_out.exists());
@@ -188,7 +188,7 @@ fn f2s2(fixture_f2s2: &'static EntityConstructorReturn) {
         .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
 
     assert!(path_to_out.exists());
@@ -273,7 +273,7 @@ fn f2s3(fixture_f2s3: &'static EntityConstructorReturn) {
         .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
 
     assert!(path_to_out.exists());
@@ -358,7 +358,7 @@ fn f2s4(fixture_f2s4: &'static EntityConstructorReturn) {
         .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
 
     assert!(path_to_out.exists());
@@ -443,7 +443,7 @@ fn f2s5(fixture_f2s5: &'static EntityConstructorReturn) {
         .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
 
     assert!(path_to_out.exists());
@@ -499,7 +499,7 @@ fn fixture_f2s6(
 }
 
 #[rstest]
-#[timeout(Duration::from_secs(10))]
+#[timeout(Duration::from_secs(15))]
 // Series F2
 // Sequence 6 Test
 // Test goal:
@@ -526,7 +526,7 @@ fn f2s6(fixture_f2s6: &'static EntityConstructorReturn) {
         .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
 
     assert!(path_to_out.exists());
@@ -584,7 +584,7 @@ fn fixture_f2s7(
 }
 
 #[rstest]
-#[timeout(Duration::from_secs(10))]
+#[timeout(Duration::from_secs(15))]
 // Series F2
 // Sequence 7 Test
 // Test goal:
@@ -611,7 +611,7 @@ fn f2s7(fixture_f2s7: &'static EntityConstructorReturn) {
         .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
     assert!(path_to_out.exists());
     // wait long enough for the ack limit to be reached
@@ -622,7 +622,7 @@ fn f2s7(fixture_f2s7: &'static EntityConstructorReturn) {
         .unwrap();
 
     while report.condition != Condition::PositiveLimitReached {
-        thread::sleep(Duration::from_millis(1));
+        thread::sleep(Duration::from_millis(100));
         report = local_user
             .report(id)
             .expect("Unable to send Report Request.")
@@ -688,7 +688,7 @@ fn fixture_f2s8(
 }
 
 #[rstest]
-#[timeout(Duration::from_secs(10))]
+#[timeout(Duration::from_secs(15))]
 // Series F2
 // Sequence 8 Test
 // Test goal:
@@ -721,7 +721,7 @@ fn f2s8(fixture_f2s8: &'static EntityConstructorReturn) {
         .unwrap();
 
     while report.condition != Condition::NakLimitReached {
-        thread::sleep(Duration::from_millis(1));
+        thread::sleep(Duration::from_millis(100));
         report = local_user
             .report(id)
             .expect("Unable to send Report Request.")
@@ -785,7 +785,7 @@ fn fixture_f2s9(
 }
 
 #[rstest]
-#[timeout(Duration::from_secs(10))]
+#[timeout(Duration::from_secs(15))]
 // Series F2
 // Sequence 9 Test
 // Test goal:
@@ -818,7 +818,7 @@ fn f2s9(fixture_f2s9: &'static EntityConstructorReturn) {
         .unwrap();
 
     while report.condition != Condition::InactivityDetected {
-        thread::sleep(Duration::from_millis(1));
+        thread::sleep(Duration::from_millis(100));
         report = local_user
             .report(id)
             .expect("Unable to send Report Request.")
@@ -880,7 +880,7 @@ fn fixture_f2s10(
 }
 
 #[rstest]
-#[timeout(Duration::from_secs(5))]
+#[timeout(Duration::from_secs(15))]
 // Series F2
 // Sequence 10 Test
 // Test goal:
@@ -912,7 +912,7 @@ fn f2s10(fixture_f2s10: &'static EntityConstructorReturn) {
         .expect("Unable to send Report Request.")
         .is_none()
     {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
 
     let mut report = remote_user

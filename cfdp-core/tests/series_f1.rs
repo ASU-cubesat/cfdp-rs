@@ -52,7 +52,7 @@ fn f1s1(get_filestore: &UsersAndFilestore) {
         .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
     assert!(path_to_out.exists())
 }
@@ -84,7 +84,7 @@ fn f1s2(get_filestore: &UsersAndFilestore) {
         .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
     assert!(path_to_out.exists())
 }
@@ -116,7 +116,7 @@ fn f1s3(get_filestore: &UsersAndFilestore) {
         .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
 
     assert!(path_to_out.exists())
@@ -197,7 +197,7 @@ fn f1s4(fixture_f1s4: &'static EntityConstructorReturn) {
         .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
 
     assert!(path_to_out.exists())
@@ -279,7 +279,7 @@ fn f1s5(fixture_f1s5: &'static EntityConstructorReturn) {
         .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
 
     assert!(path_to_out.exists())
@@ -362,7 +362,7 @@ fn f1s6(fixture_f1s6: &'static EntityConstructorReturn) {
         .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
 
     assert!(path_to_out.exists())
@@ -409,7 +409,7 @@ fn f1s7(get_filestore: &UsersAndFilestore) {
         })
         .expect("unable to send put request.");
     while !path_interim.exists() {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
     assert!(path_interim.exists());
 
@@ -451,7 +451,7 @@ fn f1s7(get_filestore: &UsersAndFilestore) {
         .expect("Unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
 
     assert!(path_to_out.exists())
@@ -483,7 +483,7 @@ fn f1s8(get_filestore: &UsersAndFilestore) {
         .expect("unable to send put request.");
 
     while local_user.report(id).expect("cannot send report").is_none() {
-        thread::sleep(Duration::from_millis(1));
+        thread::sleep(Duration::from_millis(100));
     }
     local_user.cancel(id).expect("unable to cancel.");
 
@@ -493,7 +493,7 @@ fn f1s8(get_filestore: &UsersAndFilestore) {
         .unwrap();
 
     while report.condition != Condition::CancelReceived {
-        thread::sleep(Duration::from_millis(1));
+        thread::sleep(Duration::from_millis(100));
         report = local_user
             .report(id)
             .expect("Unable to send Report Request.")
@@ -544,7 +544,7 @@ fn f1s9(get_filestore: &UsersAndFilestore) {
         .unwrap();
 
     while report.condition != Condition::CancelReceived {
-        thread::sleep(Duration::from_millis(1));
+        thread::sleep(Duration::from_millis(100));
         report = remote_user
             .report(id)
             .expect("Unable to send Report Request.")
@@ -583,7 +583,7 @@ fn f1s10(get_filestore: &UsersAndFilestore) {
         .expect("unable to send put request.");
 
     while local_user.report(id).expect("cannot send report").is_none() {
-        thread::sleep(Duration::from_millis(1));
+        thread::sleep(Duration::from_millis(100));
     }
 
     local_user.cancel(id).expect("unable to cancel.");
@@ -594,7 +594,7 @@ fn f1s10(get_filestore: &UsersAndFilestore) {
         .unwrap();
 
     while report.condition != Condition::CancelReceived {
-        thread::sleep(Duration::from_millis(1));
+        thread::sleep(Duration::from_millis(100));
         report = local_user
             .report(id)
             .expect("Unable to send Report Request.")

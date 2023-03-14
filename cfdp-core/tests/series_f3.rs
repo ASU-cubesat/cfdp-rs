@@ -54,7 +54,7 @@ fn f3s01(get_filestore: &UsersAndFilestore) {
         .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
     assert!(path_to_out.exists())
 }
@@ -90,7 +90,7 @@ fn f3s02(get_filestore: &UsersAndFilestore) {
         .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
     assert!(path_to_out.exists())
 }
@@ -126,7 +126,7 @@ fn f3s03(get_filestore: &UsersAndFilestore) {
         .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
     assert!(path_to_out.exists());
 
@@ -149,7 +149,7 @@ fn f3s03(get_filestore: &UsersAndFilestore) {
         .expect("Unable to send Report Request.")
         .is_none()
     {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
 
     let mut report = local_user
@@ -158,7 +158,7 @@ fn f3s03(get_filestore: &UsersAndFilestore) {
         .unwrap();
 
     while report.state != TransactionState::Terminated {
-        thread::sleep(Duration::from_millis(1));
+        thread::sleep(Duration::from_millis(100));
         report = local_user
             .report(id)
             .expect("Unable to send Report Request.")
@@ -200,7 +200,7 @@ fn f3s04(get_filestore: &UsersAndFilestore) {
         .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
     assert!(path_to_out.exists());
 
@@ -224,7 +224,7 @@ fn f3s04(get_filestore: &UsersAndFilestore) {
         .expect("Unable to send Report Request.")
         .is_none()
     {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
 
     let mut report = local_user
@@ -233,7 +233,7 @@ fn f3s04(get_filestore: &UsersAndFilestore) {
         .unwrap();
 
     while report.state != TransactionState::Terminated {
-        thread::sleep(Duration::from_millis(1));
+        thread::sleep(Duration::from_millis(100));
         report = local_user
             .report(id)
             .expect("Unable to send Report Request.")
@@ -290,14 +290,14 @@ fn f3s05(get_filestore: &UsersAndFilestore) {
         .expect("unable to get report.")
         .is_none()
     {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
     let mut report = local_user
         .report(id)
         .expect("unable to get report.")
         .unwrap();
     while report.state != TransactionState::Terminated {
-        thread::sleep(Duration::from_millis(1));
+        thread::sleep(Duration::from_millis(100));
         report = local_user
             .report(id)
             .expect("unable to get report.")
@@ -352,7 +352,7 @@ fn f3s06(get_filestore: &UsersAndFilestore) {
         .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
     assert!(path_to_out.exists());
 
@@ -376,7 +376,7 @@ fn f3s06(get_filestore: &UsersAndFilestore) {
         .expect("Unable to send None Report Request.")
         .is_none()
     {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
 
     let mut report = local_user
@@ -385,7 +385,7 @@ fn f3s06(get_filestore: &UsersAndFilestore) {
         .unwrap();
 
     while report.state != TransactionState::Terminated {
-        thread::sleep(Duration::from_millis(1));
+        thread::sleep(Duration::from_millis(100));
         report = local_user
             .report(id)
             .expect("Unable to send Intrim Report Request.")
@@ -439,7 +439,7 @@ fn f3s07(get_filestore: &UsersAndFilestore) {
         .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
 
     assert!(path_to_out.exists());
@@ -478,7 +478,7 @@ fn f3s08(get_filestore: &UsersAndFilestore) {
         .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
 
     assert!(path_to_out.exists());
@@ -500,7 +500,7 @@ fn f3s08(get_filestore: &UsersAndFilestore) {
         .expect("unable to send put request.");
 
     while path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
 
     assert!(!path_to_out.exists())
@@ -534,7 +534,7 @@ fn f3s09(get_filestore: &UsersAndFilestore) {
         .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
 
     assert!(path_to_out.exists());
@@ -556,7 +556,7 @@ fn f3s09(get_filestore: &UsersAndFilestore) {
         .expect("unable to send put request.");
 
     while path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
 
     assert!(!path_to_out.exists())
@@ -595,7 +595,7 @@ fn f3s10(get_filestore: &UsersAndFilestore) {
         .expect("unable to send put request.");
 
     while !path_to_out.exists() {
-        thread::sleep(Duration::from_millis(1))
+        thread::sleep(Duration::from_millis(100))
     }
 
     assert!(path_to_out.exists());

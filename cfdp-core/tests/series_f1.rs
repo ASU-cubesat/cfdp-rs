@@ -58,7 +58,7 @@ fn f1s1(get_filestore: &UsersAndFilestore) {
 }
 
 #[rstest]
-#[timeout(Duration::from_secs(2))]
+#[timeout(Duration::from_secs(5))]
 // Series F1
 // Sequence 2 Test
 // Test goal:

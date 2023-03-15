@@ -1143,6 +1143,7 @@ impl PDUTransport for LossyTransport {
                                 return Err(IoError::from(ErrorKind::ConnectionAborted));
                             }
                         };
+                        continue;
                     }
                     Err(error) => {
                         error!("Error decoding PDU: {error}");
@@ -1161,7 +1162,10 @@ impl PDUTransport for LossyTransport {
                 }
             };
             match recv.try_recv() {
-                Ok((entity, pdu)) => self.request(entity, pdu)?,
+                Ok((entity, pdu)) => {
+                    self.request(entity, pdu)?;
+                    continue;
+                }
                 Err(crossbeam_channel::TryRecvError::Empty) => {
                     // nothing to do here
                 }
@@ -1170,7 +1174,7 @@ impl PDUTransport for LossyTransport {
                     return Err(IoError::from(ErrorKind::ConnectionAborted));
                 }
             };
-            thread::sleep(Duration::from_micros(500))
+            thread::sleep(Duration::from_millis(10))
         }
         Ok(())
     }

@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{hash_map::Entry, HashMap},
     io::{Error as IOError, Read},
     string::FromUtf8Error,
     sync::{
@@ -12,7 +12,7 @@ use std::{
 
 use camino::Utf8PathBuf;
 use crossbeam_channel::{bounded, unbounded, Receiver, Select, Sender, TryRecvError};
-use log::{error, info};
+use log::{error, info, warn};
 use num_traits::FromPrimitive;
 use thiserror::Error;
 
@@ -456,10 +456,10 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                 Err(TryRecvError::Disconnected) => {
                                     // Really do not expect to be in this situation
                                     // probably the thread should exit
-                                    info!(
+                                    panic!(
                                         "Connection to Daemon Severed for Transaction {:?}",
                                         transaction.id()
-                                    )
+                                    );
                                 }
                             };
                         }
@@ -635,33 +635,41 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                 pdu.header.transaction_sequence_number,
                             );
                             // hand pdu off to transaction
-                            let channel = transaction_channels
-                                .entry(key)
-                                // if this key is not in the channel list
-                                // create a new transaction
-                                .or_insert_with(|| {
-                                    let entity_config = self
-                                        .entity_configs
-                                        .get(&key.0)
-                                        .unwrap_or(&self.default_config)
-                                        .clone();
+                            let channel = match transaction_channels.entry(key) {
+                                Entry::Occupied(entry) => entry.into_mut(),
+                                Entry::Vacant(entry) => {
+                                    if let Some(transport) =
+                                        self.transport_tx_map.get(&transport_entity).cloned()
+                                    {
+                                        // if this key is not in the channel list
+                                        // create a new transaction
+                                        let entity_config = self
+                                            .entity_configs
+                                            .get(&key.0)
+                                            .unwrap_or(&self.default_config)
+                                            .clone();
+                                        let (_id, channel, handle) =
+                                            Self::spawn_receive_transaction(
+                                                &pdu.header,
+                                                transport,
+                                                entity_config,
+                                                self.filestore.clone(),
+                                                self.indication_tx.clone(),
+                                            )
+                                            .expect("Cannot spawn new Transaction.");
 
-                                    let (_id, channel, handle) = Self::spawn_receive_transaction(
-                                        &pdu.header,
-                                        // TODO! Fill in this error
-                                        self.transport_tx_map
-                                            .get(&transport_entity)
-                                            .expect("No transport for Entity ID.")
-                                            .clone(),
-                                        entity_config,
-                                        self.filestore.clone(),
-                                        self.indication_tx.clone(),
-                                    )
-                                    .expect("Cannot spawn new Transaction.");
-
-                                    self.transaction_handles.push(handle);
-                                    channel
-                                });
+                                        self.transaction_handles.push(handle);
+                                        entry.insert(channel)
+                                    } else {
+                                        warn!(
+                                            "No Transport available for EntityID: {:?}. Skipping Transaction creation.",
+                                            transport_entity
+                                        );
+                                        // skip to the next loop iteration
+                                        continue;
+                                    }
+                                }
+                            };
 
                             match channel.send(Command::Pdu(pdu.clone())) {
                                 Ok(()) => {}
@@ -675,23 +683,28 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         .get(&key.0)
                                         .unwrap_or(&self.default_config)
                                         .clone();
+                                    if let Some(transport) =
+                                        self.transport_tx_map.get(&transport_entity).cloned()
+                                    {
+                                        let (_id, new_channel, handle) =
+                                            Self::spawn_receive_transaction(
+                                                &pdu.header,
+                                                transport,
+                                                entity_config,
+                                                self.filestore.clone(),
+                                                self.indication_tx.clone(),
+                                            )?;
 
-                                    let (_id, new_channel, handle) =
-                                        Self::spawn_receive_transaction(
-                                            &pdu.header,
-                                            self.transport_tx_map
-                                                .get(&transport_entity)
-                                                .expect("No transport for Entity ID.")
-                                                .clone(),
-                                            entity_config,
-                                            self.filestore.clone(),
-                                            self.indication_tx.clone(),
-                                        )?;
-
-                                    self.transaction_handles.push(handle);
-                                    new_channel.send(Command::Pdu(pdu.clone()))?;
-                                    // update the dict to have the new channel
-                                    transaction_channels.insert(key, new_channel);
+                                        self.transaction_handles.push(handle);
+                                        new_channel.send(Command::Pdu(pdu.clone()))?;
+                                        // update the dict to have the new channel
+                                        transaction_channels.insert(key, new_channel);
+                                    } else {
+                                        warn!(
+                                            "No Transport available for EntityID: {:?}. Skipping Transaction creation.",
+                                            transport_entity
+                                        )
+                                    }
                                 }
                             };
                         }
@@ -715,27 +728,32 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         .unwrap_or(&self.default_config)
                                         .clone();
 
-                                    let transport_tx = self
+                                    if let Some(transport_tx) = self
                                         .transport_tx_map
                                         .get(&request.destination_entity_id)
-                                        .expect("No transport for Entity ID.")
-                                        .clone();
+                                        .cloned()
+                                    {
+                                        let (id, sender, handle) = Self::spawn_send_transaction(
+                                            request,
+                                            sequence_number,
+                                            self.entity_id,
+                                            transport_tx,
+                                            entity_config,
+                                            self.filestore.clone(),
+                                            self.indication_tx.clone(),
+                                        )?;
 
-                                    let (id, sender, handle) = Self::spawn_send_transaction(
-                                        request,
-                                        sequence_number,
-                                        self.entity_id,
-                                        transport_tx,
-                                        entity_config,
-                                        self.filestore.clone(),
-                                        self.indication_tx.clone(),
-                                    )?;
+                                        self.transaction_handles.push(handle);
+                                        transaction_channels.insert(id, sender);
 
-                                    self.transaction_handles.push(handle);
-                                    transaction_channels.insert(id, sender);
-
-                                    // ignore the possible error if the user disconnected;
-                                    let _ = put_sender.send(id);
+                                        // ignore the possible error if the user disconnected;
+                                        let _ = put_sender.send(id);
+                                    } else {
+                                        warn!(
+                                            "No Transport available for EntityID: {:?}. Skipping transaction creation.",
+                                            request.destination_entity_id
+                                        )
+                                    }
                                 }
                                 UserPrimitive::Cancel(id) => {
                                     if let Some(channel) = transaction_channels.get(&id) {

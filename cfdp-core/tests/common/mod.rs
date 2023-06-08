@@ -755,8 +755,7 @@ pub(crate) fn create_daemons<T: FileStore + Sync + Send + 'static>(
         signal.clone(),
         local_daemonhalf,
         indication_tx,
-    )
-    .expect("Cannot create daemon listener.");
+    );
 
     let local_handle = thread::Builder::new()
         .name("Local Daemon".to_string())
@@ -782,8 +781,7 @@ pub(crate) fn create_daemons<T: FileStore + Sync + Send + 'static>(
         signal.clone(),
         remote_daemonhalf,
         remote_indication_tx,
-    )
-    .expect("Cannot create daemon listener.");
+    );
 
     let remote_handle = thread::Builder::new()
         .name("Remote Daemon".to_string())

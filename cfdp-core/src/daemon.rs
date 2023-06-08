@@ -90,10 +90,9 @@ fn construct_metadata(req: PutRequest, config: EntityConfig, file_size: u64) -> 
 }
 
 #[derive(Debug, Clone)]
-/// Possible User Primitives sent from a end user application to the
-/// interprocess pipe.
+/// Possible User Primitives sent from a end user application via the user primitive channel
 pub enum UserPrimitive {
-    /// Initiate a Put transaction with the specificed [PutRequest] configuration.
+    /// Initiate a Put transaction with the specified [PutRequest] configuration.
     Put(PutRequest, Sender<TransactionID>),
     /// Cancel the give transaction.
     Cancel(TransactionID),
@@ -339,7 +338,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         terminate: Arc<AtomicBool>,
         primitive_rx: Receiver<UserPrimitive>,
         indication_tx: Sender<Indication>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> Self {
         let mut transport_tx_map: HashMap<EntityID, Sender<(VariableID, PDU)>> = HashMap::new();
         let (pdu_send, pdu_receive) = unbounded();
         for (vec, mut transport) in transport_map.into_iter() {
@@ -353,7 +352,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             let sender = pdu_send.clone();
             thread::spawn(move || transport.pdu_handler(signal, sender, remote_receive));
         }
-        Ok(Self {
+        Self {
             transaction_handles: vec![],
             transport_tx_map,
             transport_rx: pdu_receive,
@@ -365,7 +364,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             sequence_num,
             terminate,
             primitive_rx,
-        })
+        }
     }
     fn spawn_receive_transaction(
         header: &PDUHeader,

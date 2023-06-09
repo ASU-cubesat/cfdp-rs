@@ -391,7 +391,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             nak_timeout: entity_config.nak_timeout,
         };
         let name = format!(
-            "({:?}, {:?})",
+            "({}, {})",
             &config.source_entity_id, &config.sequence_number
         );
         let mut transaction = RecvTransaction::new(
@@ -434,7 +434,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                             match transaction.process_pdu(pdu) {
                                                 Ok(()) => {}
                                                 Err(err @ TransactionError::UnexpectedPDU(..)) => {
-                                                    info!("Transaction {:?} Received Unexpected PDU: {err}", transaction.id());
+                                                    info!("Transaction {} Received Unexpected PDU: {err}", transaction.id());
                                                     // log some info on the unexpected PDU?
                                                 }
                                                 Err(err) => return Err(err),
@@ -456,7 +456,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                     // Really do not expect to be in this situation
                                     // probably the thread should exit
                                     panic!(
-                                        "Connection to Daemon Severed for Transaction {:?}",
+                                        "Connection to Daemon Severed for Transaction {}",
                                         transaction.id()
                                     );
                                 }
@@ -506,7 +506,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
 
         let handle = thread::Builder::new()
             .name(format!(
-                "({:?}, {:?})",
+                "({}, {})",
                 config.source_entity_id, config.sequence_number
             ))
             .spawn(move || {
@@ -585,7 +585,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         // Really do not expect to be in this situation
                                         // probably the thread should exit
                                         panic!(
-                                            "Connection to Daemon Severed for Transaction {:?}",
+                                            "Connection to Daemon Severed for Transaction {}",
                                             transaction.id()
                                         )
                                     }
@@ -661,7 +661,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         entry.insert(channel)
                                     } else {
                                         warn!(
-                                            "No Transport available for EntityID: {:?}. Skipping Transaction creation.",
+                                            "No Transport available for EntityID: {}. Skipping Transaction creation.",
                                             transport_entity
                                         );
                                         // skip to the next loop iteration
@@ -700,7 +700,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         transaction_channels.insert(key, new_channel);
                                     } else {
                                         warn!(
-                                            "No Transport available for EntityID: {:?}. Skipping Transaction creation.",
+                                            "No Transport available for EntityID: {}. Skipping Transaction creation.",
                                             transport_entity
                                         )
                                     }
@@ -749,7 +749,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         let _ = put_sender.send(id);
                                     } else {
                                         warn!(
-                                            "No Transport available for EntityID: {:?}. Skipping transaction creation.",
+                                            "No Transport available for EntityID: {}. Skipping transaction creation.",
                                             request.destination_entity_id
                                         )
                                     }

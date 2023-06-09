@@ -595,7 +595,7 @@ impl<T: FileStore> SendTransaction<T> {
             .get(&self.condition)
             .unwrap_or(&FaultHandlerAction::Cancel);
         info!(
-            "Transaction {:?} handling fault {:?}, action: {:?} ",
+            "Transaction {} handling fault {:?}, action: {:?} ",
             self.id(),
             condition,
             action
@@ -704,7 +704,7 @@ impl<T: FileStore> SendTransaction<T> {
                             match self.condition != Condition::NoError {
                                 true => {
                                     info!(
-                                        "Transaction {:?}. Ended due to condition {:?}",
+                                        "Transaction {}. Ended due to condition {:?}",
                                         self.id(),
                                         self.condition
                                     );
@@ -814,7 +814,7 @@ impl<T: FileStore> SendTransaction<T> {
                         true => {
                             if finished.condition != Condition::NoError {
                                 info!(
-                                    "Transaction {:?}. Ended due to condition {:?}",
+                                    "Transaction {}. Ended due to condition {:?}",
                                     self.id(),
                                     finished.condition
                                 );

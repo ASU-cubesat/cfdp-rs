@@ -1,7 +1,10 @@
 use byteorder::{BigEndian, ReadBytesExt};
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
-use std::{fmt::Display, io::Read};
+use std::{
+    fmt::{self, Display},
+    io::Read,
+};
 
 use super::{
     error::{PDUError, PDUResult},
@@ -129,6 +132,13 @@ impl PDUEncode for VariableID {
         let mut id = vec![0u8; length as usize];
         buffer.read_exact(id.as_mut_slice())?;
         Self::try_from(id)
+    }
+}
+
+impl fmt::Display for VariableID {
+    // This trait requires `fmt` with this exact signature.
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.to_u64())
     }
 }
 

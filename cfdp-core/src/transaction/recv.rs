@@ -515,7 +515,7 @@ impl<T: FileStore> RecvTransaction<T> {
     /// Returns a boolean indicating if the calling function should continue (true) or not (false.)
     fn handle_fault(&mut self, condition: Condition) -> TransactionResult<bool> {
         self.condition = condition;
-        warn!("Transaction {:?} Handling fault {:?}", self.id(), condition);
+        warn!("Transaction {} Handling fault {:?}", self.id(), condition);
         match self
             .config
             .fault_handler_override

@@ -830,7 +830,7 @@ impl<T: FileStore> RecvTransaction<T> {
                     PDUPayload::Directive(operation) => {
                         match operation {
                             Operations::EoF(eof) => {
-                                debug!("Transaction {0:?} received EndOfFile.", self.id());
+                                debug!("Transaction {0} received EndOfFile.", self.id());
                                 self.condition = eof.condition;
                                 self.prepare_ack_eof();
                                 self.checksum = Some(eof.checksum);
@@ -867,7 +867,7 @@ impl<T: FileStore> RecvTransaction<T> {
                                     && ack.condition == Condition::NoError
                                 {
                                     debug!(
-                                        "Transaction {0:?} received ACK Finished({1:?}).",
+                                        "Transaction {0} received ACK Finished({1:?}).",
                                         self.id(),
                                         ack.condition
                                     );
@@ -888,7 +888,7 @@ impl<T: FileStore> RecvTransaction<T> {
                             }
                             Operations::Metadata(metadata) => {
                                 if self.metadata.is_none() {
-                                    debug!("Transaction {0:?} received Metadata.", self.id());
+                                    debug!("Transaction {0} received Metadata.", self.id());
                                     let message_to_user =
                                         metadata.options.iter().filter_map(|op| match op {
                                             MetadataTLV::MessageToUser(req) => Some(req.clone()),

@@ -709,7 +709,12 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                         }
                         Err(_err) => {
                             // the channel is empty and disconnected
-                            // this should only happen when we are cleaning up.
+                            // this should only happen when we are cleaning up 
+                            // but may happen when the transport crashes or quits
+                            if !self.terminate.load(Ordering::Relaxed) {
+                                error!("Transport disconnected from daemon.");
+                            }
+                            break;
                         }
                     };
                 }
@@ -807,7 +812,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                 let _ = transaction_channels.remove(&id);
                             }
                             Ok(Err(err)) => {
-                                info!("Error occured during transaction: {}", err)
+                                info!("Error occurred during transaction: {}", err)
                             }
                             Err(_) => error!("Unable to join handle!"),
                         };

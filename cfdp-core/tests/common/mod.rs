@@ -986,10 +986,6 @@ impl TryFrom<(UdpSocket, HashMap<VariableID, SocketAddr>, TransportIssue)> for L
     }
 }
 impl PDUTransport for LossyTransport {
-    fn is_ready(&self) -> bool {
-        self.socket.local_addr().is_ok()
-    }
-
     fn request(&mut self, destination: VariableID, pdu: PDU) -> Result<(), IoError> {
         self.entity_map
             .get(&destination)

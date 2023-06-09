@@ -18,9 +18,6 @@ use crate::pdu::{PDUEncode, VariableID, PDU};
 /// Transports are designed to run in a thread in the background
 /// inside a [Daemon](crate::daemon::Daemon) process
 pub trait PDUTransport {
-    /// Verify underyling communication method is ready.
-    fn is_ready(&self) -> bool;
-
     /// Send input PDU to the remote
     /// The implementation must have a method to lookup an Entity's address from the ID
     fn request(&mut self, destination: VariableID, pdu: PDU) -> Result<(), IoError>;
@@ -73,10 +70,6 @@ impl TryFrom<(UdpSocket, HashMap<VariableID, SocketAddr>)> for UdpTransport {
     }
 }
 impl PDUTransport for UdpTransport {
-    fn is_ready(&self) -> bool {
-        self.socket.local_addr().is_ok()
-    }
-
     fn request(&mut self, destination: VariableID, pdu: PDU) -> Result<(), IoError> {
         self.entity_map
             .get(&destination)

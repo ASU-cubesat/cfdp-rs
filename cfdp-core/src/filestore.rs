@@ -79,7 +79,7 @@ pub trait FileStore {
     /// Creates a file relative to the root path.
     fn create_file<P: AsRef<Utf8Path>>(&self, path: P) -> FileStoreResult<()>;
 
-    /// Delete a file retlative to the root path.
+    /// Delete a file relative to the root path.
     fn delete_file<P: AsRef<Utf8Path>>(&self, path: P) -> FileStoreResult<()>;
 
     /// Renames a file relative to the root path.
@@ -226,7 +226,7 @@ pub trait FileStore {
     }
 }
 
-/// Store the root path infomration for a FileStore implementation
+/// Store the root path information for a FileStore implementation
 /// using built in rust [std::fs] interface.
 pub struct NativeFileStore {
     root_path: Utf8PathBuf,
@@ -280,7 +280,7 @@ impl FileStore for NativeFileStore {
         }
     }
 
-    /// This funtion uses [fs::read] to append the contents of path2 to path1.
+    /// This function uses [fs::read] to append the contents of path2 to path1.
     fn append_file<P: AsRef<Utf8Path>, U: AsRef<Utf8Path>>(
         &self,
         path1: P,

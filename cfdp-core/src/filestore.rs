@@ -126,7 +126,7 @@ pub trait FileStore {
     fn get_size<P: AsRef<Utf8Path>>(&self, path: P) -> FileStoreResult<u64>;
 
     /// Executes an action based on an input filestore request
-    /// This is meant to be executed by a Transaction
+    /// This is meant to be executed by a [Send](crate::transaction::SendTransaction) or [Recv](crate::transaction::RecvTransaction) transaction.
     /// instance which requires errors be mapped to a status.
     fn process_request(&self, request: &FileStoreRequest) -> FileStoreResponse {
         let path = self.get_native_path(&request.first_filename);

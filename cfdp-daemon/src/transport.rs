@@ -23,12 +23,8 @@ use crate::cfdp_core::pdu::{PDUEncode, VariableID, PDU};
 /// inside a [Daemon](crate::Daemon) process
 #[async_trait]
 pub trait PDUTransport {
-    /// Send input PDU to the remote
-    /// The implementation must have a method to lookup an Entity's address from the ID
-    async fn request(&mut self, destination: VariableID, pdu: PDU) -> Result<(), IoError>;
-
     /// Provides logic for listening for incoming PDUs and sending any outbound PDUs
-
+    ///
     /// A transport implementation will send any received messages through the
     /// [Sender] channel to the [Daemon](crate::Daemon).
     /// The [Receiver] channel is used to recv PDUs from the Daemon and send them to their respective remote Entity.
@@ -57,6 +53,19 @@ impl UdpTransport {
         let socket = UdpSocket::bind(addr).await?;
         Ok(Self { socket, entity_map })
     }
+
+    /// Look up the address of of the destination entity ID and send the PDU.
+    /// Errors if the destination Entity does not have an associated address.
+    fn request(&mut self, destination: VariableID, pdu: PDU) -> Result<(), IoError> {
+        self.entity_map
+            .get(&destination)
+            .ok_or_else(|| IoError::from(ErrorKind::AddrNotAvailable))
+            .and_then(|addr| {
+                self.socket
+                    .send_to(pdu.encode().as_slice(), addr)
+                    .map(|_n| ())
+            })
+    }
 }
 impl TryFrom<(UdpSocket, HashMap<VariableID, SocketAddr>)> for UdpTransport {
     type Error = IoError;
@@ -71,19 +80,7 @@ impl TryFrom<(UdpSocket, HashMap<VariableID, SocketAddr>)> for UdpTransport {
 
 #[async_trait]
 impl PDUTransport for UdpTransport {
-    async fn request(&mut self, destination: VariableID, pdu: PDU) -> Result<(), IoError> {
-        let addr = self
-            .entity_map
-            .get(&destination)
-            .ok_or_else(|| IoError::from(ErrorKind::AddrNotAvailable))?;
-        self.socket
-            .send_to(pdu.encode().as_slice(), addr)
-            .await
-            .map(|_n| ())?;
-        Ok(())
-    }
-
-    async fn pdu_handler(
+    fn pdu_handler(
         &mut self,
         signal: Arc<AtomicBool>,
         sender: Sender<PDU>,

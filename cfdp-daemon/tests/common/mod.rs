@@ -1011,29 +1011,9 @@ impl LossyTransport {
             buffer: vec![],
         })
     }
-}
-impl TryFrom<(UdpSocket, HashMap<VariableID, SocketAddr>, TransportIssue)> for LossyTransport {
-    type Error = IoError;
 
-    fn try_from(
-        inputs: (UdpSocket, HashMap<VariableID, SocketAddr>, TransportIssue),
-    ) -> Result<Self, Self::Error> {
-        let me = Self {
-            socket: inputs.0,
-            entity_map: inputs.1,
-            counter: 1,
-            issue: inputs.2,
-            buffer: vec![],
-        };
-        Ok(me)
-    }
-}
-
-#[async_trait]
-impl PDUTransport for LossyTransport {
-    async fn request(&mut self, destination: VariableID, pdu: PDU) -> Result<(), IoError> {
-        let addr = self
-            .entity_map
+    fn request(&mut self, destination: VariableID, pdu: PDU) -> Result<(), IoError> {
+        self.entity_map
             .get(&destination)
             .ok_or_else(|| IoError::from(ErrorKind::AddrNotAvailable))?;
 
@@ -1176,8 +1156,28 @@ impl PDUTransport for LossyTransport {
             }
         }
     }
+}
+impl TryFrom<(UdpSocket, HashMap<VariableID, SocketAddr>, TransportIssue)> for LossyTransport {
+    type Error = IoError;
 
-    async fn pdu_handler(
+    fn try_from(
+        inputs: (UdpSocket, HashMap<VariableID, SocketAddr>, TransportIssue),
+    ) -> Result<Self, Self::Error> {
+        let me = Self {
+            socket: inputs.0,
+            entity_map: inputs.1,
+            counter: 1,
+            issue: inputs.2,
+            buffer: vec![],
+        };
+        me.socket.set_read_timeout(Some(Duration::from_secs(1)))?;
+        me.socket.set_write_timeout(Some(Duration::from_secs(1)))?;
+        me.socket.set_nonblocking(true)?;
+        Ok(me)
+    }
+}
+impl PDUTransport for LossyTransport {
+    fn pdu_handler(
         &mut self,
         signal: Arc<AtomicBool>,
         sender: Sender<PDU>,

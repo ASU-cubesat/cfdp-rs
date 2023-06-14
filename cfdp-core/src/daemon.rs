@@ -21,7 +21,7 @@ use crate::{
     pdu::{
         error::PDUError, CRCFlag, Condition, DeliveryCode, Direction, EntityID, FaultHandlerAction,
         FileSizeFlag, FileStatusCode, FileStoreRequest, FileStoreResponse, MessageToUser,
-        PDUEncode, PDUHeader, SegmentedData, TransactionSeqNum, TransactionStatus,
+        NakOrKeepAlive, PDUEncode, PDUHeader, SegmentedData, TransactionSeqNum, TransactionStatus,
         TransmissionMode, VariableID, PDU,
     },
     transaction::{
@@ -102,6 +102,9 @@ pub enum UserPrimitive {
     Resume(TransactionID),
     /// Report progress of the given transaction.
     Report(TransactionID, Sender<Report>),
+    /// Send the designated PromptPDU from the given transaction.
+    /// This primitive is only valid for [Send](crate::transaction::SendTransaction) transactions
+    Prompt(TransactionID, NakOrKeepAlive),
 }
 
 /// Lightweight commands
@@ -112,6 +115,7 @@ enum Command {
     Suspend,
     Resume,
     Report(Sender<Report>),
+    Prompt(NakOrKeepAlive),
     // may find a use for abandon in the future.
     #[allow(unused)]
     Abandon,
@@ -447,6 +451,9 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         Command::Report(sender) => {
                                             transaction.send_report(Some(sender))?
                                         }
+                                        Command::Prompt(_) =>{
+                                            // prompt is a no-op for a receive transaction.
+                                        }
                                     }
                                 }
                                 Err(TryRecvError::Empty) => {
@@ -575,6 +582,9 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                             Command::Abandon => transaction.shutdown(),
                                             Command::Report(sender) => {
                                                 transaction.send_report(Some(sender))?
+                                            }
+                                            Command::Prompt(option) => {
+                                                transaction.prepare_prompt(option)
                                             }
                                         }
                                     }
@@ -781,6 +791,11 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         // for now ignore errors until a better solution is found.
                                         // maybe possible to trigger a cleanup immediately after a transaction finishes?
                                         let _ = channel.send(Command::Report(report_sender));
+                                    }
+                                }
+                                UserPrimitive::Prompt(id, option) => {
+                                    if let Some(channel) = transaction_channels.get(&id) {
+                                        channel.send(Command::Prompt(option))?;
                                     }
                                 }
                             };

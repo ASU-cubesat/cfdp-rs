@@ -19,10 +19,10 @@ use crate::{
     filestore::{FileChecksum, FileStore, FileStoreError},
     pdu::{
         ACKSubDirective, Condition, DeliveryCode, Direction, EndOfFile, FaultHandlerAction,
-        FileDataPDU, FileStatusCode, MetadataPDU, MetadataTLV, Operations, PDUDirective, PDUHeader,
-        PDUPayload, PDUType, PositiveAcknowledgePDU, SegmentRequestForm, SegmentationControl,
-        SegmentedData, TransactionStatus, TransmissionMode, UnsegmentedFileData, VariableID, PDU,
-        U3,
+        FileDataPDU, FileStatusCode, MetadataPDU, MetadataTLV, NakOrKeepAlive, Operations,
+        PDUDirective, PDUHeader, PDUPayload, PDUType, PositiveAcknowledgePDU, PromptPDU,
+        SegmentRequestForm, SegmentationControl, SegmentedData, TransactionStatus,
+        TransmissionMode, UnsegmentedFileData, VariableID, PDU, U3,
     },
     timer::Timer,
 };
@@ -80,7 +80,10 @@ pub struct SendTransaction<T: FileStore> {
     send_state: SendState,
     /// EoF prepared to be sent at the next opportunity if the bool is true
     eof: Option<(EndOfFile, bool)>,
+    /// Acknowledgement PDU prepared to be sent at next opportunity.
     ack: Option<PositiveAcknowledgePDU>,
+    /// A PromptPDU to be send at the next available opporunity.
+    prompt: Option<PromptPDU>,
     /// Channel for Indications to propagate back up
     indication_tx: Sender<Indication>,
     /// flag to track if the initial EoFSent Indication has been sent.
@@ -128,6 +131,7 @@ impl<T: FileStore> SendTransaction<T> {
             state: TransactionState::Active,
             eof: None,
             ack: None,
+            prompt: None,
             indication_tx,
             send_eof_indication: true,
         };
@@ -136,12 +140,15 @@ impl<T: FileStore> SendTransaction<T> {
     }
 
     pub(crate) fn has_pdu_to_send(&self) -> bool {
-        match self.send_state {
-            SendState::SendMetadata | SendState::SendData => true,
-            SendState::SendEof => !self.naks.is_empty() || self.eof.as_ref().map_or(false, |x| x.1),
-            SendState::Cancelled => self.eof.as_ref().map_or(false, |x| x.1),
-            SendState::Finished => self.ack.is_some(),
-        }
+        self.prompt.is_some()
+            || match self.send_state {
+                SendState::SendMetadata | SendState::SendData => true,
+                SendState::SendEof => {
+                    !self.naks.is_empty() || self.eof.as_ref().map_or(false, |x| x.1)
+                }
+                SendState::Cancelled => self.eof.as_ref().map_or(false, |x| x.1),
+                SendState::Finished => self.ack.is_some(),
+            }
     }
 
     // returns the time until the first timeout (inactivity or ack)
@@ -156,70 +163,75 @@ impl<T: FileStore> SendTransaction<T> {
         &mut self,
         transport_tx: &Sender<(VariableID, PDU)>,
     ) -> TransactionResult<()> {
-        match self.send_state {
-            SendState::SendMetadata => {
-                self.send_metadata(transport_tx)?;
-                if self.is_file_transfer() {
-                    self.send_state = SendState::SendData;
-                } else {
-                    self.prepare_eof(None)?;
-                    self.send_state = SendState::SendEof;
+        if self.prompt.is_some() {
+            self.send_prompt(transport_tx)?;
+        } else {
+            match self.send_state {
+                SendState::SendMetadata => {
+                    self.send_metadata(transport_tx)?;
+                    if self.is_file_transfer() {
+                        self.send_state = SendState::SendData;
+                    } else {
+                        self.prepare_eof(None)?;
+                        self.send_state = SendState::SendEof;
+                    }
                 }
-            }
-            SendState::SendData => {
-                while !transport_tx.is_full() {
+                SendState::SendData => {
+                    while !transport_tx.is_full() {
+                        if !self.naks.is_empty() {
+                            // if we have received a NAK send the missing data
+                            self.send_missing_data(transport_tx)?;
+                        } else {
+                            self.send_file_segment(None, None, transport_tx)?
+                        }
+
+                        let handle = self.get_handle()?;
+                        if handle.stream_position().map_err(FileStoreError::IO)?
+                            == handle.metadata().map_err(FileStoreError::IO)?.len()
+                        {
+                            self.prepare_eof(None)?;
+                            self.send_state = SendState::SendEof;
+                            break;
+                        }
+                    }
+                }
+                SendState::SendEof => {
                     if !self.naks.is_empty() {
                         // if we have received a NAK send the missing data
                         self.send_missing_data(transport_tx)?;
                     } else {
-                        self.send_file_segment(None, None, transport_tx)?
-                    }
+                        self.send_eof(transport_tx)?;
 
-                    let handle = self.get_handle()?;
-                    if handle.stream_position().map_err(FileStoreError::IO)?
-                        == handle.metadata().map_err(FileStoreError::IO)?.len()
-                    {
-                        self.prepare_eof(None)?;
-                        self.send_state = SendState::SendEof;
-                        break;
-                    }
-                }
-            }
-            SendState::SendEof => {
-                if !self.naks.is_empty() {
-                    // if we have received a NAK send the missing data
-                    self.send_missing_data(transport_tx)?;
-                } else {
-                    self.send_eof(transport_tx)?;
-
-                    // EoFSent indication only needs to be sent for the initial EoF transmission
-                    if self.send_eof_indication {
-                        self.indication_tx.send(Indication::EoFSent(self.id()))?;
-                        self.send_eof_indication = false;
-                    }
-
-                    if self.get_mode() == TransmissionMode::Unacknowledged {
-                        // if closure is not requested, this transaction is finished.
-                        // indicate as much to the User
-                        if !self.metadata.closure_requested {
-                            self.indication_tx
-                                .send(Indication::Finished(FinishedIndication {
-                                    id: self.id(),
-                                    report: self.generate_report(),
-                                    filestore_responses: vec![],
-                                    file_status: self.file_status,
-                                    delivery_code: self.delivery_code,
-                                }))?;
+                        // EoFSent indication only needs to be sent for the initial EoF transmission
+                        if self.send_eof_indication {
+                            self.indication_tx.send(Indication::EoFSent(self.id()))?;
+                            self.send_eof_indication = false;
                         }
-                        self.shutdown();
+
+                        if self.get_mode() == TransmissionMode::Unacknowledged {
+                            // if closure is not requested, this transaction is finished.
+                            // indicate as much to the User
+                            if !self.metadata.closure_requested {
+                                self.indication_tx.send(Indication::Finished(
+                                    FinishedIndication {
+                                        id: self.id(),
+                                        report: self.generate_report(),
+                                        filestore_responses: vec![],
+                                        file_status: self.file_status,
+                                        delivery_code: self.delivery_code,
+                                    },
+                                ))?;
+                            }
+                            self.shutdown();
+                        }
                     }
                 }
-            }
-            SendState::Cancelled => {
-                self.send_eof(transport_tx)?;
-            }
-            SendState::Finished => {
-                self.send_ack(transport_tx)?;
+                SendState::Cancelled => {
+                    self.send_eof(transport_tx)?;
+                }
+                SendState::Finished => {
+                    self.send_ack(transport_tx)?;
+                }
             }
         }
         Ok(())
@@ -518,6 +530,37 @@ impl<T: FileStore> SendTransaction<T> {
         if let Some(x) = self.eof.as_mut() {
             x.1 = flag;
         }
+    }
+
+    pub(crate) fn prepare_prompt(&mut self, option: NakOrKeepAlive) {
+        self.prompt = Some(PromptPDU {
+            nak_or_keep_alive: option,
+        })
+    }
+
+    pub fn send_prompt(
+        &mut self,
+        transport_tx: &Sender<(VariableID, PDU)>,
+    ) -> TransactionResult<()> {
+        if let Some(prompt) = self.prompt.take() {
+            self.timer.restart_ack();
+
+            let payload = PDUPayload::Directive(Operations::Prompt(prompt));
+            let payload_len = payload.encoded_len(self.config.file_size_flag);
+            let header = self.get_header(
+                Direction::ToReceiver,
+                PDUType::FileDirective,
+                payload_len,
+                SegmentationControl::NotPreserved,
+            );
+
+            let destination = header.destination_entity_id;
+            let pdu = PDU { header, payload };
+
+            transport_tx.send((destination, pdu))?;
+            debug!("Transaction {0} sent PromptPdu.", self.id());
+        }
+        Ok(())
     }
 
     pub fn abandon(&mut self) {
@@ -1889,5 +1932,52 @@ mod test {
             filestore_requests: vec![],
             checksum_type: ChecksumType::Modular,
         }
+    }
+
+    #[rstest]
+    fn send_prompt(
+        default_config: &TransactionConfig,
+        tempdir_fixture: &TempDir,
+        #[values(NakOrKeepAlive::Nak, NakOrKeepAlive::KeepAlive)] option: NakOrKeepAlive,
+    ) {
+        let (transport_tx, transport_rx) = unbounded();
+        let config = default_config.clone();
+
+        let filestore = Arc::new(NativeFileStore::new(
+            Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
+        ));
+
+        let path = Utf8PathBuf::from(format!("test_eof_{:}.dat", config.transmission_mode as u8));
+        let input = "Here is some test data to write!$*#*.\n";
+
+        let (indication_tx, _indication_rx) = unbounded();
+        let metadata = test_metadata(input.as_bytes().len() as u64, path);
+        let mut transaction =
+            SendTransaction::new(config.clone(), metadata, filestore, indication_tx).unwrap();
+
+        let payload = PDUPayload::Directive(Operations::Prompt(PromptPDU {
+            nak_or_keep_alive: option,
+        }));
+
+        let payload_len = payload.encoded_len(config.file_size_flag);
+
+        let header = transaction.get_header(
+            Direction::ToReceiver,
+            PDUType::FileDirective,
+            payload_len,
+            SegmentationControl::NotPreserved,
+        );
+        let pdu = PDU { header, payload };
+
+        thread::spawn(move || {
+            transaction.prepare_prompt(option);
+            transaction.send_pdu(&transport_tx).unwrap();
+        });
+
+        let (destination_id, received_pdu) = transport_rx.recv().unwrap();
+        let expected_id = default_config.destination_entity_id;
+
+        assert_eq!(expected_id, destination_id);
+        assert_eq!(pdu, received_pdu);
     }
 }

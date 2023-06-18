@@ -60,7 +60,7 @@ pub struct RecvTransaction<T: FileStore> {
     nak_procedure: NakProcedure,
     /// Flag to check if metadata on the file has been received
     pub(crate) metadata: Option<Metadata>,
-    /// Measurement of how large of a file has been received so far
+    /// Measurement of how much of the file has been received so far
     received_file_size: u64,
     /// a cache of the header used for interactions in this transmission
     header: Option<PDUHeader>,
@@ -395,10 +395,11 @@ impl<T: FileStore> RecvTransaction<T> {
             handle
                 .write_all(file_data.as_slice())
                 .map_err(FileStoreError::IO)?;
-            segments::update_segments(
+            let new_data_received = segments::update_segments(
                 &mut self.saved_segments,
                 (offset, offset + file_data.len() as u64),
             );
+            self.received_file_size += new_data_received;
         } else {
             warn!(
                 "Received FileDataPDU with invalid file_data.length = {}; ignored",
@@ -571,7 +572,7 @@ impl<T: FileStore> RecvTransaction<T> {
     }
 
     fn check_file_size(&mut self, file_size: u64) -> TransactionResult<()> {
-        if self.received_file_size > file_size {
+        if self.saved_segments.last().map(|s| s.1).unwrap_or(0) > file_size {
             warn!(
                 "EOF file size {} is smaller than file size received in file data {}",
                 file_size, self.received_file_size
@@ -583,9 +584,7 @@ impl<T: FileStore> RecvTransaction<T> {
     }
 
     fn get_progress(&self) -> u64 {
-        self.saved_segments
-            .iter()
-            .fold(0_u64, |size, (start, end)| size + (end - start))
+        self.received_file_size
     }
 
     fn prepare_finished(&mut self, fault_location: Option<VariableID>) {
@@ -689,7 +688,7 @@ impl<T: FileStore> RecvTransaction<T> {
         let scope_end = segment_requests
             .last()
             .map(|sr| sr.end_offset)
-            .unwrap_or(self.received_file_size);
+            .unwrap_or(self.saved_segments.last().map(|s| s.1).unwrap_or(0));
 
         let nak = NegativeAcknowledgmentPDU {
             start_of_scope: scope_start,
@@ -805,11 +804,6 @@ impl<T: FileStore> RecvTransaction<T> {
                             },
                         ))?;
 
-                        // update the total received size if appropriate.
-                        let size = offset + length as u64;
-                        if self.received_file_size < size {
-                            self.received_file_size = size;
-                        }
                         if self.nak_procedure == NakProcedure::Immediate && !self.eof_received() {
                             if self.timer.nak.timeout_occured() {
                                 //send all gaps at the next opportunity
@@ -971,11 +965,6 @@ impl<T: FileStore> RecvTransaction<T> {
                                 length: length as u64,
                             },
                         ))?;
-                        // update the total received size if appropriate.
-                        let size = offset + length as u64;
-                        if self.received_file_size < size {
-                            self.received_file_size = size;
-                        }
                         Ok(())
                     }
                     PDUPayload::Directive(operation) => {

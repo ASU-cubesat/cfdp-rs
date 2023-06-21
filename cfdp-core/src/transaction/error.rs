@@ -1,7 +1,7 @@
 use std::num::TryFromIntError;
 
-use crossbeam_channel::SendError;
 use thiserror::Error;
+use tokio::sync::mpsc::error::SendError;
 
 use crate::{
     daemon::{Indication, Report},
@@ -20,7 +20,7 @@ pub enum TransactionError {
     #[error("Error Communicating with transport: {0}")]
     Transport(#[from] Box<SendError<(VariableID, PDU)>>),
 
-    #[error("Error transfering Indication {0}")]
+    #[error("Error transferring Indication {0}")]
     UserMessage(#[from] Box<SendError<Indication>>),
 
     #[error("No open file in transaction: {0:?}")]

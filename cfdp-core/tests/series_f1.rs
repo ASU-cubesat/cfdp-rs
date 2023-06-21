@@ -14,7 +14,8 @@ use rstest::{fixture, rstest};
 
 mod common;
 use common::{
-    get_filestore, new_entities, EntityConstructorReturn, TransportIssue, UsersAndFilestore,
+    get_filestore, new_entities, static_assets, EntityConstructorReturn, StaticAssets,
+    TransportIssue, UsersAndFilestore,
 };
 
 #[rstest]
@@ -116,9 +117,9 @@ fn f1s03(get_filestore: &UsersAndFilestore) {
 
 #[fixture]
 #[once]
-fn fixture_f1s04(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
+fn fixture_f1s04(static_assets: &StaticAssets) -> EntityConstructorReturn {
     new_entities(
-        &get_filestore.2,
+        static_assets,
         Some(TransportIssue::Rate(13)),
         None,
         [None; 3],
@@ -160,9 +161,9 @@ fn f1s04(fixture_f1s04: &'static EntityConstructorReturn) {
 
 #[fixture]
 #[once]
-fn fixture_f1s05(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
+fn fixture_f1s05(static_assets: &StaticAssets) -> EntityConstructorReturn {
     new_entities(
-        &get_filestore.2,
+        static_assets,
         Some(TransportIssue::Duplicate(13)),
         None,
         [None; 3],
@@ -205,9 +206,9 @@ fn f1s05(fixture_f1s05: &'static EntityConstructorReturn) {
 
 #[fixture]
 #[once]
-fn fixture_f1s06(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
+fn fixture_f1s06(static_assets: &StaticAssets) -> EntityConstructorReturn {
     new_entities(
-        &get_filestore.2,
+        static_assets,
         Some(TransportIssue::Reorder(13)),
         None,
         [None; 3],

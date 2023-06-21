@@ -6,15 +6,21 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
 use camino::Utf8PathBuf;
-use crossbeam_channel::{bounded, unbounded, Receiver, Select, Sender, TryRecvError};
 use log::{error, info, warn};
 use num_traits::FromPrimitive;
 use thiserror::Error;
+use tokio::{
+    select,
+    sync::{
+        mpsc::{channel, Receiver, Sender},
+        oneshot,
+    },
+    task::JoinHandle,
+};
 
 use crate::{
     filestore::{ChecksumType, FileStore},
@@ -89,11 +95,11 @@ fn construct_metadata(req: PutRequest, config: EntityConfig, file_size: u64) -> 
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 /// Possible User Primitives sent from a end user application via the user primitive channel
 pub enum UserPrimitive {
     /// Initiate a Put transaction with the specified [PutRequest] configuration.
-    Put(PutRequest, Sender<TransactionID>),
+    Put(PutRequest, oneshot::Sender<TransactionID>),
     /// Cancel the give transaction.
     Cancel(TransactionID),
     /// Suspend operations of the given transaction.
@@ -101,7 +107,7 @@ pub enum UserPrimitive {
     /// Resume operations of the given transaction.
     Resume(TransactionID),
     /// Report progress of the given transaction.
-    Report(TransactionID, Sender<Report>),
+    Report(TransactionID, oneshot::Sender<Report>),
     /// Send the designated PromptPDU from the given transaction.
     /// This primitive is only valid for [Send](crate::transaction::SendTransaction) transactions
     Prompt(TransactionID, NakOrKeepAlive),
@@ -114,7 +120,7 @@ enum Command {
     Cancel,
     Suspend,
     Resume,
-    Report(Sender<Report>),
+    Report(oneshot::Sender<Report>),
     Prompt(NakOrKeepAlive),
     // may find a use for abandon in the future.
     #[allow(unused)]
@@ -343,10 +349,10 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         indication_tx: Sender<Indication>,
     ) -> Self {
         let mut transport_tx_map: HashMap<EntityID, Sender<(VariableID, PDU)>> = HashMap::new();
-        let (pdu_send, pdu_receive) = unbounded();
+        let (pdu_send, pdu_receive) = channel(100);
         let terminate = Arc::new(AtomicBool::new(false));
         for (vec, mut transport) in transport_map.into_iter() {
-            let (remote_send, remote_receive) = bounded(1);
+            let (remote_send, remote_receive) = channel(1);
 
             vec.iter().for_each(|id| {
                 transport_tx_map.insert(*id, remote_send.clone());
@@ -354,7 +360,9 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
 
             let signal = terminate.clone();
             let sender = pdu_send.clone();
-            thread::spawn(move || transport.pdu_handler(signal, sender, remote_receive));
+            tokio::task::spawn(async move {
+                transport.pdu_handler(signal, sender, remote_receive).await
+            });
         }
         Self {
             transaction_handles: vec![],
@@ -370,6 +378,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             primitive_rx,
         }
     }
+
     fn spawn_receive_transaction(
         header: &PDUHeader,
         transport_tx: Sender<(VariableID, PDU)>,
@@ -377,7 +386,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         filestore: Arc<T>,
         indication_tx: Sender<Indication>,
     ) -> Result<SpawnerTuple, Box<dyn std::error::Error>> {
-        let (transaction_tx, transaction_rx) = unbounded();
+        let (transaction_tx, mut transaction_rx) = channel(100);
 
         let config = TransactionConfig {
             source_entity_id: header.source_entity_id,
@@ -394,10 +403,10 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             ack_timeout: entity_config.ack_timeout,
             nak_timeout: entity_config.nak_timeout,
         };
-        let name = format!(
+        /*  let name = format!(
             "({}, {})",
             &config.source_entity_id, &config.sequence_number
-        );
+        );*/
         let mut transaction = RecvTransaction::new(
             config,
             entity_config.nak_procedure,
@@ -406,75 +415,64 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         );
         let id = transaction.id();
 
-        let handle = thread::Builder::new().name(name).spawn(move || {
+        // tokio tasks can have names but that seems an unsable feature
+        let handle = tokio::task::spawn(async move {
             transaction.send_report(None)?;
-
-            let mut sel = Select::new();
-            let rx_select_id = sel.recv(&transaction_rx);
-
-            let mut tx_select_id = Option::<usize>::None;
 
             while transaction.get_state() != TransactionState::Terminated {
-                if transaction.has_pdu_to_send() {
-                    tx_select_id.get_or_insert_with(||sel.send(&transport_tx));
-                } else if let Some(idx) = tx_select_id.take() {
-                    sel.remove(idx);
-                }
-
                 let timeout = transaction.until_timeout();
-                let oper = sel.ready_timeout(timeout);
-                match oper {
-                    Err(_) => {
-                        transaction.handle_timeout()?;
-                    }
-                    Ok(id) => {
-                        if tx_select_id == Some(id) {
-                            transaction.send_pdu(&transport_tx)?;
-                        } else if id == rx_select_id {
-                            match transaction_rx.try_recv() {
-                                Ok(command) => {
-                                    match command {
-                                        Command::Pdu(pdu) => {
-                                            match transaction.process_pdu(pdu) {
-                                                Ok(()) => {}
-                                                Err(err @ TransactionError::UnexpectedPDU(..)) => {
-                                                    info!("Transaction {} Received Unexpected PDU: {err}", transaction.id());
-                                                    // log some info on the unexpected PDU?
-                                                }
-                                                Err(err) => return Err(err),
-                                            }
+                select! {
+                    permit = transport_tx.reserve(), if transaction.has_pdu_to_send() => {
+                        if let Ok(permit) = permit {
+                            transaction.send_pdu(permit)?
+                        } else {
+                            log::error!("Channel to transport severed for transaction {}", transaction.id());
+                            break;
+                        }
+                    },
+                    command = transaction_rx.recv() => {
+                        if let Some(command) = command {
+                            match command {
+                                Command::Pdu(pdu) => {
+                                    match transaction.process_pdu(pdu) {
+                                        Ok(()) => {}
+                                        Err(err @ TransactionError::UnexpectedPDU(..)) => {
+                                            info!("Transaction {} Received Unexpected PDU: {err}", transaction.id());
+                                            // log some info on the unexpected PDU?
                                         }
-                                        Command::Resume => transaction.resume()?,
-                                        Command::Cancel => transaction.cancel()?,
-                                        Command::Suspend => transaction.suspend()?,
-                                        Command::Abandon => transaction.shutdown(),
-                                        Command::Report(sender) => {
-                                            transaction.send_report(Some(sender))?
-                                        }
-                                        Command::Prompt(_) =>{
-                                            // prompt is a no-op for a receive transaction.
-                                        }
+                                        Err(err) => return Err(err),
                                     }
                                 }
-                                Err(TryRecvError::Empty) => {
-                                    // this normally should not happen
+                                Command::Resume => transaction.resume()?,
+                                Command::Cancel => transaction.cancel()?,
+                                Command::Suspend => transaction.suspend()?,
+                                Command::Abandon => transaction.shutdown(),
+                                Command::Report(sender) => {
+                                    transaction.send_report(Some(sender))?
                                 }
-                                Err(TryRecvError::Disconnected) => {
-                                    // Really do not expect to be in this situation
-                                    // probably the thread should exit
-                                    panic!(
-                                        "Connection to Daemon Severed for Transaction {}",
-                                        transaction.id()
-                                    );
+                                Command::Prompt(_) =>{
+                                    // prompt is a no-op for a receive transaction.
                                 }
-                            };
+                            }
+                        } else {
+                            log::warn!(
+                                "Connection to Daemon Severed for Transaction {}",
+                                transaction.id()
+                            );
+                            break;
                         }
                     }
+                    _= tokio::time::sleep(timeout) => {
+                        transaction.handle_timeout()?;
+                    },
+
+
                 }
             }
+
             transaction.send_report(None)?;
             Ok(transaction.id())
-        })?;
+        });
 
         Ok((id, transaction_tx, handle))
     }
@@ -489,7 +487,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         filestore: Arc<T>,
         indication_tx: Sender<Indication>,
     ) -> Result<SpawnerTuple, Box<dyn std::error::Error>> {
-        let (transaction_tx, transaction_rx) = unbounded();
+        let (transaction_tx, mut transaction_rx) = channel(10);
         let id = TransactionID(source_entity_id, sequence_number);
 
         let destination_entity_id = request.destination_entity_id;
@@ -511,115 +509,86 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         };
         let mut metadata = construct_metadata(request, entity_config, 0_u64);
 
-        let handle = thread::Builder::new()
-            .name(format!(
-                "({}, {})",
-                config.source_entity_id, config.sequence_number
-            ))
-            .spawn(move || {
-                let file_size = match &metadata.source_filename.file_name().is_none() {
-                    true => 0_u64,
-                    false => filestore.get_size(&metadata.source_filename)?,
-                };
+        let handle = tokio::task::spawn(async move {
+            let file_size = match &metadata.source_filename.file_name().is_none() {
+                true => 0_u64,
+                false => filestore.get_size(&metadata.source_filename)?,
+            };
 
-                metadata.file_size = file_size;
-                config.file_size_flag = match metadata.file_size <= u32::MAX.into() {
-                    true => FileSizeFlag::Small,
-                    false => FileSizeFlag::Large,
-                };
+            metadata.file_size = file_size;
+            config.file_size_flag = match metadata.file_size <= u32::MAX.into() {
+                true => FileSizeFlag::Small,
+                false => FileSizeFlag::Large,
+            };
 
-                let mut transaction =
-                    SendTransaction::new(config, metadata, filestore, indication_tx)?;
-                transaction.send_report(None)?;
-                let mut sel = Select::new();
-                let rx_select_id = sel.recv(&transaction_rx);
+            let mut transaction = SendTransaction::new(config, metadata, filestore, indication_tx)?;
+            transaction.send_report(None)?;
 
-                let mut tx_select_id = Option::<usize>::None;
+            while transaction.get_state() != TransactionState::Terminated {
+                let timeout = transaction.until_timeout();
 
-                while transaction.get_state() != TransactionState::Terminated {
-                    if transaction.has_pdu_to_send() {
-                        if tx_select_id.is_none() {
-                            tx_select_id = Some(sel.send(&transport_tx));
+                select! {
+                    permit = transport_tx.reserve(), if transaction.has_pdu_to_send()  => {
+                        if let Ok(permit) = permit {
+                            transaction.send_pdu(permit)?;
+                        } else {
+                            log::error!("Connection to transport severed for transaction {}", transaction.id());
+                            break;
                         }
-                    } else if let Some(idx) = tx_select_id {
-                        sel.remove(idx);
-                        tx_select_id = None;
-                    }
+                    },
 
-                    let timeout = transaction.until_timeout();
-                    let oper = sel.ready_timeout(timeout);
-
-                    match oper {
-                        Err(_) => {
-                            transaction.handle_timeout()?;
-                        }
-                        Ok(id) => {
-                            if tx_select_id == Some(id) {
-                                // println!("transport_tx capacity :{}", transport_tx.len());
-                                transaction.send_pdu(&transport_tx)?;
-                                // println!("dupa transport_tx capacity :{}", transport_tx.len());
-                            } else if id == rx_select_id {
-                                match transaction_rx.try_recv() {
-                                    Ok(command) => {
-                                        match command {
-                                            Command::Pdu(pdu) => {
-                                                match transaction.process_pdu(pdu) {
-                                                    Ok(()) => {}
-                                                    Err(
-                                                        err @ TransactionError::UnexpectedPDU(..),
-                                                    ) => {
-                                                        info!("Recieved Unexpected PDU: {err}");
-                                                        // log some info on the unexpected PDU?
-                                                    }
-                                                    Err(err) => {
-                                                        return Err(err);
-                                                    }
-                                                }
-                                            }
-                                            Command::Resume => transaction.resume()?,
-                                            Command::Cancel => transaction.cancel()?,
-                                            Command::Suspend => transaction.suspend()?,
-                                            Command::Abandon => transaction.shutdown(),
-                                            Command::Report(sender) => {
-                                                transaction.send_report(Some(sender))?
-                                            }
-                                            Command::Prompt(option) => {
-                                                transaction.prepare_prompt(option)
-                                            }
+                    command = transaction_rx.recv() => {
+                        if let Some(command) = command {
+                            match command {
+                                Command::Pdu(pdu) => {
+                                    match transaction.process_pdu(pdu) {
+                                        Ok(()) => {}
+                                        Err(
+                                            err @ TransactionError::UnexpectedPDU(..),
+                                        ) => {
+                                            info!("Recieved Unexpected PDU: {err}");
+                                            // log some info on the unexpected PDU?
+                                        }
+                                        Err(err) => {
+                                            return Err(err);
                                         }
                                     }
-                                    Err(TryRecvError::Empty) => {
-                                        // nothing for us at this time just sleep
-                                    }
-                                    Err(TryRecvError::Disconnected) => {
-                                        // Really do not expect to be in this situation
-                                        // probably the thread should exit
-                                        panic!(
-                                            "Connection to Daemon Severed for Transaction {}",
-                                            transaction.id()
-                                        )
-                                    }
+                                }
+                                Command::Resume => transaction.resume()?,
+                                Command::Cancel => transaction.cancel()?,
+                                Command::Suspend => transaction.suspend()?,
+                                Command::Abandon => transaction.shutdown(),
+                                Command::Report(sender) => {
+                                    transaction.send_report(Some(sender))?
+                                }
+                                Command::Prompt(option) => {
+                                    transaction.prepare_prompt(option)
                                 }
                             }
+                        } else {
+                            panic!(
+                                "Connection to Daemon Severed for Transaction {}",
+                                transaction.id()
+                            )
                         }
-                    };
-                }
-                transaction.send_report(None)?;
-                Ok(id)
-            })?;
+                    },
+                    _ = tokio::time::sleep(timeout) => {
+                        transaction.handle_timeout()?;
+                    }
+                };
+            }
+            transaction.send_report(None)?;
+            Ok(id)
+        });
         Ok((id, transaction_tx, handle))
     }
 
     /// This function will consist of the main logic loop in any daemon process.
-    pub fn manage_transactions(&mut self) -> Result<(), Box<dyn std::error::Error + '_>> {
+    pub async fn manage_transactions(&mut self) -> Result<(), Box<dyn std::error::Error + '_>> {
         let mut sequence_num = self.sequence_num;
 
         // Create the selection object to check if any messages are available.
         // the returned index will be used to determine which action to take.
-
-        let mut selector = Select::new();
-        let transport = selector.recv(&self.transport_rx);
-        let user_primitive = selector.recv(&self.primitive_rx);
 
         // mapping of unique transaction ids to channels used to talk to each transaction
         let mut transaction_channels: HashMap<TransactionID, Sender<Command>> = HashMap::new();
@@ -627,11 +596,10 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         let mut cleanup = Instant::now();
 
         loop {
-            match selector.select() {
-                oper if oper.index() == transport => {
-                    match oper.recv(&self.transport_rx) {
-                        Ok(pdu) => {
-                            // find the entity this entity will be sending too.
+            select! {
+                pdu = self.transport_rx.recv() => {
+                    if let Some(pdu) = pdu {
+                        // find the entity this entity will be sending too.
                             // If this PDU is to the sender, we send to the destination
                             // if this PDU is to the receiver, we send to the source
                             let transport_entity = match &pdu.header.direction {
@@ -680,7 +648,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                 }
                             };
 
-                            match channel.send(Command::Pdu(pdu.clone())) {
+                            match channel.send(Command::Pdu(pdu.clone())).await {
                                 Ok(()) => {}
                                 Err(_) => {
                                     // the transaction is completed.
@@ -705,7 +673,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                             )?;
 
                                         self.transaction_handles.push(handle);
-                                        new_channel.send(Command::Pdu(pdu.clone()))?;
+                                        new_channel.send(Command::Pdu(pdu.clone())).await?;
                                         // update the dict to have the new channel
                                         transaction_channels.insert(key, new_channel);
                                     } else {
@@ -716,9 +684,8 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                     }
                                 }
                             };
-                        }
-                        Err(_err) => {
-                            // the channel is empty and disconnected
+                        } else {
+                        // the channel is empty and disconnected
                             // this should only happen when we are cleaning up
                             // but may happen when the transport crashes or quits
                             if !self.terminate.load(Ordering::Relaxed) {
@@ -726,93 +693,84 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                             }
                             break;
                         }
-                    };
-                }
-                // received a UserPrimitive from the user implementation
-                oper if oper.index() == user_primitive => {
-                    match oper.recv(&self.primitive_rx) {
-                        Ok(primitive) => {
-                            match primitive {
-                                UserPrimitive::Put(request, put_sender) => {
-                                    let sequence_number = sequence_num.get_and_increment();
+                },
+                primitive = self.primitive_rx.recv() => {
+                    if let Some(primitive) = primitive {
+                        match primitive {
+                            UserPrimitive::Put(request, put_sender) => {
+                                let sequence_number = sequence_num.get_and_increment();
 
-                                    let entity_config = self
-                                        .entity_configs
-                                        .get(&request.destination_entity_id)
-                                        .unwrap_or(&self.default_config)
-                                        .clone();
+                                let entity_config = self
+                                    .entity_configs
+                                    .get(&request.destination_entity_id)
+                                    .unwrap_or(&self.default_config)
+                                    .clone();
 
-                                    if let Some(transport_tx) = self
-                                        .transport_tx_map
-                                        .get(&request.destination_entity_id)
-                                        .cloned()
-                                    {
-                                        let (id, sender, handle) = Self::spawn_send_transaction(
-                                            request,
-                                            sequence_number,
-                                            self.entity_id,
-                                            transport_tx,
-                                            entity_config,
-                                            self.filestore.clone(),
-                                            self.indication_tx.clone(),
-                                        )?;
+                                if let Some(transport_tx) = self
+                                    .transport_tx_map
+                                    .get(&request.destination_entity_id)
+                                    .cloned()
+                                {
+                                    let (id, sender, handle) = Self::spawn_send_transaction(
+                                        request,
+                                        sequence_number,
+                                        self.entity_id,
+                                        transport_tx,
+                                        entity_config,
+                                        self.filestore.clone(),
+                                        self.indication_tx.clone(),
+                                    )?;
+                                    self.transaction_handles.push(handle);
+                                    transaction_channels.insert(id, sender);
 
-                                        self.transaction_handles.push(handle);
-                                        transaction_channels.insert(id, sender);
-
-                                        // ignore the possible error if the user disconnected;
-                                        let _ = put_sender.send(id);
-                                    } else {
-                                        warn!(
-                                            "No Transport available for EntityID: {}. Skipping transaction creation.",
-                                            request.destination_entity_id
-                                        )
-                                    }
+                                    // ignore the possible error if the user disconnected;
+                                    let _ = put_sender.send(id);
+                                } else {
+                                    warn!(
+                                        "No Transport available for EntityID: {}. Skipping transaction creation.",
+                                        request.destination_entity_id
+                                    )
                                 }
-                                UserPrimitive::Cancel(id) => {
-                                    if let Some(channel) = transaction_channels.get(&id) {
-                                        channel.send(Command::Cancel)?;
-                                    }
+                            }
+                            UserPrimitive::Cancel(id) => {
+                                if let Some(channel) = transaction_channels.get(&id) {
+                                    channel.send(Command::Cancel).await?;
                                 }
-                                UserPrimitive::Suspend(id) => {
-                                    if let Some(channel) = transaction_channels.get(&id) {
-                                        channel.send(Command::Suspend)?;
-                                    }
+                            }
+                            UserPrimitive::Suspend(id) => {
+                                if let Some(channel) = transaction_channels.get(&id) {
+                                    channel.send(Command::Suspend).await?;
                                 }
-                                UserPrimitive::Resume(id) => {
-                                    if let Some(channel) = transaction_channels.get(&id) {
-                                        channel.send(Command::Resume)?;
-                                    }
+                            }
+                            UserPrimitive::Resume(id) => {
+                                if let Some(channel) = transaction_channels.get(&id) {
+                                    channel.send(Command::Resume).await?;
                                 }
-                                UserPrimitive::Report(id, report_sender) => {
-                                    if let Some(channel) = transaction_channels.get(&id) {
-                                        // It's possible for the user to ask for a report after the Transaction is finished
-                                        // but before the channel is cleaned up.
-                                        // for now ignore errors until a better solution is found.
-                                        // maybe possible to trigger a cleanup immediately after a transaction finishes?
-                                        let _ = channel.send(Command::Report(report_sender));
-                                    }
+                            }
+                            UserPrimitive::Report(id, report_sender) => {
+                                if let Some(channel) = transaction_channels.get(&id) {
+                                    // It's possible for the user to ask for a report after the Transaction is finished
+                                    // but before the channel is cleaned up.
+                                    // for now ignore errors until a better solution is found.
+                                    // maybe possible to trigger a cleanup immediately after a transaction finishes?
+                                    let _ = channel.send(Command::Report(report_sender)).await;
                                 }
-                                UserPrimitive::Prompt(id, option) => {
-                                    if let Some(channel) = transaction_channels.get(&id) {
-                                        channel.send(Command::Prompt(option))?;
-                                    }
+                            }
+                            UserPrimitive::Prompt(id, option) => {
+                                if let Some(channel) = transaction_channels.get(&id) {
+                                    channel.send(Command::Prompt(option)).await?;
                                 }
-                            };
-                        }
-                        Err(_err) => {
-                            // The channel is disconnected
-                            // this is only an issue if the channel was the user interface
-                            error!("User interface disconnected from daemon.");
-                            self.terminate.store(true, Ordering::Relaxed);
-                            break;
-                        }
+                            }
+                        };
+                    } else {
+                        // The channel is disconnected
+                        // this is only an issue if the channel was the user interface
+                        error!("User interface disconnected from daemon.");
+                        self.terminate.store(true, Ordering::Relaxed);
+                        break;
                     }
                 }
-                _ => {
-                    unreachable!()
-                }
-            };
+            }
 
             // join any handles that have completed
             // maybe should only run every so often?
@@ -821,7 +779,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                 while ind < self.transaction_handles.len() {
                     if self.transaction_handles[ind].is_finished() {
                         let handle = self.transaction_handles.remove(ind);
-                        match handle.join() {
+                        match handle.await {
                             Ok(Ok(id)) => {
                                 // remove the channel for this transaction if it is complete
                                 let _ = transaction_channels.remove(&id);
@@ -842,13 +800,13 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
 
         // a final cleanup
         while let Some(handle) = self.transaction_handles.pop() {
-            match handle.join() {
+            match handle.await {
                 Ok(Ok(id)) => {
                     // remove the channel for this transaction if it is complete
                     let _ = transaction_channels.remove(&id);
                 }
                 Ok(Err(err)) => {
-                    info!("Error occured during transaction: {}", err)
+                    info!("Error occurred during transaction: {}", err)
                 }
                 Err(_) => error!("Unable to join handle!"),
             };

@@ -9,15 +9,13 @@ use cfdp_core::{
 use rstest::{fixture, rstest};
 
 mod common;
-use common::{
-    get_filestore, new_entities, EntityConstructorReturn, TransportIssue, UsersAndFilestore,
-};
+use common::{new_entities, static_assets, EntityConstructorReturn, StaticAssets, TransportIssue};
 
 #[fixture]
 #[once]
-fn fixture_f2s01(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
+fn fixture_f2s01(static_assets: &StaticAssets) -> EntityConstructorReturn {
     new_entities(
-        &get_filestore.2,
+        static_assets,
         Some(TransportIssue::Once(PDUDirective::Metadata)),
         None,
         [None; 3],
@@ -61,9 +59,9 @@ fn f2s01(fixture_f2s01: &'static EntityConstructorReturn) {
 
 #[fixture]
 #[once]
-fn fixture_f2s02(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
+fn fixture_f2s02(static_assets: &StaticAssets) -> EntityConstructorReturn {
     new_entities(
-        &get_filestore.2,
+        static_assets,
         Some(TransportIssue::Once(PDUDirective::EoF)),
         None,
         [None; 3],
@@ -106,9 +104,9 @@ fn f2s02(fixture_f2s02: &'static EntityConstructorReturn) {
 
 #[fixture]
 #[once]
-fn fixture_f2s03(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
+fn fixture_f2s03(static_assets: &StaticAssets) -> EntityConstructorReturn {
     new_entities(
-        &get_filestore.2,
+        static_assets,
         Some(TransportIssue::Once(PDUDirective::Finished)),
         None,
         [None; 3],
@@ -151,9 +149,9 @@ fn f2s03(fixture_f2s03: &'static EntityConstructorReturn) {
 
 #[fixture]
 #[once]
-fn fixture_f2s04(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
+fn fixture_f2s04(static_assets: &StaticAssets) -> EntityConstructorReturn {
     new_entities(
-        &get_filestore.2,
+        static_assets,
         None,
         Some(TransportIssue::Once(PDUDirective::Ack)),
         [None; 3],
@@ -196,9 +194,9 @@ fn f2s04(fixture_f2s04: &'static EntityConstructorReturn) {
 
 #[fixture]
 #[once]
-fn fixture_f2s05(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
+fn fixture_f2s05(static_assets: &StaticAssets) -> EntityConstructorReturn {
     new_entities(
-        &get_filestore.2,
+        static_assets,
         Some(TransportIssue::Once(PDUDirective::Ack)),
         None,
         [None; 3],
@@ -241,9 +239,9 @@ fn f2s05(fixture_f2s05: &'static EntityConstructorReturn) {
 
 #[fixture]
 #[once]
-fn fixture_f2s06(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
+fn fixture_f2s06(static_assets: &StaticAssets) -> EntityConstructorReturn {
     new_entities(
-        &get_filestore.2,
+        static_assets,
         Some(TransportIssue::Every),
         Some(TransportIssue::Every),
         [None; 3],
@@ -286,9 +284,9 @@ fn f2s06(fixture_f2s06: &'static EntityConstructorReturn) {
 
 #[fixture]
 #[once]
-fn fixture_f2s07(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
+fn fixture_f2s07(static_assets: &StaticAssets) -> EntityConstructorReturn {
     new_entities(
-        &get_filestore.2,
+        static_assets,
         None,
         Some(TransportIssue::All(vec![
             PDUDirective::Finished,
@@ -349,9 +347,9 @@ fn f2s07(fixture_f2s07: &'static EntityConstructorReturn) {
 
 #[fixture]
 #[once]
-fn fixture_f2s08(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
+fn fixture_f2s08(static_assets: &StaticAssets) -> EntityConstructorReturn {
     new_entities(
-        &get_filestore.2,
+        static_assets,
         Some(TransportIssue::All(vec![PDUDirective::Metadata])),
         Some(TransportIssue::All(vec![PDUDirective::Nak])),
         [Some(10), Some(1), Some(1)],
@@ -406,9 +404,9 @@ fn f2s08(fixture_f2s08: &'static EntityConstructorReturn) {
 
 #[fixture]
 #[once]
-fn fixture_f2s09(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
+fn fixture_f2s09(static_assets: &StaticAssets) -> EntityConstructorReturn {
     new_entities(
-        &get_filestore.2,
+        static_assets,
         None,
         Some(TransportIssue::All(vec![PDUDirective::Finished])),
         [Some(1), Some(10), Some(1)],
@@ -464,9 +462,9 @@ fn f2s09(fixture_f2s09: &'static EntityConstructorReturn) {
 
 #[fixture]
 #[once]
-fn fixture_f2s10(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
+fn fixture_f2s10(static_assets: &StaticAssets) -> EntityConstructorReturn {
     new_entities(
-        &get_filestore.2,
+        static_assets,
         Some(TransportIssue::Inactivity),
         None,
         [Some(1), Some(10), Some(10)],

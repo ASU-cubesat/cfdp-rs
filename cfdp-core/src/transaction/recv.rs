@@ -7,8 +7,11 @@ use std::{
 };
 
 use camino::Utf8PathBuf;
-use crossbeam_channel::Sender;
 use log::{debug, warn};
+use tokio::sync::{
+    mpsc::{Permit, Sender},
+    oneshot,
+};
 
 use super::{
     config::{Metadata, TransactionConfig, TransactionState},
@@ -169,26 +172,23 @@ impl<T: FileStore> RecvTransaction<T> {
         self.timer.until_timeout()
     }
 
-    pub(crate) fn send_pdu(
-        &mut self,
-        transport_tx: &Sender<(VariableID, PDU)>,
-    ) -> TransactionResult<()> {
+    pub(crate) fn send_pdu(&mut self, permit: Permit<(VariableID, PDU)>) -> TransactionResult<()> {
         if self.prompt.is_some() {
-            self.answer_prompt(transport_tx)?;
+            self.answer_prompt(permit)?;
         } else {
             match self.recv_state {
                 RecvState::ReceiveData => {
                     if self.ack.is_some() {
-                        self.send_ack_eof(transport_tx)?;
+                        self.send_ack_eof(permit)?;
                     } else if !self.naks.is_empty() {
-                        self.send_naks(transport_tx)?;
+                        self.send_naks(permit)?;
                     }
                 }
                 RecvState::Finished | RecvState::Cancelled => {
                     if self.ack.is_some() {
-                        self.send_ack_eof(transport_tx)?;
+                        self.send_ack_eof(permit)?;
                     } else if self.finished.as_ref().map_or(false, |x| x.1) {
-                        self.send_finished(transport_tx)?;
+                        self.send_finished(permit)?;
                     }
                 }
             }
@@ -240,12 +240,12 @@ impl<T: FileStore> RecvTransaction<T> {
         Ok(())
     }
 
-    fn answer_prompt(&mut self, transport_tx: &Sender<(VariableID, PDU)>) -> TransactionResult<()> {
+    fn answer_prompt(&mut self, permit: Permit<(VariableID, PDU)>) -> TransactionResult<()> {
         if let Some(prompt) = self.prompt.take() {
             match prompt.nak_or_keep_alive {
                 NakOrKeepAlive::Nak => {
                     self.naks = self.get_all_naks();
-                    self.send_naks(transport_tx)?;
+                    self.send_naks(permit)?;
                 }
                 NakOrKeepAlive::KeepAlive => {
                     let progress = self.get_progress();
@@ -264,7 +264,7 @@ impl<T: FileStore> RecvTransaction<T> {
                     let destination = header.source_entity_id;
 
                     let pdu = PDU { header, payload };
-                    transport_tx.send((destination, pdu))?;
+                    permit.send((destination, pdu));
                 }
             }
         }
@@ -309,12 +309,12 @@ impl<T: FileStore> RecvTransaction<T> {
         }
     }
 
-    pub fn send_report(&self, sender: Option<Sender<Report>>) -> TransactionResult<()> {
+    pub fn send_report(&self, sender: Option<oneshot::Sender<Report>>) -> TransactionResult<()> {
         let report = self.generate_report();
         if let Some(channel) = sender {
-            channel.send(report.clone())?;
+            let _ = channel.send(report.clone());
         }
-        self.indication_tx.send(Indication::Report(report))?;
+        self.send_indication(Indication::Report(report));
 
         Ok(())
     }
@@ -483,11 +483,10 @@ impl<T: FileStore> RecvTransaction<T> {
         self.timer.inactivity.pause();
         self.state = TransactionState::Suspended;
 
-        self.indication_tx
-            .send(Indication::Suspended(SuspendIndication {
-                id: self.id(),
-                condition: self.condition,
-            }))?;
+        self.send_indication(Indication::Suspended(SuspendIndication {
+            id: self.id(),
+            condition: self.condition,
+        }));
 
         Ok(())
     }
@@ -504,11 +503,10 @@ impl<T: FileStore> RecvTransaction<T> {
             RecvState::Finished | RecvState::Cancelled => self.timer.reset_ack(),
         }
         self.state = TransactionState::Active;
-        self.indication_tx
-            .send(Indication::Resumed(ResumeIndication {
-                id: self.id(),
-                progress: self.get_progress(),
-            }))?;
+        self.send_indication(Indication::Resumed(ResumeIndication {
+            id: self.id(),
+            progress: self.get_progress(),
+        }));
         Ok(())
     }
 
@@ -551,7 +549,7 @@ impl<T: FileStore> RecvTransaction<T> {
             transaction_status: self.status,
         });
     }
-    fn send_ack_eof(&mut self, transport_tx: &Sender<(VariableID, PDU)>) -> TransactionResult<()> {
+    fn send_ack_eof(&mut self, permit: Permit<(VariableID, PDU)>) -> TransactionResult<()> {
         if let Some(ack) = self.ack.take() {
             let payload = PDUPayload::Directive(Operations::Ack(ack));
             let payload_len = payload.encoded_len(self.config.file_size_flag);
@@ -566,7 +564,7 @@ impl<T: FileStore> RecvTransaction<T> {
 
             let destination = header.source_entity_id;
             let pdu = PDU { header, payload };
-            transport_tx.send((destination, pdu))?;
+            permit.send((destination, pdu));
         }
         Ok(())
     }
@@ -600,7 +598,7 @@ impl<T: FileStore> RecvTransaction<T> {
         ));
     }
 
-    fn send_finished(&mut self, transport_tx: &Sender<(VariableID, PDU)>) -> TransactionResult<()> {
+    fn send_finished(&mut self, permit: Permit<(VariableID, PDU)>) -> TransactionResult<()> {
         self.timer.restart_ack();
         if let Some((finished, true)) = &self.finished {
             let payload = PDUPayload::Directive(Operations::Finished(finished.clone()));
@@ -617,7 +615,7 @@ impl<T: FileStore> RecvTransaction<T> {
             let destination = header.source_entity_id;
             let pdu = PDU { header, payload };
 
-            transport_tx.send((destination, pdu))?;
+            permit.send((destination, pdu));
             debug!("Transaction {0} sent Finished", self.id());
             self.set_finished_flag(false);
         }
@@ -659,7 +657,7 @@ impl<T: FileStore> RecvTransaction<T> {
         naks
     }
 
-    fn send_naks(&mut self, transport_tx: &Sender<(VariableID, PDU)>) -> TransactionResult<()> {
+    fn send_naks(&mut self, permit: Permit<(VariableID, PDU)>) -> TransactionResult<()> {
         if self.nak_received_file_size == self.received_file_size {
             if self.timer.nak.limit_reached() {
                 self.handle_fault(Condition::NakLimitReached)?;
@@ -709,7 +707,7 @@ impl<T: FileStore> RecvTransaction<T> {
         let destination = header.source_entity_id;
         let pdu = PDU { header, payload };
 
-        transport_tx.send((destination, pdu))?;
+        permit.send((destination, pdu));
 
         Ok(())
     }
@@ -770,14 +768,13 @@ impl<T: FileStore> RecvTransaction<T> {
             out
         };
         // send indication this transaction is finished.
-        self.indication_tx
-            .send(Indication::Finished(FinishedIndication {
-                id: self.id(),
-                report: self.generate_report(),
-                file_status: self.file_status,
-                delivery_code: self.delivery_code,
-                filestore_responses: self.filestore_response.clone(),
-            }))?;
+        self.send_indication(Indication::Finished(FinishedIndication {
+            id: self.id(),
+            report: self.generate_report(),
+            file_status: self.file_status,
+            delivery_code: self.delivery_code,
+            filestore_responses: self.filestore_response.clone(),
+        }));
         Ok(())
     }
 
@@ -796,13 +793,11 @@ impl<T: FileStore> RecvTransaction<T> {
 
                         let (offset, length) = self.store_file_data(filedata)?;
 
-                        self.indication_tx.send(Indication::FileSegmentRecv(
-                            FileSegmentIndication {
-                                id: self.id(),
-                                offset,
-                                length: length as u64,
-                            },
-                        ))?;
+                        self.send_indication(Indication::FileSegmentRecv(FileSegmentIndication {
+                            id: self.id(),
+                            offset,
+                            length: length as u64,
+                        }));
 
                         if self.nak_procedure == NakProcedure::Immediate && !self.eof_received() {
                             if self.timer.nak.timeout_occured() {
@@ -829,7 +824,7 @@ impl<T: FileStore> RecvTransaction<T> {
                                 self.prepare_ack_eof();
                                 self.checksum = Some(eof.checksum);
 
-                                self.indication_tx.send(Indication::EoFRecv(self.id()))?;
+                                self.send_indication(Indication::EoFRecv(self.id()));
 
                                 if self.condition == Condition::NoError {
                                     self.check_file_size(eof.file_size)?;
@@ -900,7 +895,7 @@ impl<T: FileStore> RecvTransaction<T> {
                                     .map_err(FileStoreError::UTF8)?
                                     .into();
 
-                                    self.indication_tx.send(Indication::MetadataRecv(
+                                    self.send_indication(Indication::MetadataRecv(
                                         MetadataRecvIndication {
                                             id: self.id(),
                                             source_filename: source_filename.clone(),
@@ -909,7 +904,7 @@ impl<T: FileStore> RecvTransaction<T> {
                                             transmission_mode: self.config.transmission_mode,
                                             user_messages: message_to_user.clone().collect(),
                                         },
-                                    ))?;
+                                    ));
 
                                     self.metadata = Some(Metadata {
                                         source_filename,
@@ -958,13 +953,11 @@ impl<T: FileStore> RecvTransaction<T> {
                 match payload {
                     PDUPayload::FileData(filedata) => {
                         let (offset, length) = self.store_file_data(filedata)?;
-                        self.indication_tx.send(Indication::FileSegmentRecv(
-                            FileSegmentIndication {
-                                id: self.id(),
-                                offset,
-                                length: length as u64,
-                            },
-                        ))?;
+                        self.send_indication(Indication::FileSegmentRecv(FileSegmentIndication {
+                            id: self.id(),
+                            offset,
+                            length: length as u64,
+                        }));
                         Ok(())
                     }
                     PDUPayload::Directive(operation) => {
@@ -996,7 +989,7 @@ impl<T: FileStore> RecvTransaction<T> {
                                 self.condition = eof.condition;
                                 self.checksum = Some(eof.checksum);
 
-                                self.indication_tx.send(Indication::EoFRecv(self.id()))?;
+                                self.send_indication(Indication::EoFRecv(self.id()));
 
                                 if self.condition == Condition::NoError {
                                     self.check_file_size(eof.file_size)?;
@@ -1044,7 +1037,7 @@ impl<T: FileStore> RecvTransaction<T> {
                                     .map_err(FileStoreError::UTF8)?
                                     .into();
 
-                                    self.indication_tx.send(Indication::MetadataRecv(
+                                    self.send_indication(Indication::MetadataRecv(
                                         MetadataRecvIndication {
                                             id: self.id(),
                                             source_filename: source_filename.clone(),
@@ -1053,7 +1046,7 @@ impl<T: FileStore> RecvTransaction<T> {
                                             transmission_mode: self.config.transmission_mode,
                                             user_messages: message_to_user.clone().collect(),
                                         },
-                                    ))?;
+                                    ));
 
                                     self.metadata = Some(Metadata {
                                         source_filename,
@@ -1121,6 +1114,12 @@ impl<T: FileStore> RecvTransaction<T> {
         }
         Ok(())
     }
+
+    //send the indication in another task, no need to wait for it
+    fn send_indication(&self, indication: Indication) {
+        let tx = self.indication_tx.clone();
+        tokio::task::spawn(async move { tx.send(indication).await });
+    }
 }
 
 #[cfg(test)]
@@ -1141,10 +1140,9 @@ mod test {
     use super::*;
 
     use camino::{Utf8Path, Utf8PathBuf};
-    use crossbeam_channel::unbounded;
     use rstest::{fixture, rstest};
-    use std::thread;
     use tempfile::TempDir;
+    use tokio::sync::mpsc::channel;
 
     #[fixture]
     #[once]
@@ -1154,14 +1152,14 @@ mod test {
 
     #[rstest]
     fn header(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (message_tx, _) = unbounded();
+        let (indication_tx, _) = channel(1);
         let config = default_config.clone();
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
         let mut transaction =
-            RecvTransaction::new(config, NakProcedure::Deferred, filestore, message_tx);
+            RecvTransaction::new(config, NakProcedure::Deferred, filestore, indication_tx);
         let payload_len = 12;
         let expected = PDUHeader {
             version: U3::One,
@@ -1190,14 +1188,14 @@ mod test {
 
     #[rstest]
     fn test_if_file_transfer(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (message_tx, _) = unbounded();
+        let (indication_tx, _) = channel(10);
         let config = default_config.clone();
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
         let mut transaction =
-            RecvTransaction::new(config, NakProcedure::Deferred, filestore, message_tx);
+            RecvTransaction::new(config, NakProcedure::Deferred, filestore, indication_tx);
         assert_eq!(
             TransactionStatus::Undefined,
             transaction.get_status().clone()
@@ -1220,14 +1218,14 @@ mod test {
 
     #[rstest]
     fn store_filedata(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (message_tx, _) = unbounded();
+        let (indication_tx, _) = channel(10);
         let config = default_config.clone();
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
         let mut transaction =
-            RecvTransaction::new(config, NakProcedure::Deferred, filestore, message_tx);
+            RecvTransaction::new(config, NakProcedure::Deferred, filestore, indication_tx);
 
         let input = vec![0, 5, 255, 99];
         let data = FileDataPDU::Unsegmented(UnsegmentedFileData {
@@ -1251,7 +1249,7 @@ mod test {
 
     #[rstest]
     fn finalize_file(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (message_tx, _) = unbounded();
+        let (indication_tx, _) = channel(10);
         let config = default_config.clone();
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
@@ -1268,7 +1266,7 @@ mod test {
             config,
             NakProcedure::Deferred,
             filestore.clone(),
-            message_tx,
+            indication_tx,
         );
         transaction.metadata = Some(Metadata {
             closure_requested: false,
@@ -1309,13 +1307,14 @@ mod test {
     }
 
     #[rstest]
-    fn test_naks(
+    #[tokio::test]
+    async fn test_naks(
         default_config: &TransactionConfig,
         tempdir_fixture: &TempDir,
         #[values(FileSizeFlag::Small, FileSizeFlag::Large)] file_size_flag: FileSizeFlag,
     ) {
-        let (transport_tx, transport_rx) = unbounded();
-        let (message_tx, _) = unbounded();
+        let (transport_tx, mut transport_rx) = channel(10);
+        let (indication_tx, _) = channel(10);
         let mut config = default_config.clone();
         config.file_size_flag = file_size_flag;
         let file_size = match &file_size_flag {
@@ -1327,7 +1326,7 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
         let mut transaction =
-            RecvTransaction::new(config, NakProcedure::Deferred, filestore, message_tx);
+            RecvTransaction::new(config, NakProcedure::Deferred, filestore, indication_tx);
 
         let input = vec![0, 5, 255, 99];
         let data = FileDataPDU::Unsegmented(UnsegmentedFileData {
@@ -1370,9 +1369,11 @@ mod test {
         let pdu = PDU { header, payload };
 
         transaction.naks = transaction.get_all_naks();
-        transaction.send_naks(&transport_tx).unwrap();
+        transaction
+            .send_naks(transport_tx.reserve().await.unwrap())
+            .unwrap();
 
-        let (destination_id, received_pdu) = transport_rx.recv().unwrap();
+        let (destination_id, received_pdu) = transport_rx.recv().await.unwrap();
         let expected_id = default_config.source_entity_id;
 
         assert_eq!(expected_id, destination_id);
@@ -1380,14 +1381,15 @@ mod test {
     }
 
     #[rstest]
-    fn cancel_receive(
+    #[tokio::test]
+    async fn cancel_receive(
         default_config: &TransactionConfig,
         tempdir_fixture: &TempDir,
         #[values(TransmissionMode::Unacknowledged, TransmissionMode::Acknowledged)]
         transmission_mode: TransmissionMode,
     ) {
-        let (transport_tx, transport_rx) = unbounded();
-        let (message_tx, _) = unbounded();
+        let (transport_tx, mut transport_rx) = channel(1);
+        let (indication_tx, _) = channel(1);
         let mut config = default_config.clone();
         config.transmission_mode = transmission_mode;
 
@@ -1398,7 +1400,7 @@ mod test {
             config.clone(),
             NakProcedure::Deferred,
             filestore,
-            message_tx,
+            indication_tx,
         );
 
         let path = {
@@ -1441,10 +1443,12 @@ mod test {
             assert_eq!(TransactionState::Terminated, transaction.state);
         }
 
-        transaction.send_pdu(&transport_tx).unwrap();
+        transaction
+            .send_pdu(transport_tx.reserve().await.unwrap())
+            .unwrap();
 
         if config.transmission_mode == TransmissionMode::Acknowledged {
-            let (destination_id, received_pdu) = transport_rx.recv().unwrap();
+            let (destination_id, received_pdu) = transport_rx.recv().await.unwrap();
             let expected_id = default_config.source_entity_id;
 
             assert_eq!(expected_id, destination_id);
@@ -1453,15 +1457,16 @@ mod test {
     }
 
     #[rstest]
-    fn suspend(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (message_tx, _message_rx) = unbounded();
+    #[tokio::test]
+    async fn suspend(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
+        let (indication_tx, _indication_rx) = channel(1);
         let config = default_config.clone();
 
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
         let mut transaction =
-            RecvTransaction::new(config, NakProcedure::Deferred, filestore, message_tx);
+            RecvTransaction::new(config, NakProcedure::Deferred, filestore, indication_tx);
 
         transaction.timer.restart_ack();
         transaction.timer.restart_inactivity();
@@ -1490,15 +1495,16 @@ mod test {
     }
 
     #[rstest]
-    fn resume(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (message_tx, _message_rx) = unbounded();
+    #[tokio::test]
+    async fn resume(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
+        let (indication_tx, _indication_rx) = channel(1);
         let config = default_config.clone();
 
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
         let mut transaction =
-            RecvTransaction::new(config, NakProcedure::Deferred, filestore, message_tx);
+            RecvTransaction::new(config, NakProcedure::Deferred, filestore, indication_tx);
 
         transaction.timer.restart_ack();
         transaction.timer.restart_inactivity();
@@ -1542,9 +1548,10 @@ mod test {
     }
 
     #[rstest]
-    fn send_ack_eof(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (transport_tx, transport_rx) = unbounded();
-        let (message_tx, _) = unbounded();
+    #[tokio::test]
+    async fn send_ack_eof(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
+        let (transport_tx, mut transport_rx) = channel(10);
+        let (indication_tx, _) = channel(1);
         let config = default_config.clone();
 
         let filestore = Arc::new(NativeFileStore::new(
@@ -1554,7 +1561,7 @@ mod test {
             config.clone(),
             NakProcedure::Deferred,
             filestore,
-            message_tx,
+            indication_tx,
         );
 
         let path = {
@@ -1592,12 +1599,14 @@ mod test {
         );
         let pdu = PDU { header, payload };
 
-        thread::spawn(move || {
+        tokio::task::spawn(async move {
             transaction.prepare_ack_eof();
-            transaction.send_ack_eof(&transport_tx).unwrap();
+            transaction
+                .send_ack_eof(transport_tx.reserve().await.unwrap())
+                .unwrap();
         });
 
-        let (destination_id, received_pdu) = transport_rx.recv().unwrap();
+        let (destination_id, received_pdu) = transport_rx.recv().await.unwrap();
         let expected_id = default_config.source_entity_id;
 
         assert_eq!(expected_id, destination_id);
@@ -1605,8 +1614,9 @@ mod test {
     }
 
     #[rstest]
-    fn finalize_receive(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (message_tx, _message_rx) = unbounded();
+    #[tokio::test]
+    async fn finalize_receive(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
+        let (indication_tx, _indication_rx) = channel(1);
         let config = default_config.clone();
 
         let filestore = Arc::new(NativeFileStore::new(
@@ -1616,7 +1626,7 @@ mod test {
             config,
             NakProcedure::Deferred,
             filestore.clone(),
-            message_tx,
+            indication_tx,
         );
 
         let path = {
@@ -1709,7 +1719,7 @@ mod test {
         )]
         operation: Operations,
     ) {
-        let (message_tx, _) = unbounded();
+        let (indication_tx, _) = channel(1);
         let mut config = default_config.clone();
         config.transmission_mode = TransmissionMode::Unacknowledged;
 
@@ -1717,7 +1727,7 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
         let mut transaction =
-            RecvTransaction::new(config, NakProcedure::Deferred, filestore, message_tx);
+            RecvTransaction::new(config, NakProcedure::Deferred, filestore, indication_tx);
 
         let path = {
             let mut path = Utf8PathBuf::new();
@@ -1795,7 +1805,7 @@ mod test {
         )]
         operation: Operations,
     ) {
-        let (message_tx, _) = unbounded();
+        let (indication_tx, _) = channel(1);
         let mut config = default_config.clone();
         config.transmission_mode = TransmissionMode::Acknowledged;
 
@@ -1803,7 +1813,7 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
         let mut transaction =
-            RecvTransaction::new(config, NakProcedure::Deferred, filestore, message_tx);
+            RecvTransaction::new(config, NakProcedure::Deferred, filestore, indication_tx);
 
         let path = {
             let mut path = Utf8PathBuf::new();
@@ -1845,13 +1855,14 @@ mod test {
     }
 
     #[rstest]
-    fn recv_store_data(
+    #[tokio::test]
+    async fn recv_store_data(
         default_config: &TransactionConfig,
         tempdir_fixture: &TempDir,
         #[values(TransmissionMode::Unacknowledged, TransmissionMode::Acknowledged)]
         transmission_mode: TransmissionMode,
     ) {
-        let (message_tx, _message_rx) = unbounded();
+        let (indication_tx, _indication_rx) = channel(1);
         let mut config = default_config.clone();
         config.transmission_mode = transmission_mode;
 
@@ -1859,7 +1870,7 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
         let mut transaction =
-            RecvTransaction::new(config, NakProcedure::Deferred, filestore, message_tx);
+            RecvTransaction::new(config, NakProcedure::Deferred, filestore, indication_tx);
 
         let path = {
             let mut path = Utf8PathBuf::new();
@@ -1908,13 +1919,14 @@ mod test {
     }
 
     #[rstest]
-    fn recv_store_metadata(
+    #[tokio::test]
+    async fn recv_store_metadata(
         default_config: &TransactionConfig,
         tempdir_fixture: &TempDir,
         #[values(TransmissionMode::Unacknowledged, TransmissionMode::Acknowledged)]
         transmission_mode: TransmissionMode,
     ) {
-        let (message_tx, message_rx) = unbounded();
+        let (indication_tx, mut indication_rx) = channel(1);
         let mut config = default_config.clone();
         config.transmission_mode = transmission_mode;
 
@@ -1922,7 +1934,7 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
         let mut transaction =
-            RecvTransaction::new(config, NakProcedure::Deferred, filestore, message_tx);
+            RecvTransaction::new(config, NakProcedure::Deferred, filestore, indication_tx);
 
         let path = {
             let mut path = Utf8PathBuf::new();
@@ -1973,7 +1985,7 @@ mod test {
         transaction.process_pdu(pdu).unwrap();
         assert_eq!(expected, transaction.metadata);
 
-        let indication = message_rx.recv().unwrap();
+        let indication = indication_rx.recv().await.unwrap();
         if let Indication::MetadataRecv(MetadataRecvIndication {
             user_messages: user_msg,
             ..
@@ -1987,14 +1999,15 @@ mod test {
     }
 
     #[rstest]
-    fn recv_eof_all_data(
+    #[tokio::test]
+    async fn recv_eof_all_data(
         default_config: &TransactionConfig,
         tempdir_fixture: &TempDir,
         #[values(TransmissionMode::Unacknowledged, TransmissionMode::Acknowledged)]
         transmission_mode: TransmissionMode,
     ) {
-        let (transport_tx, transport_rx) = unbounded();
-        let (message_tx, _message_rx) = unbounded();
+        let (transport_tx, mut transport_rx) = channel(10);
+        let (indication_tx, _indication_rx) = channel(1);
         let mut config = default_config.clone();
         config.transmission_mode = transmission_mode;
 
@@ -2004,7 +2017,7 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
         let mut transaction =
-            RecvTransaction::new(config, NakProcedure::Deferred, filestore, message_tx);
+            RecvTransaction::new(config, NakProcedure::Deferred, filestore, indication_tx);
 
         let path = {
             let mut path = Utf8PathBuf::new();
@@ -2096,10 +2109,14 @@ mod test {
             transaction.process_pdu(file_pdu).unwrap();
 
             transaction.process_pdu(input_pdu).unwrap();
-            transaction.send_pdu(&transport_tx).unwrap();
+            transaction
+                .send_pdu(transport_tx.reserve().await.unwrap())
+                .unwrap();
 
             if transaction.config.transmission_mode == TransmissionMode::Acknowledged {
-                transaction.send_pdu(&transport_tx).unwrap();
+                transaction
+                    .send_pdu(transport_tx.reserve().await.unwrap())
+                    .unwrap();
                 assert!(transaction.timer.ack.is_ticking());
 
                 let ack_fin = {
@@ -2147,26 +2164,27 @@ mod test {
 
                 PDU { header, payload }
             };
-            let (destination_id, end_of_file) = transport_rx.recv().unwrap();
+            let (destination_id, end_of_file) = transport_rx.recv().await.unwrap();
 
             assert_eq!(expected_id, destination_id);
             assert_eq!(eof_pdu, end_of_file)
         }
 
-        let (destination_id, finished_pdu) = transport_rx.recv().unwrap();
+        let (destination_id, finished_pdu) = transport_rx.recv().await.unwrap();
 
         assert_eq!(expected_id, destination_id);
         assert_eq!(expected_pdu, finished_pdu)
     }
 
     #[rstest]
-    fn recv_prompt(
+    #[tokio::test]
+    async fn recv_prompt(
         default_config: &TransactionConfig,
         tempdir_fixture: &TempDir,
         #[values(NakOrKeepAlive::Nak, NakOrKeepAlive::KeepAlive)] nak_or_keep_alive: NakOrKeepAlive,
     ) {
-        let (transport_tx, transport_rx) = unbounded();
-        let (message_tx, _message_rx) = unbounded();
+        let (transport_tx, mut transport_rx) = channel(10);
+        let (indication_tx, _indication_rx) = channel(1);
         let mut config = default_config.clone();
         config.transmission_mode = TransmissionMode::Acknowledged;
 
@@ -2176,7 +2194,7 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
         let mut transaction =
-            RecvTransaction::new(config, NakProcedure::Deferred, filestore, message_tx);
+            RecvTransaction::new(config, NakProcedure::Deferred, filestore, indication_tx);
         let path = {
             let mut buf = Utf8PathBuf::new();
             buf.push("test_file");
@@ -2251,17 +2269,20 @@ mod test {
 
         transaction.process_pdu(prompt_pdu).unwrap();
         assert!(transaction.has_pdu_to_send());
-        transaction.send_pdu(&transport_tx).unwrap();
+        transaction
+            .send_pdu(transport_tx.reserve().await.unwrap())
+            .unwrap();
 
-        let (destination_id, received_pdu) = transport_rx.recv().unwrap();
+        let (destination_id, received_pdu) = transport_rx.recv().await.unwrap();
         assert_eq!(expected_id, destination_id);
         assert_eq!(expected_pdu, received_pdu)
     }
 
     #[rstest]
-    fn nak_split(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
-        let (transport_tx, transport_rx) = unbounded();
-        let (message_tx, _message_rx) = unbounded();
+    #[tokio::test]
+    async fn nak_split(default_config: &TransactionConfig, tempdir_fixture: &TempDir) {
+        let (transport_tx, mut transport_rx) = channel(10);
+        let (indication_tx, _indication_rx) = channel(10);
         let mut config = default_config.clone();
         config.file_size_segment = 16;
         config.transmission_mode = TransmissionMode::Acknowledged;
@@ -2272,7 +2293,7 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
         let mut transaction =
-            RecvTransaction::new(config, NakProcedure::Deferred, filestore, message_tx);
+            RecvTransaction::new(config, NakProcedure::Deferred, filestore, indication_tx);
         transaction.nak_procedure = NakProcedure::Immediate;
 
         let file_pdu1 = {
@@ -2353,14 +2374,18 @@ mod test {
         transaction.process_pdu(file_pdu2).unwrap();
 
         assert!(transaction.has_pdu_to_send());
-        transaction.send_pdu(&transport_tx).unwrap();
+        transaction
+            .send_pdu(transport_tx.reserve().await.unwrap())
+            .unwrap();
         assert!(transaction.has_pdu_to_send());
-        transaction.send_pdu(&transport_tx).unwrap();
+        transaction
+            .send_pdu(transport_tx.reserve().await.unwrap())
+            .unwrap();
 
-        let (destination_id, received_pdu) = transport_rx.recv().unwrap();
+        let (destination_id, received_pdu) = transport_rx.recv().await.unwrap();
         assert_eq!(expected_id, destination_id);
         assert_eq!(expected_nak1, received_pdu);
-        let (destination_id, received_pdu) = transport_rx.recv().unwrap();
+        let (destination_id, received_pdu) = transport_rx.recv().await.unwrap();
         assert_eq!(expected_id, destination_id);
         assert_eq!(expected_nak2, received_pdu)
     }

@@ -28,10 +28,10 @@ use common::{
 // Configuration:
 //  - Unacknowledged
 //  - File Size: Small (file fits in single pdu)
-fn f1s1(get_filestore: &UsersAndFilestore) {
+fn f1s01(get_filestore: &UsersAndFilestore) {
     let (local_user, _remote_user, filestore) = get_filestore;
 
-    let out_file: Utf8PathBuf = "remote/small_f1s1.txt".into();
+    let out_file: Utf8PathBuf = "remote/small_f1s01.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
     local_user
@@ -60,10 +60,10 @@ fn f1s1(get_filestore: &UsersAndFilestore) {
 // Configuration:
 //  - Unacknowledged
 //  - File Size: Medium
-fn f1s2(get_filestore: &UsersAndFilestore) {
+fn f1s02(get_filestore: &UsersAndFilestore) {
     let (local_user, _remote_user, filestore) = get_filestore;
 
-    let out_file: Utf8PathBuf = "remote/medium_f1s2.txt".into();
+    let out_file: Utf8PathBuf = "remote/medium_f1s02.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
     local_user
@@ -92,10 +92,10 @@ fn f1s2(get_filestore: &UsersAndFilestore) {
 // Configuration:
 //  - Acknowledged
 //  - File Size: Medium
-fn f1s3(get_filestore: &UsersAndFilestore) {
+fn f1s03(get_filestore: &UsersAndFilestore) {
     let (local_user, _remote_user, filestore) = get_filestore;
 
-    let out_file: Utf8PathBuf = "remote/medium_f1s3.txt".into();
+    let out_file: Utf8PathBuf = "remote/medium_f1s03.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
     local_user
@@ -118,7 +118,7 @@ fn f1s3(get_filestore: &UsersAndFilestore) {
 
 #[fixture]
 #[once]
-fn fixture_f1s4(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
+fn fixture_f1s04(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
     let (_, _, filestore) = get_filestore;
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
     let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
@@ -170,9 +170,9 @@ fn fixture_f1s4(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
 //  - Acknowledged
 //  - File Size: Medium
 //  - ~1% data lost in transport
-fn f1s4(fixture_f1s4: &'static EntityConstructorReturn) {
-    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f1s4;
-    let out_file: Utf8PathBuf = "remote/medium_f1s4.txt".into();
+fn f1s04(fixture_f1s04: &'static EntityConstructorReturn) {
+    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f1s04;
+    let out_file: Utf8PathBuf = "remote/medium_f1s04.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
     local_user
@@ -195,7 +195,7 @@ fn f1s4(fixture_f1s4: &'static EntityConstructorReturn) {
 
 #[fixture]
 #[once]
-fn fixture_f1s5(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
+fn fixture_f1s05(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
     let (_, _, filestore) = get_filestore;
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
     let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
@@ -247,10 +247,10 @@ fn fixture_f1s5(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
 //  - Acknowledged
 //  - File Size: Medium
 //  - ~1% data duplicated in transport
-fn f1s5(fixture_f1s5: &'static EntityConstructorReturn) {
-    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f1s5;
+fn f1s05(fixture_f1s05: &'static EntityConstructorReturn) {
+    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f1s05;
 
-    let out_file: Utf8PathBuf = "remote/medium_f1s5.txt".into();
+    let out_file: Utf8PathBuf = "remote/medium_f1s05.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
     local_user
@@ -273,7 +273,7 @@ fn f1s5(fixture_f1s5: &'static EntityConstructorReturn) {
 
 #[fixture]
 #[once]
-fn fixture_f1s6(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
+fn fixture_f1s06(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
     let (_, _, filestore) = get_filestore;
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
     let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
@@ -325,11 +325,11 @@ fn fixture_f1s6(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
 //  - Acknowledged
 //  - File Size: Medium
 //  - ~1% data re-ordered in transport
-fn f1s6(fixture_f1s6: &'static EntityConstructorReturn) {
+fn f1s06(fixture_f1s06: &'static EntityConstructorReturn) {
     // let mut user = User::new(Some(_local_path))
-    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f1s6;
+    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f1s06;
 
-    let out_file: Utf8PathBuf = "remote/medium_f1s6.txt".into();
+    let out_file: Utf8PathBuf = "remote/medium_f1s06.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
     local_user
@@ -361,11 +361,11 @@ fn f1s6(fixture_f1s6: &'static EntityConstructorReturn) {
 //  - File Size: Zero
 //  - Have proxy put request send Entity 0 data,
 //  -   then have a proxy put request in THAT message send data back to entity 1
-fn f1s7(get_filestore: &UsersAndFilestore) {
+fn f1s07(get_filestore: &UsersAndFilestore) {
     let (local_user, _remote_user, filestore) = get_filestore;
 
-    let out_file: Utf8PathBuf = "/remote/medium_f1s7.txt".into();
-    let interim_file: Utf8PathBuf = "/local/medium_f1s7.txt".into();
+    let out_file: Utf8PathBuf = "/remote/medium_f1s07.txt".into();
+    let interim_file: Utf8PathBuf = "/local/medium_f1s07.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
     let path_interim = filestore.get_native_path(&interim_file);
 
@@ -447,10 +447,10 @@ fn f1s7(get_filestore: &UsersAndFilestore) {
 //  - Check User Cancel Functionality
 // Configuration:
 //  - Cancel initiated from Sender
-fn f1s8(get_filestore: &UsersAndFilestore) {
+fn f1s08(get_filestore: &UsersAndFilestore) {
     let (local_user, _remote_user, filestore) = get_filestore;
 
-    let out_file: Utf8PathBuf = "remote/medium_f1s8.txt".into();
+    let out_file: Utf8PathBuf = "remote/medium_f1s08.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
     let id = local_user
@@ -495,10 +495,10 @@ fn f1s8(get_filestore: &UsersAndFilestore) {
 //  - Check User Cancel Functionality
 // Configuration:
 //  - Cancel initiated from Receiver
-fn f1s9(get_filestore: &UsersAndFilestore) {
+fn f1s09(get_filestore: &UsersAndFilestore) {
     let (local_user, remote_user, filestore) = get_filestore;
 
-    let out_file: Utf8PathBuf = "remote/medium_f1s9.txt".into();
+    let out_file: Utf8PathBuf = "remote/medium_f1s09.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
     let id = local_user

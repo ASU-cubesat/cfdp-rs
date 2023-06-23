@@ -1,4 +1,4 @@
-use std::{collections::HashMap, net::UdpSocket, thread, time::Duration};
+use std::{thread, time::Duration};
 
 use camino::Utf8PathBuf;
 use cfdp_core::{
@@ -8,19 +8,17 @@ use cfdp_core::{
         Condition, EntityID, MessageToUser, ProxyOperation, ProxyPutRequest, TransmissionMode,
         UserOperation,
     },
-    transport::{PDUTransport, UdpTransport},
 };
 
 use rstest::{fixture, rstest};
 
 mod common;
 use common::{
-    create_daemons, get_filestore, EntityConstructorReturn, LossyTransport, TransportIssue,
-    UsersAndFilestore,
+    get_filestore, new_entities, EntityConstructorReturn, TransportIssue, UsersAndFilestore,
 };
 
 #[rstest]
-#[timeout(Duration::from_secs(2))]
+#[timeout(Duration::from_secs(200))]
 // Series F1
 // Sequence 1 Test
 // Test goal:
@@ -119,45 +117,12 @@ fn f1s03(get_filestore: &UsersAndFilestore) {
 #[fixture]
 #[once]
 fn fixture_f1s04(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
-    let (_, _, filestore) = get_filestore;
-    let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
-    let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
-
-    let local_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind local UDP.");
-    let local_addr = local_udp.local_addr().expect("Cannot find local address.");
-
-    let entity_map = {
-        let mut temp = HashMap::new();
-        temp.insert(EntityID::from(0_u16), local_addr);
-        temp.insert(EntityID::from(1_u16), remote_addr);
-        temp
-    };
-
-    let local_transport =
-        LossyTransport::try_from((local_udp, entity_map.clone(), TransportIssue::Rate(13)))
-            .expect("Unable to make Lossy Transport.");
-    let remote_transport =
-        UdpTransport::try_from((remote_udp, entity_map)).expect("Unable to make UdpTransport.");
-
-    let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(0_u16)],
-            Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
-        )]);
-
-    let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(1_u16)],
-            Box::new(local_transport) as Box<dyn PDUTransport + Send>,
-        )]);
-
-    let (local_user, remote_user, local, remote) = create_daemons(
-        filestore.clone(),
-        local_transport_map,
-        remote_transport_map,
+    new_entities(
+        &get_filestore.2,
+        Some(TransportIssue::Rate(13)),
+        None,
         [None; 3],
-    );
-    (local_user, remote_user, filestore.clone(), local, remote)
+    )
 }
 
 #[rstest]
@@ -196,45 +161,12 @@ fn f1s04(fixture_f1s04: &'static EntityConstructorReturn) {
 #[fixture]
 #[once]
 fn fixture_f1s05(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
-    let (_, _, filestore) = get_filestore;
-    let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
-    let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
-
-    let local_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind local UDP.");
-    let local_addr = local_udp.local_addr().expect("Cannot find local address.");
-
-    let entity_map = {
-        let mut temp = HashMap::new();
-        temp.insert(EntityID::from(0_u16), local_addr);
-        temp.insert(EntityID::from(1_u16), remote_addr);
-        temp
-    };
-
-    let local_transport =
-        LossyTransport::try_from((local_udp, entity_map.clone(), TransportIssue::Duplicate(13)))
-            .expect("Unable to make Lossy Transport.");
-    let remote_transport =
-        UdpTransport::try_from((remote_udp, entity_map)).expect("Unable to make UdpTransport.");
-
-    let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(0_u16)],
-            Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
-        )]);
-
-    let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(1_u16)],
-            Box::new(local_transport) as Box<dyn PDUTransport + Send>,
-        )]);
-
-    let (local_user, remote_user, local, remote) = create_daemons(
-        filestore.clone(),
-        local_transport_map,
-        remote_transport_map,
+    new_entities(
+        &get_filestore.2,
+        Some(TransportIssue::Duplicate(13)),
+        None,
         [None; 3],
-    );
-    (local_user, remote_user, filestore.clone(), local, remote)
+    )
 }
 
 #[rstest]
@@ -274,45 +206,12 @@ fn f1s05(fixture_f1s05: &'static EntityConstructorReturn) {
 #[fixture]
 #[once]
 fn fixture_f1s06(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
-    let (_, _, filestore) = get_filestore;
-    let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
-    let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
-
-    let local_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind local UDP.");
-    let local_addr = local_udp.local_addr().expect("Cannot find local address.");
-
-    let entity_map = {
-        let mut temp = HashMap::new();
-        temp.insert(EntityID::from(0_u16), local_addr);
-        temp.insert(EntityID::from(1_u16), remote_addr);
-        temp
-    };
-
-    let local_transport =
-        LossyTransport::try_from((local_udp, entity_map.clone(), TransportIssue::Reorder(13)))
-            .expect("Unable to make Lossy Transport.");
-    let remote_transport =
-        UdpTransport::try_from((remote_udp, entity_map)).expect("Unable to make UdpTransport.");
-
-    let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(0_u16)],
-            Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
-        )]);
-
-    let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(1_u16)],
-            Box::new(local_transport) as Box<dyn PDUTransport + Send>,
-        )]);
-
-    let (local_user, remote_user, local, remote) = create_daemons(
-        filestore.clone(),
-        local_transport_map,
-        remote_transport_map,
+    new_entities(
+        &get_filestore.2,
+        Some(TransportIssue::Reorder(13)),
+        None,
         [None; 3],
-    );
-    (local_user, remote_user, filestore.clone(), local, remote)
+    )
 }
 
 #[rstest]

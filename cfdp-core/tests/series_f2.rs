@@ -17,7 +17,7 @@ use common::{
 
 #[fixture]
 #[once]
-fn fixture_f2s1(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
+fn fixture_f2s01(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
     let (_, _, filestore) = get_filestore;
 
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
@@ -73,11 +73,11 @@ fn fixture_f2s1(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
 //  - Acknowledged
 //  - File Size: Medium
 //  - Drop first instance of Metadata PDU
-fn f2s1(fixture_f2s1: &'static EntityConstructorReturn) {
+fn f2s01(fixture_f2s01: &'static EntityConstructorReturn) {
     // let mut user = User::new(Some(_local_path))
-    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f2s1;
+    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f2s01;
 
-    let out_file: Utf8PathBuf = "remote/medium_f2s1.txt".into();
+    let out_file: Utf8PathBuf = "remote/medium_f2s01.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
     local_user
@@ -100,7 +100,7 @@ fn f2s1(fixture_f2s1: &'static EntityConstructorReturn) {
 
 #[fixture]
 #[once]
-fn fixture_f2s2(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
+fn fixture_f2s02(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
     let (_, _, filestore) = get_filestore;
 
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
@@ -156,10 +156,10 @@ fn fixture_f2s2(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
 //  - Acknowledged
 //  - File Size: Medium
 //  - Drop first instance of EoF PDU
-fn f2s2(fixture_f2s2: &'static EntityConstructorReturn) {
-    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f2s2;
+fn f2s02(fixture_f2s02: &'static EntityConstructorReturn) {
+    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f2s02;
 
-    let out_file: Utf8PathBuf = "remote/medium_f2s2.txt".into();
+    let out_file: Utf8PathBuf = "remote/medium_f2s02.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
     local_user
@@ -182,7 +182,7 @@ fn f2s2(fixture_f2s2: &'static EntityConstructorReturn) {
 
 #[fixture]
 #[once]
-fn fixture_f2s3(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
+fn fixture_f2s03(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
     let (_, _, filestore) = get_filestore;
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
     let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
@@ -237,10 +237,10 @@ fn fixture_f2s3(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
 //  - Acknowledged
 //  - File Size: Medium
 //  - Drop first instance of Finished PDU
-fn f2s3(fixture_f2s3: &'static EntityConstructorReturn) {
-    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f2s3;
+fn f2s03(fixture_f2s03: &'static EntityConstructorReturn) {
+    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f2s03;
 
-    let out_file: Utf8PathBuf = "remote/medium_f2s3.txt".into();
+    let out_file: Utf8PathBuf = "remote/medium_f2s03.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
     local_user
@@ -263,7 +263,7 @@ fn f2s3(fixture_f2s3: &'static EntityConstructorReturn) {
 
 #[fixture]
 #[once]
-fn fixture_f2s4(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
+fn fixture_f2s04(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
     let (_, _, filestore) = get_filestore;
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
     let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
@@ -318,10 +318,10 @@ fn fixture_f2s4(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
 //  - Acknowledged
 //  - File Size: Medium
 //  - Drop first instance of ACK(EOF) PDU
-fn f2s4(fixture_f2s4: &'static EntityConstructorReturn) {
-    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f2s4;
+fn f2s04(fixture_f2s04: &'static EntityConstructorReturn) {
+    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f2s04;
 
-    let out_file: Utf8PathBuf = "remote/medium_f2s4.txt".into();
+    let out_file: Utf8PathBuf = "remote/medium_f2s04.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
     local_user
@@ -344,7 +344,7 @@ fn f2s4(fixture_f2s4: &'static EntityConstructorReturn) {
 
 #[fixture]
 #[once]
-fn fixture_f2s5(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
+fn fixture_f2s05(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
     let (_, _, filestore) = get_filestore;
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
     let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
@@ -399,10 +399,10 @@ fn fixture_f2s5(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
 //  - Acknowledged
 //  - File Size: Medium
 //  - Drop first instance of ACK(Fin) PDU
-fn f2s5(fixture_f2s5: &'static EntityConstructorReturn) {
-    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f2s5;
+fn f2s05(fixture_f2s05: &'static EntityConstructorReturn) {
+    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f2s05;
 
-    let out_file: Utf8PathBuf = "remote/medium_f2s5.txt".into();
+    let out_file: Utf8PathBuf = "remote/medium_f2s05.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
     local_user
@@ -425,7 +425,7 @@ fn f2s5(fixture_f2s5: &'static EntityConstructorReturn) {
 
 #[fixture]
 #[once]
-fn fixture_f2s6(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
+fn fixture_f2s06(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
     let (_, _, filestore) = get_filestore;
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
     let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
@@ -478,10 +478,10 @@ fn fixture_f2s6(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
 //  - Acknowledged
 //  - File Size: Medium
 //  - Drop first instance of Every non-EOF pdu in both directions
-fn f2s6(fixture_f2s6: &'static EntityConstructorReturn) {
-    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f2s6;
+fn f2s06(fixture_f2s06: &'static EntityConstructorReturn) {
+    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f2s06;
 
-    let out_file: Utf8PathBuf = "remote/medium_f2s6.txt".into();
+    let out_file: Utf8PathBuf = "remote/medium_f2s06.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
     local_user
@@ -504,7 +504,7 @@ fn f2s6(fixture_f2s6: &'static EntityConstructorReturn) {
 
 #[fixture]
 #[once]
-fn fixture_f2s7(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
+fn fixture_f2s07(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
     let (_, _, filestore) = get_filestore;
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
     let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
@@ -559,10 +559,10 @@ fn fixture_f2s7(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
 //  - Acknowledged
 //  - File Size: Medium
 //  - Drop all ACK and Finished PDUs
-fn f2s7(fixture_f2s7: &'static EntityConstructorReturn) {
-    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f2s7;
+fn f2s07(fixture_f2s07: &'static EntityConstructorReturn) {
+    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f2s07;
 
-    let out_file: Utf8PathBuf = "remote/medium_f2s7.txt".into();
+    let out_file: Utf8PathBuf = "remote/medium_f2s07.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
     let id = local_user
@@ -600,7 +600,7 @@ fn f2s7(fixture_f2s7: &'static EntityConstructorReturn) {
 
 #[fixture]
 #[once]
-fn fixture_f2s8(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
+fn fixture_f2s08(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
     let (_, _, filestore) = get_filestore;
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
     let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
@@ -659,10 +659,10 @@ fn fixture_f2s8(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
 //  - Acknowledged
 //  - File Size: Medium
 //  - Drop all NAK from receiver.
-fn f2s8(fixture_f2s8: &'static EntityConstructorReturn) {
-    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f2s8;
+fn f2s08(fixture_f2s08: &'static EntityConstructorReturn) {
+    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f2s08;
 
-    let out_file: Utf8PathBuf = "remote/medium_f2s8.txt".into();
+    let out_file: Utf8PathBuf = "remote/medium_f2s08.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
     let id = local_user
@@ -697,7 +697,7 @@ fn f2s8(fixture_f2s8: &'static EntityConstructorReturn) {
 
 #[fixture]
 #[once]
-fn fixture_f2s9(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
+fn fixture_f2s09(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
     let (_, _, filestore) = get_filestore;
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
     let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
@@ -752,10 +752,10 @@ fn fixture_f2s9(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
 //  - Acknowledged
 //  - File Size: Medium
 //  - Drop all Finished from receiver.
-fn f2s9(fixture_f2s9: &'static EntityConstructorReturn) {
-    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f2s9;
+fn f2s09(fixture_f2s09: &'static EntityConstructorReturn) {
+    let (local_user, _remote_user, filestore, _local, _remote) = fixture_f2s09;
 
-    let out_file: Utf8PathBuf = "remote/medium_f2s9.txt".into();
+    let out_file: Utf8PathBuf = "remote/medium_f2s09.txt".into();
     let path_to_out = filestore.get_native_path(&out_file);
 
     let id = local_user

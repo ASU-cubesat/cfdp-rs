@@ -82,7 +82,7 @@ pub struct SendTransaction<T: FileStore> {
     eof: Option<(EndOfFile, bool)>,
     /// Acknowledgement PDU prepared to be sent at next opportunity.
     ack: Option<PositiveAcknowledgePDU>,
-    /// A PromptPDU to be send at the next available opporunity.
+    /// A PromptPDU to be sent at the next available opportunity.
     prompt: Option<PromptPDU>,
     /// Channel for Indications to propagate back up
     indication_tx: Sender<Indication>,

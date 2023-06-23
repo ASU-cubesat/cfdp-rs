@@ -801,8 +801,42 @@ pub(crate) fn create_daemons<T: FileStore + Sync + Send + 'static>(
 
 #[fixture]
 #[once]
-pub(crate) fn tempdir_fixture() -> TempDir {
+fn tempdir_fixture() -> TempDir {
     TempDir::new().unwrap()
+}
+
+#[fixture]
+#[once]
+pub(crate) fn filestore_fixture(tempdir_fixture: &TempDir) -> Arc<NativeFileStore> {
+    let utf8_path = Utf8PathBuf::from(
+        tempdir_fixture
+            .path()
+            .as_os_str()
+            .to_str()
+            .expect("Unable to coerce tmp path to String."),
+    );
+
+    let filestore = Arc::new(NativeFileStore::new(&utf8_path));
+    filestore
+        .create_directory("local")
+        .expect("Unable to create local directory.");
+    filestore
+        .create_directory("remote")
+        .expect("Unable to create local directory.");
+
+    let data_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("data");
+    for filename in ["small.txt", "medium.txt", "large.txt"] {
+        fs::copy(
+            data_dir.join(filename),
+            utf8_path.join("local").join(filename),
+        )
+        .expect("Unable to copy file.");
+    }
+
+    filestore
 }
 
 #[fixture]
@@ -833,11 +867,12 @@ pub(crate) type EntityConstructorReturn = (
     JoD<'static, Result<(), String>>,
 );
 
-#[fixture]
-#[once]
-fn make_entities(
-    tempdir_fixture: &TempDir,
+pub(crate) fn new_entities(
+    filestore_fixture: &Arc<NativeFileStore>,
     terminate: &Arc<AtomicBool>,
+    local_transport_issue: Option<TransportIssue>,
+    remote_transport_issue: Option<TransportIssue>,
+    timeouts: Timeouts,
 ) -> EntityConstructorReturn {
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
     let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
@@ -850,64 +885,59 @@ fn make_entities(
         (EntityID::from(1_u16), remote_addr),
     ]);
 
-    let local_transport = UdpTransport::try_from((local_udp, entity_map.clone()))
-        .expect("Unable to make Lossy Transport.");
-    let remote_transport =
-        UdpTransport::try_from((remote_udp, entity_map)).expect("Unable to make UdpTransport.");
+    let local_transport = if let Some(issue) = local_transport_issue {
+        Box::new(
+            LossyTransport::try_from((local_udp, entity_map.clone(), issue))
+                .expect("Unable to make Lossy Transport."),
+        ) as Box<dyn PDUTransport + Send>
+    } else {
+        Box::new(
+            UdpTransport::try_from((local_udp, entity_map.clone()))
+                .expect("Unable to make UDP Transport."),
+        ) as Box<dyn PDUTransport + Send>
+    };
+
+    let remote_transport = if let Some(issue) = remote_transport_issue {
+        Box::new(
+            LossyTransport::try_from((remote_udp, entity_map.clone(), issue))
+                .expect("Unable to make Lossy Transport."),
+        ) as Box<dyn PDUTransport + Send>
+    } else {
+        Box::new(
+            UdpTransport::try_from((remote_udp, entity_map.clone()))
+                .expect("Unable to make UDP Transport."),
+        ) as Box<dyn PDUTransport + Send>
+    };
 
     let remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(0_u16)],
-            Box::new(remote_transport) as Box<dyn PDUTransport + Send>,
-        )]);
+        HashMap::from([(vec![EntityID::from(0_u16)], remote_transport)]);
 
     let local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>> =
-        HashMap::from([(
-            vec![EntityID::from(1_u16)],
-            Box::new(local_transport) as Box<dyn PDUTransport + Send>,
-        )]);
+        HashMap::from([(vec![EntityID::from(1_u16)], local_transport)]);
 
-    let utf8_path = Utf8PathBuf::from(
-        tempdir_fixture
-            .path()
-            .as_os_str()
-            .to_str()
-            .expect("Unable to coerce tmp path to String."),
-    );
-
-    let filestore = Arc::new(NativeFileStore::new(&utf8_path));
-    filestore
-        .create_directory("local")
-        .expect("Unable to create local directory.");
-    filestore
-        .create_directory("remote")
-        .expect("Unable to create local directory.");
-
-    let data_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("data");
-    for filename in ["small.txt", "medium.txt", "large.txt"] {
-        fs::copy(
-            data_dir.join(filename),
-            utf8_path.join("local").join(filename),
-        )
-        .expect("Unable to copy file.");
-    }
     let (local_user, remote_user, local_handle, remote_handle) = create_daemons(
-        filestore.clone(),
+        filestore_fixture.clone(),
         local_transport_map,
         remote_transport_map,
         terminate.clone(),
-        [None, None, None],
+        timeouts,
     );
     (
         local_user,
         remote_user,
-        filestore,
+        filestore_fixture.clone(),
         local_handle,
         remote_handle,
     )
+}
+
+#[fixture]
+#[once]
+fn make_entities(
+    filestore_fixture: &Arc<NativeFileStore>,
+    terminate: &Arc<AtomicBool>,
+) -> EntityConstructorReturn {
+    new_entities(filestore_fixture, terminate, None, None, [None; 3])
 }
 
 pub(crate) type UsersAndFilestore = (

@@ -33,21 +33,18 @@ use cfdp_core::{
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 use itertools::{Either, Itertools};
 use log::{error, info};
-use signal_hook::{consts::TERM_SIGNALS, flag};
 use tempfile::TempDir;
 
 use rstest::fixture;
 #[derive(Debug)]
 pub(crate) struct JoD<'a, T> {
     handle: Vec<JoinHandle<T>>,
-    signal: Arc<AtomicBool>,
     phantom: PhantomData<&'a ()>,
 }
-impl<'a, T> From<(JoinHandle<T>, Arc<AtomicBool>)> for JoD<'a, T> {
-    fn from(input: (JoinHandle<T>, Arc<AtomicBool>)) -> Self {
+impl<'a, T> From<JoinHandle<T>> for JoD<'a, T> {
+    fn from(input: JoinHandle<T>) -> Self {
         Self {
-            handle: vec![input.0],
-            signal: input.1,
+            handle: vec![input],
             phantom: PhantomData,
         }
     }
@@ -693,7 +690,6 @@ impl TestUserHalf {
 
 impl<'a, T> Drop for JoD<'a, T> {
     fn drop(&mut self) {
-        self.signal.store(true, Ordering::Relaxed);
         let handle = self.handle.remove(0);
 
         handle.join().expect("Unable to join handle.");
@@ -716,7 +712,6 @@ pub(crate) fn create_daemons<T: FileStore + Sync + Send + 'static>(
     filestore: Arc<T>,
     local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>>,
     remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>>,
-    signal: Arc<AtomicBool>,
     timeouts: Timeouts,
 ) -> DaemonType {
     let config = EntityConfig {
@@ -752,7 +747,6 @@ pub(crate) fn create_daemons<T: FileStore + Sync + Send + 'static>(
         local_filestore,
         remote_config.clone(),
         config.clone(),
-        signal.clone(),
         local_daemonhalf,
         indication_tx,
     );
@@ -778,7 +772,6 @@ pub(crate) fn create_daemons<T: FileStore + Sync + Send + 'static>(
         remote_filestore,
         remote_config,
         config,
-        signal.clone(),
         remote_daemonhalf,
         remote_indication_tx,
     );
@@ -793,8 +786,8 @@ pub(crate) fn create_daemons<T: FileStore + Sync + Send + 'static>(
         })
         .expect("Unable to spawn remote.");
 
-    let _local_h = JoD::from((local_handle, signal.clone()));
-    let _remote_h: JoD<_> = JoD::from((remote_handle, signal));
+    let _local_h = JoD::from(local_handle);
+    let _remote_h: JoD<_> = JoD::from(remote_handle);
 
     (local_userhalf, remote_userhalf, _local_h, _remote_h)
 }
@@ -805,25 +798,6 @@ pub(crate) fn tempdir_fixture() -> TempDir {
     TempDir::new().unwrap()
 }
 
-#[fixture]
-#[once]
-pub(crate) fn terminate() -> Arc<AtomicBool> {
-    // Boolean to track if a kill signal is received
-    let terminate = Arc::new(AtomicBool::new(false));
-
-    for sig in TERM_SIGNALS {
-        // When terminated by a second term signal, exit with exit code 1.
-        // This will do nothing the first time (because term_now is false).
-        flag::register_conditional_shutdown(*sig, 1, Arc::clone(&terminate))
-            .expect("Unable to register termination signals.");
-        // But this will "arm" the above for the second time, by setting it to true.
-        // The order of registering these is important, if you put this one first, it will
-        // first arm and then terminate ‒ all in the first round.
-        flag::register(*sig, Arc::clone(&terminate))
-            .expect("Unable to register termination signals.");
-    }
-    terminate
-}
 // Returns the local user, remote user, filestore, and handles for both local and remote daemons.
 pub(crate) type EntityConstructorReturn = (
     TestUserHalf,
@@ -835,10 +809,7 @@ pub(crate) type EntityConstructorReturn = (
 
 #[fixture]
 #[once]
-fn make_entities(
-    tempdir_fixture: &TempDir,
-    terminate: &Arc<AtomicBool>,
-) -> EntityConstructorReturn {
+fn make_entities(tempdir_fixture: &TempDir) -> EntityConstructorReturn {
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
     let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
 
@@ -898,7 +869,6 @@ fn make_entities(
         filestore.clone(),
         local_transport_map,
         remote_transport_map,
-        terminate.clone(),
         [None, None, None],
     );
     (

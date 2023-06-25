@@ -1,10 +1,4 @@
-use std::{
-    collections::HashMap,
-    net::UdpSocket,
-    sync::{atomic::AtomicBool, Arc},
-    thread,
-    time::Duration,
-};
+use std::{collections::HashMap, net::UdpSocket, thread, time::Duration};
 
 use camino::Utf8PathBuf;
 use cfdp_core::{
@@ -21,8 +15,8 @@ use rstest::{fixture, rstest};
 
 mod common;
 use common::{
-    create_daemons, get_filestore, terminate, EntityConstructorReturn, LossyTransport,
-    TransportIssue, UsersAndFilestore,
+    create_daemons, get_filestore, EntityConstructorReturn, LossyTransport, TransportIssue,
+    UsersAndFilestore,
 };
 
 #[rstest]
@@ -124,10 +118,7 @@ fn f1s3(get_filestore: &UsersAndFilestore) {
 
 #[fixture]
 #[once]
-fn fixture_f1s4(
-    get_filestore: &UsersAndFilestore,
-    terminate: &Arc<AtomicBool>,
-) -> EntityConstructorReturn {
+fn fixture_f1s4(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
     let (_, _, filestore) = get_filestore;
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
     let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
@@ -164,7 +155,6 @@ fn fixture_f1s4(
         filestore.clone(),
         local_transport_map,
         remote_transport_map,
-        terminate.clone(),
         [None; 3],
     );
     (local_user, remote_user, filestore.clone(), local, remote)
@@ -205,10 +195,7 @@ fn f1s4(fixture_f1s4: &'static EntityConstructorReturn) {
 
 #[fixture]
 #[once]
-fn fixture_f1s5(
-    get_filestore: &UsersAndFilestore,
-    terminate: &Arc<AtomicBool>,
-) -> EntityConstructorReturn {
+fn fixture_f1s5(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
     let (_, _, filestore) = get_filestore;
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
     let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
@@ -245,7 +232,6 @@ fn fixture_f1s5(
         filestore.clone(),
         local_transport_map,
         remote_transport_map,
-        terminate.clone(),
         [None; 3],
     );
     (local_user, remote_user, filestore.clone(), local, remote)
@@ -287,10 +273,7 @@ fn f1s5(fixture_f1s5: &'static EntityConstructorReturn) {
 
 #[fixture]
 #[once]
-fn fixture_f1s6(
-    get_filestore: &UsersAndFilestore,
-    terminate: &Arc<AtomicBool>,
-) -> EntityConstructorReturn {
+fn fixture_f1s6(get_filestore: &UsersAndFilestore) -> EntityConstructorReturn {
     let (_, _, filestore) = get_filestore;
     let remote_udp = UdpSocket::bind("127.0.0.1:0").expect("Unable to bind remote UDP.");
     let remote_addr = remote_udp.local_addr().expect("Cannot find local address.");
@@ -327,7 +310,6 @@ fn fixture_f1s6(
         filestore.clone(),
         local_transport_map,
         remote_transport_map,
-        terminate.clone(),
         [None; 3],
     );
     (local_user, remote_user, filestore.clone(), local, remote)

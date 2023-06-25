@@ -339,12 +339,12 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         filestore: Arc<T>,
         entity_configs: HashMap<VariableID, EntityConfig>,
         default_config: EntityConfig,
-        terminate: Arc<AtomicBool>,
         primitive_rx: Receiver<UserPrimitive>,
         indication_tx: Sender<Indication>,
     ) -> Self {
         let mut transport_tx_map: HashMap<EntityID, Sender<(VariableID, PDU)>> = HashMap::new();
         let (pdu_send, pdu_receive) = unbounded();
+        let terminate = Arc::new(AtomicBool::new(false));
         for (vec, mut transport) in transport_map.into_iter() {
             let (remote_send, remote_receive) = bounded(1);
 

@@ -6,7 +6,10 @@ pub(crate) mod timer;
 pub mod transaction;
 pub mod transport;
 // Re-exported for convenience
-pub use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TryRecvError};
+pub use tokio::sync::{
+    mpsc::{channel, Receiver, Sender},
+    oneshot,
+};
 
 // this import is necessary for the template macro in rstest_reuse as of v0.5.0
 #[cfg(test)]

@@ -892,13 +892,8 @@ impl<T: FileStore> SendTransaction<T> {
             closure_requested: self.metadata.closure_requested,
             checksum_type: self.metadata.checksum_type,
             file_size: self.metadata.file_size,
-            source_filename: self.metadata.source_filename.as_str().as_bytes().to_vec(),
-            destination_filename: self
-                .metadata
-                .destination_filename
-                .as_str()
-                .as_bytes()
-                .to_vec(),
+            source_filename: self.metadata.source_filename.clone(),
+            destination_filename: self.metadata.destination_filename.clone(),
             options: self
                 .metadata
                 .filestore_requests
@@ -1138,8 +1133,8 @@ mod test {
                     closure_requested: false,
                     file_size: 10,
                     checksum_type: ChecksumType::Modular,
-                    source_filename: path.as_str().as_bytes().to_vec(),
-                    destination_filename: path.as_str().as_bytes().to_vec(),
+                    source_filename: path.clone(),
+                    destination_filename: path.clone(),
                     options: vec![],
                 }));
                 let payload_len = payload.encoded_len(transaction.config.file_size_flag);
@@ -1599,8 +1594,8 @@ mod test {
                 closure_requested: false,
                 checksum_type: ChecksumType::Modular,
                 file_size: 1022_u64,
-                source_filename: "test_filename".as_bytes().to_vec(),
-                destination_filename: "test_filename".as_bytes().to_vec(),
+                source_filename: "test_filename".into(),
+                destination_filename: "test_filename".into(),
                 options: vec![],
             }),
             Operations::Prompt(PromptPDU{

@@ -1,4 +1,5 @@
 use byteorder::{BigEndian, ReadBytesExt};
+use camino::Utf8PathBuf;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 use std::{
@@ -824,8 +825,8 @@ pub struct MetadataPDU {
     pub closure_requested: bool,
     pub checksum_type: ChecksumType,
     pub file_size: u64,
-    pub source_filename: Vec<u8>,
-    pub destination_filename: Vec<u8>,
+    pub source_filename: Utf8PathBuf,
+    pub destination_filename: Utf8PathBuf,
     pub options: Vec<MetadataTLV>,
 }
 impl FSSEncode for MetadataPDU {
@@ -839,9 +840,9 @@ impl FSSEncode for MetadataPDU {
         // options (TLV per option)
         1 + file_size_flag.encoded_len()
             + 1
-            + self.source_filename.len() as u16
+            + self.source_filename.as_str().len() as u16
             + 1
-            + self.destination_filename.len() as u16
+            + self.destination_filename.as_str().len() as u16
             + self
                 .options
                 .iter()
@@ -856,11 +857,13 @@ impl FSSEncode for MetadataPDU {
             FileSizeFlag::Large => buffer.extend(self.file_size.to_be_bytes()),
         };
 
-        buffer.push(self.source_filename.len() as u8);
-        buffer.extend(self.source_filename);
+        let source_name = self.source_filename.as_str().as_bytes();
+        buffer.push(source_name.len() as u8);
+        buffer.extend(source_name);
 
-        buffer.push(self.destination_filename.len() as u8);
-        buffer.extend(self.destination_filename);
+        let destination_name = self.destination_filename.as_str().as_bytes();
+        buffer.push(destination_name.len() as u8);
+        buffer.extend(destination_name);
 
         self.options
             .into_iter()
@@ -884,8 +887,11 @@ impl FSSEncode for MetadataPDU {
             FileSizeFlag::Small => buffer.read_u32::<BigEndian>()? as u64,
         };
 
-        let source_filename = read_length_value_pair(buffer)?;
-        let destination_filename = read_length_value_pair(buffer)?;
+        let source_filename =
+            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer)?)?);
+
+        let destination_filename =
+            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer)?)?);
 
         let mut options = vec![];
         let mut options_vec = vec![];
@@ -1493,8 +1499,8 @@ mod test {
             closure_requested,
             checksum_type,
             file_size,
-            source_filename: "/the/source/filename.txt".as_bytes().to_vec(),
-            destination_filename: "/the/destination/filename.dat".as_bytes().to_vec(),
+            source_filename: "/the/source/filename.txt".into(),
+            destination_filename: "/the/destination/filename.dat".into(),
             options,
         });
         let buffer = expected.clone().encode(file_size_flag);

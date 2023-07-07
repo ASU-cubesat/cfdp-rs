@@ -884,16 +884,9 @@ impl<T: FileStore> RecvTransaction<T> {
                                             _ => None,
                                         });
                                     // push each request up to the Daemon
-                                    let source_filename: Utf8PathBuf =
-                                        std::str::from_utf8(metadata.source_filename.as_slice())
-                                            .map_err(FileStoreError::UTF8)?
-                                            .into();
-
-                                    let destination_filename: Utf8PathBuf = std::str::from_utf8(
-                                        metadata.destination_filename.as_slice(),
-                                    )
-                                    .map_err(FileStoreError::UTF8)?
-                                    .into();
+                                    let source_filename: Utf8PathBuf = metadata.source_filename;
+                                    let destination_filename: Utf8PathBuf =
+                                        metadata.destination_filename;
 
                                     self.send_indication(Indication::MetadataRecv(
                                         MetadataRecvIndication {
@@ -1026,16 +1019,9 @@ impl<T: FileStore> RecvTransaction<T> {
                                             _ => None,
                                         });
 
-                                    let source_filename: Utf8PathBuf =
-                                        std::str::from_utf8(metadata.source_filename.as_slice())
-                                            .map_err(FileStoreError::UTF8)?
-                                            .into();
-
-                                    let destination_filename: Utf8PathBuf = std::str::from_utf8(
-                                        metadata.destination_filename.as_slice(),
-                                    )
-                                    .map_err(FileStoreError::UTF8)?
-                                    .into();
+                                    let source_filename: Utf8PathBuf = metadata.source_filename;
+                                    let destination_filename: Utf8PathBuf =
+                                        metadata.destination_filename;
 
                                     self.send_indication(Indication::MetadataRecv(
                                         MetadataRecvIndication {
@@ -1965,8 +1951,8 @@ mod test {
             closure_requested: false,
             checksum_type: ChecksumType::Modular,
             file_size: 600,
-            source_filename: "Test_file.txt".as_bytes().to_vec(),
-            destination_filename: "Test_file.txt".as_bytes().to_vec(),
+            source_filename: "Test_file.txt".into(),
+            destination_filename: "Test_file.txt".into(),
             options: vec![
                 MetadataTLV::MessageToUser(expected_msg.clone()),
                 MetadataTLV::FileStoreRequest(fs_req),

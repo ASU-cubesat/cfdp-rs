@@ -23,7 +23,17 @@ use crate::cfdp_core::pdu::{PDUEncode, VariableID, PDU};
 /// inside a [Daemon](crate::Daemon) process
 #[async_trait]
 pub trait PDUTransport {
+    /// Look up the address of of the destination entity ID and send the PDU.
+    /// Errors if the destination Entity does not have an associated address.
+    async fn request(&mut self, destination: VariableID, pdu: PDU) -> Result<(), IoError>;
+
+    /// Recieves a PDU from the associated communication protocol.
+    async fn receive(&mut self) -> Result<PDU, IoError>;
+
     /// Provides logic for listening for incoming PDUs and sending any outbound PDUs
+    /// A default implementeation is provided for convenience.
+    ///
+    /// This method relies on [tokio::select], as a result [request](PDUTransport::request) and [receive](PDUTransport::receive) must be cancel safe.
     ///
     /// A transport implementation will send any received messages through the
     /// [Sender] channel to the [Daemon](crate::Daemon).
@@ -36,77 +46,23 @@ pub trait PDUTransport {
         signal: Arc<AtomicBool>,
         sender: Sender<PDU>,
         mut recv: Receiver<(VariableID, PDU)>,
-    ) -> Result<(), IoError>;
-}
-
-/// A wrapper struct around a [UdpSocket] and a Mapping from
-/// EntityIDs to [SocketAddr] instances.
-pub struct UdpTransport {
-    socket: UdpSocket,
-    entity_map: HashMap<VariableID, SocketAddr>,
-}
-impl UdpTransport {
-    pub async fn new<T: ToSocketAddrs + Debug>(
-        addr: T,
-        entity_map: HashMap<VariableID, SocketAddr>,
-    ) -> Result<Self, IoError> {
-        let socket = UdpSocket::bind(addr).await?;
-        Ok(Self { socket, entity_map })
-    }
-
-    /// Look up the address of of the destination entity ID and send the PDU.
-    /// Errors if the destination Entity does not have an associated address.
-    fn request(&mut self, destination: VariableID, pdu: PDU) -> Result<(), IoError> {
-        self.entity_map
-            .get(&destination)
-            .ok_or_else(|| IoError::from(ErrorKind::AddrNotAvailable))
-            .and_then(|addr| {
-                self.socket
-                    .send_to(pdu.encode().as_slice(), addr)
-                    .map(|_n| ())
-            })
-    }
-}
-impl TryFrom<(UdpSocket, HashMap<VariableID, SocketAddr>)> for UdpTransport {
-    type Error = IoError;
-    fn try_from(inputs: (UdpSocket, HashMap<VariableID, SocketAddr>)) -> Result<Self, Self::Error> {
-        let me = Self {
-            socket: inputs.0,
-            entity_map: inputs.1,
-        };
-        Ok(me)
-    }
-}
-
-#[async_trait]
-impl PDUTransport for UdpTransport {
-    fn pdu_handler(
-        &mut self,
-        signal: Arc<AtomicBool>,
-        sender: Sender<PDU>,
-        mut recv: Receiver<(VariableID, PDU)>,
     ) -> Result<(), IoError> {
-        // this buffer will be 511 KiB, should be sufficiently small;
-        let mut buffer = vec![0_u8; u16::MAX as usize];
         while !signal.load(Ordering::Relaxed) {
             tokio::select! {
-                Ok((_n, _addr)) = self.socket.recv_from(&mut buffer) => {
-                    match PDU::decode(&mut buffer.as_slice()) {
-                        Ok(pdu) => {
-                            match sender.send(pdu).await {
-                                Ok(()) => {}
-                                Err(error) => {
-                                    error!("Channel to daemon severed: {}", error);
-                                    return Err(IoError::from(ErrorKind::ConnectionAborted));
-                                }
-                            };
+                pdu = self.receive() => {
+                    match pdu{
+                        Ok(pdu) => match sender.send(pdu).await {
+                            Ok(()) => {}
+                            Err(error) => {
+                                error!("Channel to daemon severed: {}", error);
+                                return Err(IoError::from(ErrorKind::ConnectionAborted));
+                            }
+                        },
+                        Err(err) => {
+                            error!("Error decoding PDU: {}", err);
+
                         }
-                        Err(error) => {
-                            error!("Error decoding PDU: {}", error);
-                            // might need to stop depending on the error.
-                            // some are recoverable though
-                        }
-                    }
+                    };
                 },
                 Some((entity, pdu)) = recv.recv() => {
                     self.request(entity, pdu).await?;
@@ -120,5 +76,64 @@ impl PDUTransport for UdpTransport {
             tokio::time::sleep(Duration::from_micros(100)).await;
         }
         Ok(())
+    }
+}
+
+/// A wrapper struct around a [UdpSocket] and a Mapping from
+/// EntityIDs to [SocketAddr] instances.
+pub struct UdpTransport {
+    socket: UdpSocket,
+
+    buffer: Vec<u8>,
+    entity_map: HashMap<VariableID, SocketAddr>,
+}
+impl UdpTransport {
+    pub async fn new<T: ToSocketAddrs + Debug>(
+        addr: T,
+        entity_map: HashMap<VariableID, SocketAddr>,
+    ) -> Result<Self, IoError> {
+        let socket = UdpSocket::bind(addr).await?;
+        Ok(Self {
+            socket,
+            buffer: vec![0_u8; u16::MAX as usize],
+            entity_map,
+        })
+    }
+}
+impl TryFrom<(UdpSocket, HashMap<VariableID, SocketAddr>)> for UdpTransport {
+    type Error = IoError;
+    fn try_from(inputs: (UdpSocket, HashMap<VariableID, SocketAddr>)) -> Result<Self, Self::Error> {
+        let me = Self {
+            socket: inputs.0,
+            // this buffer will be 511 KiB, should be sufficiently small;
+            buffer: vec![0_u8; u16::MAX as usize],
+            entity_map: inputs.1,
+        };
+        Ok(me)
+    }
+}
+
+#[async_trait]
+impl PDUTransport for UdpTransport {
+    async fn request(&mut self, destination: VariableID, pdu: PDU) -> Result<(), IoError> {
+        let addr = self
+            .entity_map
+            .get(&destination)
+            .ok_or_else(|| IoError::from(ErrorKind::AddrNotAvailable))?;
+        self.socket.send_to(pdu.encode().as_slice(), addr).await?;
+        Ok(())
+    }
+
+    async fn receive(&mut self) -> Result<PDU, IoError> {
+        let (_n, _addr) = self.socket.recv_from(&mut self.buffer).await?;
+
+        match PDU::decode(&mut self.buffer.as_slice()) {
+            Ok(pdu) => Ok(pdu),
+            Err(err) => {
+                // might need to stop depending on the error.
+                // some are recoverable though
+                Err(IoError::new(ErrorKind::InvalidData, err.to_string()))
+            }
+        }
     }
 }

@@ -1006,10 +1006,10 @@ pub struct SFORequest {
     closure_request: bool,
     prior_waypoints_count: u8,
     request_label: Vec<u8>,
-    source_entity_id: Vec<u8>,
-    destination_entity_id: Vec<u8>,
-    source_filename: Vec<u8>,
-    destination_filename: Vec<u8>,
+    source_entity_id: EntityID,
+    destination_entity_id: EntityID,
+    source_filename: Utf8PathBuf,
+    destination_filename: Utf8PathBuf,
 }
 impl PDUEncode for SFORequest {
     type PDUType = Self;
@@ -1022,13 +1022,13 @@ impl PDUEncode for SFORequest {
         // request label len + message
         + 1 + self.request_label.len() as u16
         // source entity id len + val
-        + 1 + self.source_entity_id.len() as u16
+        + 1 + self.source_entity_id.encoded_len()
         // destination entity id len + val
-        + 1 + self.destination_entity_id.len() as u16
+        + 1 + self.destination_entity_id.encoded_len()
         // source filename len + val
-        + 1 + self.source_filename.len() as u16
+        + 1 + self.source_filename.as_str().len() as u16
         // destination filename len + val
-        + 1 + self.destination_filename.len() as u16
+        + 1 + self.destination_filename.as_str().len() as u16
     }
 
     fn encode(self) -> Vec<u8> {
@@ -1043,17 +1043,19 @@ impl PDUEncode for SFORequest {
         buffer.push(self.request_label.len() as u8);
         buffer.extend(self.request_label);
 
-        buffer.push(self.source_entity_id.len() as u8);
-        buffer.extend(self.source_entity_id);
+        buffer.push(self.source_entity_id.encoded_len() as u8);
+        buffer.extend(self.source_entity_id.to_be_bytes());
 
-        buffer.push(self.destination_entity_id.len() as u8);
-        buffer.extend(self.destination_entity_id);
+        buffer.push(self.destination_entity_id.encoded_len() as u8);
+        buffer.extend(self.destination_entity_id.to_be_bytes());
 
-        buffer.push(self.source_filename.len() as u8);
-        buffer.extend(self.source_filename);
+        let source_name = self.source_filename.as_str().as_bytes();
+        buffer.push(source_name.len() as u8);
+        buffer.extend(source_name);
 
-        buffer.push(self.destination_filename.len() as u8);
-        buffer.extend(self.destination_filename);
+        let destination_name = self.destination_filename.as_str().as_bytes();
+        buffer.push(destination_name.len() as u8);
+        buffer.extend(destination_name);
 
         buffer
     }
@@ -1087,10 +1089,12 @@ impl PDUEncode for SFORequest {
         let prior_waypoints_count = u8_buff[0];
 
         let request_label = read_length_value_pair(buffer)?;
-        let source_entity_id = read_length_value_pair(buffer)?;
-        let destination_entity_id = read_length_value_pair(buffer)?;
-        let source_filename = read_length_value_pair(buffer)?;
-        let destination_filename = read_length_value_pair(buffer)?;
+        let source_entity_id = EntityID::try_from(read_length_value_pair(buffer)?)?;
+        let destination_entity_id = EntityID::try_from(read_length_value_pair(buffer)?)?;
+        let source_filename =
+            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer)?)?);
+        let destination_filename =
+            Utf8PathBuf::from(String::from_utf8(read_length_value_pair(buffer)?)?);
 
         Ok(Self {
             trace_control,
@@ -1110,9 +1114,9 @@ impl PDUEncode for SFORequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SFOReport {
     request_label: Vec<u8>,
-    source_entity_id: Vec<u8>,
-    destination_entity_id: Vec<u8>,
-    reporting_entity_id: Vec<u8>,
+    source_entity_id: EntityID,
+    destination_entity_id: EntityID,
+    reporting_entity_id: EntityID,
     prior_waypoints: u8,
     report_code: u8,
     condition: Condition,
@@ -1126,12 +1130,12 @@ impl PDUEncode for SFOReport {
     fn encoded_len(&self) -> u16 {
         // label len + message
         1 + self.request_label.len() as u16
-        // source entity id len + valu
-        + 1 + self.source_entity_id.len() as u16
-        // destination entity id len + valu
-        + 1 + self.destination_entity_id.len() as u16
-        // reporting entity id len + valu
-        + 1 + self.reporting_entity_id.len() as u16
+        // source entity id len + value
+        + 1 + self.source_entity_id.encoded_len()
+        // destination entity id len + value
+        + 1 + self.destination_entity_id.encoded_len()
+        // reporting entity id len + value
+        + 1 + self.reporting_entity_id.encoded_len()
         // prior waypoints
         + 1
         // report code
@@ -1143,12 +1147,12 @@ impl PDUEncode for SFOReport {
     fn encode(self) -> Vec<u8> {
         let mut buffer = vec![self.request_label.len() as u8];
         buffer.extend(self.request_label);
-        buffer.push(self.source_entity_id.len() as u8);
-        buffer.extend(self.source_entity_id);
-        buffer.push(self.destination_entity_id.len() as u8);
-        buffer.extend(self.destination_entity_id);
-        buffer.push(self.reporting_entity_id.len() as u8);
-        buffer.extend(self.reporting_entity_id);
+        buffer.push(self.source_entity_id.encoded_len() as u8);
+        buffer.extend(self.source_entity_id.to_be_bytes());
+        buffer.push(self.destination_entity_id.encoded_len() as u8);
+        buffer.extend(self.destination_entity_id.to_be_bytes());
+        buffer.push(self.reporting_entity_id.encoded_len() as u8);
+        buffer.extend(self.reporting_entity_id.to_be_bytes());
         buffer.push(self.prior_waypoints);
         buffer.push(self.report_code);
         let last_byte: u8 = ((self.condition as u8) << 4)
@@ -1162,9 +1166,9 @@ impl PDUEncode for SFOReport {
     fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self::PDUType> {
         let mut u8_buff = [0u8; 1];
         let request_label = read_length_value_pair(buffer)?;
-        let source_entity_id = read_length_value_pair(buffer)?;
-        let destination_entity_id = read_length_value_pair(buffer)?;
-        let reporting_entity_id = read_length_value_pair(buffer)?;
+        let source_entity_id = EntityID::try_from(read_length_value_pair(buffer)?)?;
+        let destination_entity_id = EntityID::try_from(read_length_value_pair(buffer)?)?;
+        let reporting_entity_id = EntityID::try_from(read_length_value_pair(buffer)?)?;
 
         buffer.read_exact(&mut u8_buff)?;
         let prior_waypoints = u8_buff[0];
@@ -1229,13 +1233,31 @@ mod test {
     use rstest_reuse::{self, template, *};
 
     #[rstest]
-    #[case((0..5).collect(), vec![1u8, 3, 5, 7, 9], 3475392u32.to_be_bytes().to_vec(), 1948582103u64.to_be_bytes().to_vec(), 5, 255, Direction::ToReceiver, DeliveryCode::Complete,)]
-    #[case((200..243).collect(), vec![2u8, 4, 12, 55, 192], 555184857u64.to_be_bytes().to_vec(), 128374u32.to_be_bytes().to_vec(), 153, 2, Direction::ToSender, DeliveryCode::Incomplete )]
+    #[case(
+        (0..5).collect(),
+        EntityID::from(3_u8),
+        EntityID::from(3475392_u32),
+        EntityID::from(1948582103_u64),
+        5,
+        255,
+        Direction::ToReceiver,
+        DeliveryCode::Complete,
+    )]
+    #[case(
+        (200..243).collect(),
+        EntityID::from(12_u16),
+        EntityID::from(555184857_u64),
+        EntityID::from(128374_u32),
+        153,
+        2,
+        Direction::ToSender,
+        DeliveryCode::Incomplete
+    )]
     fn sfo_report_roundtrip(
         #[case] request_label: Vec<u8>,
-        #[case] source_entity_id: Vec<u8>,
-        #[case] destination_entity_id: Vec<u8>,
-        #[case] reporting_entity_id: Vec<u8>,
+        #[case] source_entity_id: EntityID,
+        #[case] destination_entity_id: EntityID,
+        #[case] reporting_entity_id: EntityID,
         #[case] prior_waypoints: u8,
         #[case] report_code: u8,
         #[values(
@@ -1412,10 +1434,10 @@ mod test {
                 closure_request: true,
                 prior_waypoints_count: u8::MAX,
                 request_label: vec![135u8, 85, 88, 127, 129,],
-                source_entity_id: 873123u32.to_be_bytes().to_vec(),
-                destination_entity_id: 9887373u32.to_be_bytes().to_vec(),
-                source_filename: "/test/test/test.test".as_bytes().to_vec(),
-                destination_filename: "notest/notest/notest".as_bytes().to_vec(),
+                source_entity_id: EntityID::from(873123_u32),
+                destination_entity_id: EntityID::from(9887373_u32),
+                source_filename: "/test/test/test.test".into(),
+                destination_filename: "notest/notest/notest".into(),
             }
     ))]
     #[case::sfo_message(UserOperation::SFOMessageToUser(
@@ -1452,9 +1474,9 @@ mod test {
     #[case::sfo_report(UserOperation::SFOReport(
         SFOReport{
             request_label: vec![1u8, 2u8, 4u8, 8u8, 16u8, 32u8, 64u8],
-            source_entity_id: 2847837u32.to_be_bytes().to_vec(),
-            destination_entity_id: 7573837u32.to_be_bytes().to_vec(),
-            reporting_entity_id: 995857u32.to_be_bytes().to_vec(),
+            source_entity_id: EntityID::from(2847837_u32),
+            destination_entity_id: EntityID::from(7573837_u32),
+            reporting_entity_id: EntityID::from(995857_u32),
             prior_waypoints: 83u8,
             report_code: 213u8,
             condition: Condition::CheckLimitReached,

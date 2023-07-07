@@ -641,7 +641,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         Ok(())
     }
 
-    async fn process_pdu(&mut self, pdu: PDU) -> Result<(), Box<dyn std::error::Error>> {
+    async fn forward_pdu(&mut self, pdu: PDU) -> Result<(), Box<dyn std::error::Error>> {
         // find the entity this entity will be sending too.
         // If this PDU is to the sender, we send to the destination
         // if this PDU is to the receiver, we send to the source
@@ -747,6 +747,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
     pub async fn manage_transactions(&mut self) -> Result<(), Box<dyn std::error::Error + '_>> {
         let cleanup = {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
+            // Don't start counting another tick until the currrent one has been processed.
             interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
             interval
         };
@@ -754,7 +755,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
 
         loop {
             select! {
-                Some(pdu) = self.transport_rx.recv() => self.process_pdu(pdu).await?,
+                Some(pdu) = self.transport_rx.recv() => self.forward_pdu(pdu).await?,
                 Some(primitive) = self.primitive_rx.recv() => self.process_primitive(primitive).await?,
                 _ = cleanup.tick() => self.cleanup_transactions().await,
                 else => {

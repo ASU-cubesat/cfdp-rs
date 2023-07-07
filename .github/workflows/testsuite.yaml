@@ -16,13 +16,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Install Rust (${{matrix.rust}})
-        uses: actions-rs/toolchain@v1
+      - name: "Install Rust"
+        run: |
+          rustup toolchain install ${{ matrix.rust }} --profile minimal --no-self-update -c rustfmt clippy
+          rustup default ${{ matrix.rust }}
+        shell: bash
+
+      - uses: Swatinem/rust-cache@v2
         with:
-          profile: minimal
-          toolchain: ${{matrix.rust}}
-          override: true
-          components: rustfmt, clippy
+          shared-key: ${{ inputs.cache-key }}
 
       - name: Run cargo ${{matrix.command}}
         uses: actions-rs/cargo@v1
@@ -48,13 +50,15 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Install Rust (${{matrix.rust}})
-        uses: actions-rs/toolchain@v1
+      - name: "Install Rust"
+        run: |
+          rustup toolchain install ${{ matrix.rust }} --profile minimal --no-self-update -c llvm-tools-preview
+          rustup default ${{ matrix.rust }}
+        shell: bash
+
+      - uses: Swatinem/rust-cache@v2
         with:
-          toolchain: '${{matrix.rust}}'
-          profile: minimal
-          override: true
-          components: llvm-tools-preview
+          shared-key: ${{ inputs.cache-key }}
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov

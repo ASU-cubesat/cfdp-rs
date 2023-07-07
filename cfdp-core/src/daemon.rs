@@ -426,52 +426,41 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             while transaction.get_state() != TransactionState::Terminated {
                 let timeout = transaction.until_timeout();
                 select! {
-                    permit = transport_tx.reserve(), if transaction.has_pdu_to_send() => {
-                        if let Ok(permit) = permit {
-                            transaction.send_pdu(permit)?
-                        } else {
-                            log::error!("Channel to transport severed for transaction {}", transaction.id());
-                            break;
-                        }
+                    Ok(permit) = transport_tx.reserve(), if transaction.has_pdu_to_send() => {
+                        transaction.send_pdu(permit)?
                     },
-                    command = transaction_rx.recv() => {
-                        if let Some(command) = command {
-                            match command {
-                                Command::Pdu(pdu) => {
-                                    match transaction.process_pdu(pdu) {
-                                        Ok(()) => {}
-                                        Err(err @ TransactionError::UnexpectedPDU(..)) => {
-                                            info!("Transaction {} Received Unexpected PDU: {err}", transaction.id());
-                                            // log some info on the unexpected PDU?
-                                        }
-                                        Err(err) => return Err(err),
+                    Some(command) = transaction_rx.recv() => {
+                        match command {
+                            Command::Pdu(pdu) => {
+                                match transaction.process_pdu(pdu) {
+                                    Ok(()) => {}
+                                    Err(err @ TransactionError::UnexpectedPDU(..)) => {
+                                        info!("Transaction {} Received Unexpected PDU: {err}", transaction.id());
+                                        // log some info on the unexpected PDU?
                                     }
-                                }
-                                Command::Resume => transaction.resume()?,
-                                Command::Cancel => transaction.cancel()?,
-                                Command::Suspend => transaction.suspend()?,
-                                Command::Abandon => transaction.shutdown(),
-                                Command::Report(sender) => {
-                                    transaction.send_report(Some(sender))?
-                                }
-                                Command::Prompt(_) =>{
-                                    // prompt is a no-op for a receive transaction.
+                                    Err(err) => return Err(err),
                                 }
                             }
-                        } else {
-                            log::warn!(
-                                "Connection to Daemon Severed for Transaction {}",
-                                transaction.id()
-                            );
-                            break;
+                            Command::Resume => transaction.resume()?,
+                            Command::Cancel => transaction.cancel()?,
+                            Command::Suspend => transaction.suspend()?,
+                            Command::Abandon => transaction.shutdown(),
+                            Command::Report(sender) => {
+                                transaction.send_report(Some(sender))?
+                            }
+                            Command::Prompt(_) =>{
+                                // prompt is a no-op for a receive transaction.
+                            }
                         }
                     }
-                    _= tokio::time::sleep(timeout) => {
+                    _ = tokio::time::sleep(timeout) => {
                         transaction.handle_timeout()?;
-                    },
-
-
-                }
+                    }
+                    else => {
+                        log::error!("Channel to transport severed for transaction {}", transaction.id());
+                        break;
+                    }
+                };
             }
 
             transaction.send_report(None)?;
@@ -532,52 +521,44 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                 let timeout = transaction.until_timeout();
 
                 select! {
-                    permit = transport_tx.reserve(), if transaction.has_pdu_to_send()  => {
-                        if let Ok(permit) = permit {
-                            transaction.send_pdu(permit)?;
-                        } else {
-                            log::error!("Connection to transport severed for transaction {}", transaction.id());
-                            break;
-                        }
+                    Ok(permit) = transport_tx.reserve(), if transaction.has_pdu_to_send()  => {
+                        transaction.send_pdu(permit)?;
                     },
 
-                    command = transaction_rx.recv() => {
-                        if let Some(command) = command {
-                            match command {
-                                Command::Pdu(pdu) => {
-                                    match transaction.process_pdu(pdu) {
-                                        Ok(()) => {}
-                                        Err(
-                                            err @ TransactionError::UnexpectedPDU(..),
-                                        ) => {
-                                            info!("Recieved Unexpected PDU: {err}");
-                                            // log some info on the unexpected PDU?
-                                        }
-                                        Err(err) => {
-                                            return Err(err);
-                                        }
+                    Some(command) = transaction_rx.recv() => {
+                        match command {
+                            Command::Pdu(pdu) => {
+                                match transaction.process_pdu(pdu) {
+                                    Ok(()) => {}
+                                    Err(
+                                        err @ TransactionError::UnexpectedPDU(..),
+                                    ) => {
+                                        info!("Recieved Unexpected PDU: {err}");
+                                        // log some info on the unexpected PDU?
+                                    }
+                                    Err(err) => {
+                                        return Err(err);
                                     }
                                 }
-                                Command::Resume => transaction.resume()?,
-                                Command::Cancel => transaction.cancel()?,
-                                Command::Suspend => transaction.suspend()?,
-                                Command::Abandon => transaction.shutdown(),
-                                Command::Report(sender) => {
-                                    transaction.send_report(Some(sender))?
-                                }
-                                Command::Prompt(option) => {
-                                    transaction.prepare_prompt(option)
-                                }
                             }
-                        } else {
-                            panic!(
-                                "Connection to Daemon Severed for Transaction {}",
-                                transaction.id()
-                            )
+                            Command::Resume => transaction.resume()?,
+                            Command::Cancel => transaction.cancel()?,
+                            Command::Suspend => transaction.suspend()?,
+                            Command::Abandon => transaction.shutdown(),
+                            Command::Report(sender) => {
+                                transaction.send_report(Some(sender))?
+                            }
+                            Command::Prompt(option) => {
+                                transaction.prepare_prompt(option)
+                            }
                         }
                     },
                     _ = tokio::time::sleep(timeout) => {
                         transaction.handle_timeout()?;
+                    },
+                    else => {
+                        log::error!("Connection to transport or daemon severed for transaction {}", transaction.id());
+                        break;
                     }
                 };
             }

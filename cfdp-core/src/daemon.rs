@@ -6,7 +6,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use camino::Utf8PathBuf;
@@ -20,6 +20,7 @@ use tokio::{
         oneshot,
     },
     task::JoinHandle,
+    time::MissedTickBehavior,
 };
 
 use crate::{
@@ -315,6 +316,8 @@ type SpawnerTuple = (
 pub struct Daemon<T: FileStore + Send + 'static> {
     // The collection of all current transactions
     transaction_handles: Vec<JoinHandle<Result<TransactionID, TransactionError>>>,
+    // Mapping of unique transaction ids to channels used to talk to each transaction
+    transaction_channels: HashMap<TransactionID, Sender<Command>>,
     // the vector of transportation tx channel connections
     transport_tx_map: HashMap<EntityID, Sender<(VariableID, PDU)>>,
     // the transport PDU rx channel connection
@@ -366,6 +369,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         }
         Self {
             transaction_handles: vec![],
+            transaction_channels: HashMap::new(),
             transport_tx_map,
             transport_rx: pdu_receive,
             filestore,
@@ -583,219 +587,207 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         Ok((id, transaction_tx, handle))
     }
 
+    async fn process_primitive(
+        &mut self,
+        primitive: UserPrimitive,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        match primitive {
+            UserPrimitive::Put(request, put_sender) => {
+                let sequence_number = self.sequence_num.get_and_increment();
+
+                let entity_config = self
+                    .entity_configs
+                    .get(&request.destination_entity_id)
+                    .unwrap_or(&self.default_config)
+                    .clone();
+
+                if let Some(transport_tx) = self
+                    .transport_tx_map
+                    .get(&request.destination_entity_id)
+                    .cloned()
+                {
+                    let (id, sender, handle) = Self::spawn_send_transaction(
+                        request,
+                        sequence_number,
+                        self.entity_id,
+                        transport_tx,
+                        entity_config,
+                        self.filestore.clone(),
+                        self.indication_tx.clone(),
+                    )?;
+                    self.transaction_handles.push(handle);
+                    self.transaction_channels.insert(id, sender);
+
+                    // ignore the possible error if the user disconnected;
+                    let _ = put_sender.send(id);
+                } else {
+                    warn!(
+                        "No Transport available for EntityID: {}. Skipping transaction creation.",
+                        request.destination_entity_id
+                    )
+                }
+            }
+            UserPrimitive::Cancel(id) => {
+                if let Some(channel) = self.transaction_channels.get(&id) {
+                    channel.send(Command::Cancel).await?;
+                }
+            }
+            UserPrimitive::Suspend(id) => {
+                if let Some(channel) = self.transaction_channels.get(&id) {
+                    channel.send(Command::Suspend).await?;
+                }
+            }
+            UserPrimitive::Resume(id) => {
+                if let Some(channel) = self.transaction_channels.get(&id) {
+                    channel.send(Command::Resume).await?;
+                }
+            }
+            UserPrimitive::Report(id, report_sender) => {
+                if let Some(channel) = self.transaction_channels.get(&id) {
+                    // It's possible for the user to ask for a report after the Transaction is finished
+                    // but before the channel is cleaned up.
+                    // for now ignore errors until a better solution is found.
+                    // maybe possible to trigger a cleanup immediately after a transaction finishes?
+                    let _ = channel.send(Command::Report(report_sender)).await;
+                }
+            }
+            UserPrimitive::Prompt(id, option) => {
+                if let Some(channel) = self.transaction_channels.get(&id) {
+                    channel.send(Command::Prompt(option)).await?;
+                }
+            }
+        };
+        Ok(())
+    }
+
+    async fn process_pdu(&mut self, pdu: PDU) -> Result<(), Box<dyn std::error::Error>> {
+        // find the entity this entity will be sending too.
+        // If this PDU is to the sender, we send to the destination
+        // if this PDU is to the receiver, we send to the source
+        let transport_entity = match &pdu.header.direction {
+            Direction::ToSender => pdu.header.destination_entity_id,
+            Direction::ToReceiver => pdu.header.source_entity_id,
+        };
+
+        let key = TransactionID(
+            pdu.header.source_entity_id,
+            pdu.header.transaction_sequence_number,
+        );
+        // hand pdu off to transaction
+        let channel = match self.transaction_channels.entry(key) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                if let Some(transport) = self.transport_tx_map.get(&transport_entity).cloned() {
+                    // if this key is not in the channel list
+                    // create a new transaction
+                    let entity_config = self
+                        .entity_configs
+                        .get(&key.0)
+                        .unwrap_or(&self.default_config)
+                        .clone();
+                    let (_id, channel, handle) = Self::spawn_receive_transaction(
+                        &pdu.header,
+                        transport,
+                        entity_config,
+                        self.filestore.clone(),
+                        self.indication_tx.clone(),
+                    )
+                    .expect("Cannot spawn new Transaction.");
+
+                    self.transaction_handles.push(handle);
+                    entry.insert(channel)
+                } else {
+                    warn!(
+                        "No Transport available for EntityID: {}. Skipping Transaction creation.",
+                        transport_entity
+                    );
+                    // skip to the next loop iteration
+                    return Ok(());
+                }
+            }
+        };
+
+        if channel.send(Command::Pdu(pdu.clone())).await.is_err() {
+            // the transaction is completed.
+            // spawn a new one
+            // this is very unlikely and only results
+            // if a sender is re-using a transaction id
+            let entity_config = self
+                .entity_configs
+                .get(&key.0)
+                .unwrap_or(&self.default_config)
+                .clone();
+            if let Some(transport) = self.transport_tx_map.get(&transport_entity).cloned() {
+                let (_id, new_channel, handle) = Self::spawn_receive_transaction(
+                    &pdu.header,
+                    transport,
+                    entity_config,
+                    self.filestore.clone(),
+                    self.indication_tx.clone(),
+                )?;
+                self.transaction_handles.push(handle);
+                new_channel.send(Command::Pdu(pdu.clone())).await?;
+                // update the dict to have the new channel
+                self.transaction_channels.insert(key, new_channel);
+            } else {
+                warn!(
+                    "No Transport available for EntityID: {}. Skipping Transaction creation.",
+                    transport_entity
+                )
+            }
+        }
+        Ok(())
+    }
+
+    async fn cleanup_transactions(&mut self) {
+        // join any handles that have completed
+        // maybe should only run every so often?
+        let mut ind = 0;
+        while ind < self.transaction_handles.len() {
+            if self.transaction_handles[ind].is_finished() {
+                let handle = self.transaction_handles.remove(ind);
+                match handle.await {
+                    Ok(Ok(id)) => {
+                        // remove the channel for this transaction if it is complete
+                        let _ = self.transaction_channels.remove(&id);
+                    }
+                    Ok(Err(err)) => {
+                        info!("Error occurred during transaction: {}", err)
+                    }
+                    Err(_) => error!("Unable to join handle!"),
+                };
+            } else {
+                ind += 1;
+            }
+        }
+    }
+
     /// This function will consist of the main logic loop in any daemon process.
     pub async fn manage_transactions(&mut self) -> Result<(), Box<dyn std::error::Error + '_>> {
-        let mut sequence_num = self.sequence_num;
-
-        // Create the selection object to check if any messages are available.
-        // the returned index will be used to determine which action to take.
-
-        // mapping of unique transaction ids to channels used to talk to each transaction
-        let mut transaction_channels: HashMap<TransactionID, Sender<Command>> = HashMap::new();
-
-        let mut cleanup = Instant::now();
+        let cleanup = {
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            interval
+        };
+        tokio::pin!(cleanup);
 
         loop {
             select! {
-                pdu = self.transport_rx.recv() => {
-                    if let Some(pdu) = pdu {
-                        // find the entity this entity will be sending too.
-                            // If this PDU is to the sender, we send to the destination
-                            // if this PDU is to the receiver, we send to the source
-                            let transport_entity = match &pdu.header.direction {
-                                Direction::ToSender => pdu.header.destination_entity_id,
-                                Direction::ToReceiver => pdu.header.source_entity_id,
-                            };
-
-                            let key = TransactionID(
-                                pdu.header.source_entity_id,
-                                pdu.header.transaction_sequence_number,
-                            );
-                            // hand pdu off to transaction
-                            let channel = match transaction_channels.entry(key) {
-                                Entry::Occupied(entry) => entry.into_mut(),
-                                Entry::Vacant(entry) => {
-                                    if let Some(transport) =
-                                        self.transport_tx_map.get(&transport_entity).cloned()
-                                    {
-                                        // if this key is not in the channel list
-                                        // create a new transaction
-                                        let entity_config = self
-                                            .entity_configs
-                                            .get(&key.0)
-                                            .unwrap_or(&self.default_config)
-                                            .clone();
-                                        let (_id, channel, handle) =
-                                            Self::spawn_receive_transaction(
-                                                &pdu.header,
-                                                transport,
-                                                entity_config,
-                                                self.filestore.clone(),
-                                                self.indication_tx.clone(),
-                                            )
-                                            .expect("Cannot spawn new Transaction.");
-
-                                        self.transaction_handles.push(handle);
-                                        entry.insert(channel)
-                                    } else {
-                                        warn!(
-                                            "No Transport available for EntityID: {}. Skipping Transaction creation.",
-                                            transport_entity
-                                        );
-                                        // skip to the next loop iteration
-                                        continue;
-                                    }
-                                }
-                            };
-
-                            match channel.send(Command::Pdu(pdu.clone())).await {
-                                Ok(()) => {}
-                                Err(_) => {
-                                    // the transaction is completed.
-                                    // spawn a new one
-                                    // this is very unlikely and only results
-                                    // if a sender is re-using a transaction id
-                                    let entity_config = self
-                                        .entity_configs
-                                        .get(&key.0)
-                                        .unwrap_or(&self.default_config)
-                                        .clone();
-                                    if let Some(transport) =
-                                        self.transport_tx_map.get(&transport_entity).cloned()
-                                    {
-                                        let (_id, new_channel, handle) =
-                                            Self::spawn_receive_transaction(
-                                                &pdu.header,
-                                                transport,
-                                                entity_config,
-                                                self.filestore.clone(),
-                                                self.indication_tx.clone(),
-                                            )?;
-
-                                        self.transaction_handles.push(handle);
-                                        new_channel.send(Command::Pdu(pdu.clone())).await?;
-                                        // update the dict to have the new channel
-                                        transaction_channels.insert(key, new_channel);
-                                    } else {
-                                        warn!(
-                                            "No Transport available for EntityID: {}. Skipping Transaction creation.",
-                                            transport_entity
-                                        )
-                                    }
-                                }
-                            };
-                        } else {
-                        // the channel is empty and disconnected
-                            // this should only happen when we are cleaning up
-                            // but may happen when the transport crashes or quits
-                            if !self.terminate.load(Ordering::Relaxed) {
-                                error!("Transport disconnected from daemon.");
-                            }
-                            break;
-                        }
-                },
-                primitive = self.primitive_rx.recv() => {
-                    if let Some(primitive) = primitive {
-                        match primitive {
-                            UserPrimitive::Put(request, put_sender) => {
-                                let sequence_number = sequence_num.get_and_increment();
-
-                                let entity_config = self
-                                    .entity_configs
-                                    .get(&request.destination_entity_id)
-                                    .unwrap_or(&self.default_config)
-                                    .clone();
-
-                                if let Some(transport_tx) = self
-                                    .transport_tx_map
-                                    .get(&request.destination_entity_id)
-                                    .cloned()
-                                {
-                                    let (id, sender, handle) = Self::spawn_send_transaction(
-                                        request,
-                                        sequence_number,
-                                        self.entity_id,
-                                        transport_tx,
-                                        entity_config,
-                                        self.filestore.clone(),
-                                        self.indication_tx.clone(),
-                                    )?;
-                                    self.transaction_handles.push(handle);
-                                    transaction_channels.insert(id, sender);
-
-                                    // ignore the possible error if the user disconnected;
-                                    let _ = put_sender.send(id);
-                                } else {
-                                    warn!(
-                                        "No Transport available for EntityID: {}. Skipping transaction creation.",
-                                        request.destination_entity_id
-                                    )
-                                }
-                            }
-                            UserPrimitive::Cancel(id) => {
-                                if let Some(channel) = transaction_channels.get(&id) {
-                                    channel.send(Command::Cancel).await?;
-                                }
-                            }
-                            UserPrimitive::Suspend(id) => {
-                                if let Some(channel) = transaction_channels.get(&id) {
-                                    channel.send(Command::Suspend).await?;
-                                }
-                            }
-                            UserPrimitive::Resume(id) => {
-                                if let Some(channel) = transaction_channels.get(&id) {
-                                    channel.send(Command::Resume).await?;
-                                }
-                            }
-                            UserPrimitive::Report(id, report_sender) => {
-                                if let Some(channel) = transaction_channels.get(&id) {
-                                    // It's possible for the user to ask for a report after the Transaction is finished
-                                    // but before the channel is cleaned up.
-                                    // for now ignore errors until a better solution is found.
-                                    // maybe possible to trigger a cleanup immediately after a transaction finishes?
-                                    let _ = channel.send(Command::Report(report_sender)).await;
-                                }
-                            }
-                            UserPrimitive::Prompt(id, option) => {
-                                if let Some(channel) = transaction_channels.get(&id) {
-                                    channel.send(Command::Prompt(option)).await?;
-                                }
-                            }
-                        };
-                    } else {
-                        // The channel is disconnected
-                        // this is only an issue if the channel was the user interface
-                        error!("User interface disconnected from daemon.");
+                Some(pdu) = self.transport_rx.recv() => self.process_pdu(pdu).await?,
+                Some(primitive) = self.primitive_rx.recv() => self.process_primitive(primitive).await?,
+                _ = cleanup.tick() => self.cleanup_transactions().await,
+                else => {
+                    // A channel is empty and disconnected
+                    // this should only happen when we are cleaning up
+                    // but may happen if the transport or User crashes or quits
+                    if !self.terminate.load(Ordering::Relaxed) {
+                        error!("Transport or User disconnected unexpectedly from daemon.");
                         self.terminate.store(true, Ordering::Relaxed);
-                        break;
                     }
-                }
-            }
 
-            // join any handles that have completed
-            // maybe should only run every so often?
-            if cleanup.elapsed() >= Duration::from_secs(1) {
-                let mut ind = 0;
-                while ind < self.transaction_handles.len() {
-                    if self.transaction_handles[ind].is_finished() {
-                        let handle = self.transaction_handles.remove(ind);
-                        match handle.await {
-                            Ok(Ok(id)) => {
-                                // remove the channel for this transaction if it is complete
-                                let _ = transaction_channels.remove(&id);
-                            }
-                            Ok(Err(err)) => {
-                                info!("Error occurred during transaction: {}", err)
-                            }
-                            Err(_) => error!("Unable to join handle!"),
-                        };
-                    } else {
-                        ind += 1;
-                    }
+                    break;
                 }
-
-                cleanup = Instant::now();
-            }
+            };
         }
 
         // a final cleanup
@@ -803,7 +795,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             match handle.await {
                 Ok(Ok(id)) => {
                     // remove the channel for this transaction if it is complete
-                    let _ = transaction_channels.remove(&id);
+                    let _ = self.transaction_channels.remove(&id);
                 }
                 Ok(Err(err)) => {
                     info!("Error occurred during transaction: {}", err)

@@ -387,7 +387,7 @@ impl<T: FileStore> SendTransaction<T> {
         offset: Option<u64>,
         length: Option<u16>,
     ) -> TransactionResult<(u64, Vec<u8>)> {
-        // use the maximum size for the receiever if no length is given
+        // use the maximum size for the receiver if no length is given
         let length = length.unwrap_or(self.config.file_size_segment);
         let handle = self.get_handle()?;
         // if no offset given read from current cursor position

@@ -31,7 +31,7 @@ use cfdp_core::{
 };
 
 use itertools::{Either, Itertools};
-use log::{error, info};
+use log::info;
 use tempfile::TempDir;
 
 use rstest::fixture;
@@ -994,6 +994,7 @@ pub(crate) struct LossyTransport {
     counter: usize,
     issue: TransportIssue,
     buffer: Vec<PDU>,
+    bytes: Vec<u8>,
 }
 impl LossyTransport {
     #[allow(dead_code)]
@@ -1009,11 +1010,32 @@ impl LossyTransport {
             counter: 1,
             issue,
             buffer: vec![],
+            bytes: vec![0_u8; u16::MAX as usize],
         })
     }
+}
+impl TryFrom<(UdpSocket, HashMap<VariableID, SocketAddr>, TransportIssue)> for LossyTransport {
+    type Error = IoError;
 
-    fn request(&mut self, destination: VariableID, pdu: PDU) -> Result<(), IoError> {
-        self.entity_map
+    fn try_from(
+        inputs: (UdpSocket, HashMap<VariableID, SocketAddr>, TransportIssue),
+    ) -> Result<Self, Self::Error> {
+        let me = Self {
+            socket: inputs.0,
+            entity_map: inputs.1,
+            counter: 1,
+            issue: inputs.2,
+            buffer: vec![],
+            bytes: vec![0_u8; u16::MAX as usize],
+        };
+        Ok(me)
+    }
+}
+#[async_trait]
+impl PDUTransport for LossyTransport {
+    async fn request(&mut self, destination: VariableID, pdu: PDU) -> Result<(), IoError> {
+        let addr = self
+            .entity_map
             .get(&destination)
             .ok_or_else(|| IoError::from(ErrorKind::AddrNotAvailable))?;
 
@@ -1156,64 +1178,17 @@ impl LossyTransport {
             }
         }
     }
-}
-impl TryFrom<(UdpSocket, HashMap<VariableID, SocketAddr>, TransportIssue)> for LossyTransport {
-    type Error = IoError;
 
-    fn try_from(
-        inputs: (UdpSocket, HashMap<VariableID, SocketAddr>, TransportIssue),
-    ) -> Result<Self, Self::Error> {
-        let me = Self {
-            socket: inputs.0,
-            entity_map: inputs.1,
-            counter: 1,
-            issue: inputs.2,
-            buffer: vec![],
-        };
-        me.socket.set_read_timeout(Some(Duration::from_secs(1)))?;
-        me.socket.set_write_timeout(Some(Duration::from_secs(1)))?;
-        me.socket.set_nonblocking(true)?;
-        Ok(me)
-    }
-}
-impl PDUTransport for LossyTransport {
-    fn pdu_handler(
-        &mut self,
-        signal: Arc<AtomicBool>,
-        sender: Sender<PDU>,
-        mut recv: Receiver<(VariableID, PDU)>,
-    ) -> Result<(), IoError> {
-        // this buffer will be 511 KiB, should be sufficiently small;
-        let mut buffer = vec![0_u8; u16::MAX as usize];
-        while !signal.load(Ordering::Relaxed) {
-            tokio::select! {
-                Ok((_n, _addr)) = self.socket.recv_from(&mut buffer) => {
-                    match PDU::decode(&mut buffer.as_slice()) {
-                        Ok(pdu) => {
-                            match sender.send(pdu).await {
-                                Ok(()) => {}
-                                Err(error) => {
-                                    error!("Channel to daemon severed: {}", error);
-                                    return Err(IoError::from(ErrorKind::ConnectionAborted));
-                                }
-                            };
-                        }
-                        Err(error) => {
-                            error!("Error decoding PDU: {}", error);
-                            // might need to stop depending on the error.
-                            // some are recoverable though
-                        }
-                    }
-                },
-                Some((entity, pdu)) = recv.recv() => {
-                    self.request(entity, pdu).await?;
-                },
-                else => {
-                    log::info!("UdpSocket or Channel disconnected");
-                    break
-                }
+    async fn receive(&mut self) -> Result<PDU, IoError> {
+        let (_n, _addr) = self.socket.recv_from(&mut self.bytes).await?;
+
+        match PDU::decode(&mut self.bytes.as_slice()) {
+            Ok(pdu) => Ok(pdu),
+            Err(err) => {
+                // might need to stop depending on the error.
+                // some are recoverable though
+                Err(IoError::new(ErrorKind::InvalidData, err.to_string()))
             }
         }
-        Ok(())
     }
 }

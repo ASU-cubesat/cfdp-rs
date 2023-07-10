@@ -1087,11 +1087,12 @@ mod test {
     }
 
     #[rstest]
-    #[case(SegmentRequestForm { start_offset: 6, end_offset: 10 })]
-    #[case(SegmentRequestForm { start_offset: 0, end_offset: 0 })]
+    #[case(SegmentRequestForm { start_offset: 6, end_offset: 10 }, "testfile_missing1")]
+    #[case(SegmentRequestForm { start_offset: 0, end_offset: 0 }, "testfile_missing2")]
     #[tokio::test]
     async fn send_missing(
         #[case] nak: SegmentRequestForm,
+        #[case] filename: &str,
         default_config: &TransactionConfig,
         tempdir_fixture: &TempDir,
     ) {
@@ -1101,7 +1102,7 @@ mod test {
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
         ));
 
-        let path = Utf8PathBuf::from("testfile_missing");
+        let path = Utf8PathBuf::from(filename);
         let metadata = test_metadata(10, path.clone());
 
         let (indication_tx, _indication_rx) = channel(10);

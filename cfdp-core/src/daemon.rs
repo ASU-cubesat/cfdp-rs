@@ -303,8 +303,13 @@ pub struct EntityConfig {
     pub nak_procedure: NakProcedure,
 }
 
-type SpawnerTuple = (
+type RecvSpawnerTuple = (
     TransactionID,
+    Sender<Command>,
+    JoinHandle<Result<TransactionID, TransactionError>>,
+);
+
+type SendSpawnerTuple = (
     Sender<Command>,
     JoinHandle<Result<TransactionID, TransactionError>>,
 );
@@ -389,7 +394,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         entity_config: EntityConfig,
         filestore: Arc<T>,
         indication_tx: Sender<Indication>,
-    ) -> Result<SpawnerTuple, Box<dyn std::error::Error>> {
+    ) -> Result<RecvSpawnerTuple, Box<dyn std::error::Error>> {
         let (transaction_tx, mut transaction_rx) = channel(100);
 
         let config = TransactionConfig {
@@ -473,26 +478,23 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         Ok((id, transaction_tx, handle))
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn spawn_send_transaction(
         request: PutRequest,
-        sequence_number: TransactionSeqNum,
-        source_entity_id: EntityID,
+        transaction_id: TransactionID,
         transport_tx: Sender<(EntityID, PDU)>,
         entity_config: EntityConfig,
         filestore: Arc<T>,
         indication_tx: Sender<Indication>,
-    ) -> Result<SpawnerTuple, Box<dyn std::error::Error>> {
+    ) -> Result<SendSpawnerTuple, Box<dyn std::error::Error>> {
         let (transaction_tx, mut transaction_rx) = channel(10);
-        let id = TransactionID(source_entity_id, sequence_number);
 
         let destination_entity_id = request.destination_entity_id;
         let transmission_mode = request.transmission_mode;
         let mut config = TransactionConfig {
-            source_entity_id,
+            source_entity_id: transaction_id.0,
             destination_entity_id,
             transmission_mode,
-            sequence_number,
+            sequence_number: transaction_id.1,
             file_size_flag: FileSizeFlag::Small,
             fault_handler_override: entity_config.fault_handler_override.clone(),
             file_size_segment: entity_config.file_size_segment,
@@ -568,9 +570,9 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                 };
             }
             transaction.send_report(None)?;
-            Ok(id)
+            Ok(transaction_id)
         });
-        Ok((id, transaction_tx, handle))
+        Ok((transaction_tx, handle))
     }
 
     async fn process_primitive(
@@ -592,10 +594,10 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                     .get(&request.destination_entity_id)
                     .cloned()
                 {
-                    let (id, sender, handle) = Self::spawn_send_transaction(
+                    let id = TransactionID(self.entity_id, sequence_number);
+                    let (sender, handle) = Self::spawn_send_transaction(
                         request,
-                        sequence_number,
-                        self.entity_id,
+                        id,
                         transport_tx,
                         entity_config,
                         self.filestore.clone(),

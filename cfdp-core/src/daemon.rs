@@ -457,7 +457,10 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                         transaction.handle_timeout()?;
                     }
                     else => {
-                        log::error!("Channel to transport severed for transaction {}", transaction.id());
+                        if transport_tx.is_closed(){
+                            log::error!("Channel to transport unexpectedly severed for transaction {}.", transaction.id());
+                        }
+
                         break;
                     }
                 };
@@ -557,7 +560,9 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                         transaction.handle_timeout()?;
                     },
                     else => {
-                        log::error!("Connection to transport or daemon severed for transaction {}", transaction.id());
+                        if transport_tx.is_closed(){
+                            log::error!("Connection to transport unexpectedly severed for transaction {}.", transaction.id());
+                        }
                         break;
                     }
                 };
@@ -722,7 +727,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
 
     async fn cleanup_transactions(&mut self) {
         // join any handles that have completed
-        // maybe should only run every so often?
         let mut ind = 0;
         while ind < self.transaction_handles.len() {
             if self.transaction_handles[ind].is_finished() {
@@ -755,20 +759,27 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
 
         loop {
             select! {
-                Some(pdu) = self.transport_rx.recv() => self.forward_pdu(pdu).await?,
-                Some(primitive) = self.primitive_rx.recv() => self.process_primitive(primitive).await?,
-                _ = cleanup.tick() => self.cleanup_transactions().await,
-                else => {
-                    // A channel is empty and disconnected
-                    // this should only happen when we are cleaning up
-                    // but may happen if the transport or User crashes or quits
-                    if !self.terminate.load(Ordering::Relaxed) {
-                        error!("Transport or User disconnected unexpectedly from daemon.");
-                        self.terminate.store(true, Ordering::Relaxed);
+                pdu = self.transport_rx.recv() => match pdu {
+                    Some(pdu) =>self.forward_pdu(pdu).await?,
+                    None => {
+                        if !self.terminate.load(Ordering::Relaxed) {
+                            error!("Transport unexpectedly disconnected from daemon.");
+                            self.terminate.store(true, Ordering::Relaxed);
+                        }
+                        break;
                     }
-
-                    break;
-                }
+                },
+                primitive = self.primitive_rx.recv() => match primitive {
+                    Some(primitive) => self.process_primitive(primitive).await?,
+                    None => {
+                        info!("User triggered daemon shutdown.");
+                        if !self.terminate.load(Ordering::Relaxed) {
+                            self.terminate.store(true, Ordering::Relaxed);
+                        }
+                        break;
+                    }
+                },
+                _ = cleanup.tick() => self.cleanup_transactions().await,
             };
         }
 

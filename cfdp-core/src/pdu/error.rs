@@ -75,7 +75,7 @@ pub enum PDUError {
     #[error("Invalid Segment Metadata Flag {0:}.")]
     InvalidSegmentMetadataFlag(u8),
 
-    #[error("CRC Failure on PDU. Expected 0x{0:X} Receieved 0x{1:X}")]
+    #[error("CRC Failure on PDU. Expected 0x{0:X} Received 0x{1:X}")]
     CRCFailure(u16, u16),
 
     #[error("Error Reading PDU Buffer. {0:}")]

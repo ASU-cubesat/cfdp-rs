@@ -315,7 +315,7 @@ type SendSpawnerTuple = (
 );
 
 /// The CFDP Daemon is responsible for connecting [PDUTransport](crate::transport::PDUTransport) implementation
-/// with each individual [Transaction](crate::transaction::Transaction). When a PDUTransport implementation
+/// with each individual [Send](crate::transaction::SendTransaction) or [Recv](crate::transaction::RecvTransaction). When a PDUTransport implementation
 /// sends a PDU through a channel, the Daemon distributes the PDU to the necessary Transaction.
 /// PDUs are sent from each Transaction directly to their respective PDUTransport implementations.
 pub struct Daemon<T: FileStore + Send + 'static> {

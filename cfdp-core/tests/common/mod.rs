@@ -5,10 +5,7 @@ use std::{
     marker::PhantomData,
     net::SocketAddr,
     path::Path,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, RwLock,
-    },
+    sync::{Arc, RwLock},
 };
 
 use async_trait::async_trait;
@@ -31,7 +28,7 @@ use cfdp_core::{
 };
 
 use itertools::{Either, Itertools};
-use log::{error, info};
+use log::info;
 use tempfile::TempDir;
 
 use rstest::fixture;
@@ -988,6 +985,7 @@ pub(crate) struct LossyTransport {
     counter: usize,
     issue: TransportIssue,
     buffer: Vec<PDU>,
+    bytes: Vec<u8>,
 }
 impl LossyTransport {
     #[allow(dead_code)]
@@ -1003,6 +1001,7 @@ impl LossyTransport {
             counter: 1,
             issue,
             buffer: vec![],
+            bytes: vec![0_u8; u16::MAX as usize],
         })
     }
 }
@@ -1018,11 +1017,11 @@ impl TryFrom<(UdpSocket, HashMap<VariableID, SocketAddr>, TransportIssue)> for L
             counter: 1,
             issue: inputs.2,
             buffer: vec![],
+            bytes: vec![0_u8; u16::MAX as usize],
         };
         Ok(me)
     }
 }
-
 #[async_trait]
 impl PDUTransport for LossyTransport {
     async fn request(&mut self, destination: VariableID, pdu: PDU) -> Result<(), IoError> {
@@ -1172,43 +1171,16 @@ impl PDUTransport for LossyTransport {
         }
     }
 
-    async fn pdu_handler(
-        &mut self,
-        signal: Arc<AtomicBool>,
-        sender: Sender<PDU>,
-        mut recv: Receiver<(VariableID, PDU)>,
-    ) -> Result<(), IoError> {
-        // this buffer will be 511 KiB, should be sufficiently small;
-        let mut buffer = vec![0_u8; u16::MAX as usize];
-        while !signal.load(Ordering::Relaxed) {
-            tokio::select! {
-                Ok((_n, _addr)) = self.socket.recv_from(&mut buffer) => {
-                    match PDU::decode(&mut buffer.as_slice()) {
-                        Ok(pdu) => {
-                            match sender.send(pdu).await {
-                                Ok(()) => {}
-                                Err(error) => {
-                                    error!("Channel to daemon severed: {}", error);
-                                    return Err(IoError::from(ErrorKind::ConnectionAborted));
-                                }
-                            };
-                        }
-                        Err(error) => {
-                            error!("Error decoding PDU: {}", error);
-                            // might need to stop depending on the error.
-                            // some are recoverable though
-                        }
-                    }
-                },
-                Some((entity, pdu)) = recv.recv() => {
-                    self.request(entity, pdu).await?;
-                },
-                else => {
-                    log::info!("UdpSocket or Channel disconnected");
-                    break
-                }
+    async fn receive(&mut self) -> Result<PDU, IoError> {
+        let (_n, _addr) = self.socket.recv_from(&mut self.bytes).await?;
+
+        match PDU::decode(&mut self.bytes.as_slice()) {
+            Ok(pdu) => Ok(pdu),
+            Err(err) => {
+                // might need to stop depending on the error.
+                // some are recoverable though
+                Err(IoError::new(ErrorKind::InvalidData, err.to_string()))
             }
         }
-        Ok(())
     }
 }

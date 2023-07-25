@@ -70,7 +70,7 @@ pub enum FileStoreError {
 }
 
 /// Defines any necessary actions a CFDP File Store implementation
-/// must perform. Assumes any FileStore has a root path it operates retalive to.
+/// must perform. Assumes any FileStore has a root path it operates relative to.
 pub trait FileStore {
     /// Returns the path to the target with the root path prepended.
     /// Used when manipulating the filesystem relative to the root path.

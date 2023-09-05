@@ -1,5 +1,6 @@
 use std::{
     collections::{hash_map::Entry, HashMap},
+    fmt::Display,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -7,6 +8,7 @@ use std::{
     time::Duration,
 };
 
+use error::DaemonResult;
 use log::{error, info, warn};
 use tokio::{
     select,
@@ -30,17 +32,20 @@ use cfdp_core::{
 
 pub use cfdp_core::*;
 
+pub mod error;
 pub(crate) mod segments;
 pub(crate) mod timer;
 pub mod transaction;
 pub mod transport;
 
+use self::error::DaemonError;
+
 use self::transport::PDUTransport;
 use transaction::{recv::RecvTransaction, send::SendTransaction};
 
-/// Lightweight commands
+/// Lightweight commands the Daemon send to each Transaction
 #[derive(Debug)]
-enum Command {
+pub enum Command {
     Pdu(PDU),
     Cancel,
     Suspend,
@@ -51,9 +56,24 @@ enum Command {
     #[allow(unused)]
     Abandon,
 }
+impl Display for Command {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", &self)
+    }
+}
 
-fn construct_metadata(req: PutRequest, config: EntityConfig, file_size: u64) -> Metadata {
-    Metadata {
+fn construct_metadata<T: FileStore + Send + 'static>(
+    filestore: &Arc<T>,
+    req: PutRequest,
+    config: EntityConfig,
+) -> DaemonResult<Metadata> {
+    let file_size = match req.source_filename.file_name().is_none() {
+        true => 0_u64,
+        false => filestore
+            .get_size(&req.source_filename)
+            .map_err(DaemonError::SpawnSend)?,
+    };
+    Ok(Metadata {
         source_filename: req.source_filename,
         destination_filename: req.destination_filename,
         file_size,
@@ -61,7 +81,7 @@ fn construct_metadata(req: PutRequest, config: EntityConfig, file_size: u64) -> 
         message_to_user: req.message_to_user,
         closure_requested: config.closure_requested,
         checksum_type: config.checksum_type,
-    }
+    })
 }
 
 type RecvSpawnerTuple = (
@@ -156,7 +176,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         entity_config: EntityConfig,
         filestore: Arc<T>,
         indication_tx: Sender<Indication>,
-    ) -> Result<RecvSpawnerTuple, Box<dyn std::error::Error>> {
+    ) -> RecvSpawnerTuple {
         let (transaction_tx, mut transaction_rx) = channel(100);
 
         let config = TransactionConfig {
@@ -237,7 +257,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             Ok(transaction.id())
         });
 
-        Ok((id, transaction_tx, handle))
+        (id, transaction_tx, handle)
     }
 
     fn spawn_send_transaction(
@@ -247,7 +267,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         entity_config: EntityConfig,
         filestore: Arc<T>,
         indication_tx: Sender<Indication>,
-    ) -> Result<SendSpawnerTuple, Box<dyn std::error::Error>> {
+    ) -> DaemonResult<SendSpawnerTuple> {
         let (transaction_tx, mut transaction_rx) = channel(10);
 
         let destination_entity_id = request.destination_entity_id;
@@ -267,15 +287,9 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             ack_timeout: entity_config.ack_timeout,
             nak_timeout: entity_config.nak_timeout,
         };
-        let mut metadata = construct_metadata(request, entity_config, 0_u64);
+        let metadata = construct_metadata(&filestore, request, entity_config)?;
 
         let handle = tokio::task::spawn(async move {
-            let file_size = match &metadata.source_filename.file_name().is_none() {
-                true => 0_u64,
-                false => filestore.get_size(&metadata.source_filename)?,
-            };
-
-            metadata.file_size = file_size;
             config.file_size_flag = match metadata.file_size <= u32::MAX.into() {
                 true => FileSizeFlag::Small,
                 false => FileSizeFlag::Large,
@@ -337,10 +351,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         Ok((transaction_tx, handle))
     }
 
-    async fn process_primitive(
-        &mut self,
-        primitive: UserPrimitive,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn process_primitive(&mut self, primitive: UserPrimitive) -> DaemonResult<()> {
         match primitive {
             UserPrimitive::Put(request, put_sender) => {
                 let sequence_number = self.sequence_num.get_and_increment();
@@ -379,38 +390,49 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             }
             UserPrimitive::Cancel(id) => {
                 if let Some(channel) = self.transaction_channels.get(&id) {
-                    channel.send(Command::Cancel).await?;
+                    channel
+                        .send(Command::Cancel)
+                        .await
+                        .map_err(|err| DaemonError::from((id, err)))?;
                 }
             }
             UserPrimitive::Suspend(id) => {
                 if let Some(channel) = self.transaction_channels.get(&id) {
-                    channel.send(Command::Suspend).await?;
+                    channel
+                        .send(Command::Suspend)
+                        .await
+                        .map_err(|err| DaemonError::from((id, err)))?;
                 }
             }
             UserPrimitive::Resume(id) => {
                 if let Some(channel) = self.transaction_channels.get(&id) {
-                    channel.send(Command::Resume).await?;
+                    channel
+                        .send(Command::Resume)
+                        .await
+                        .map_err(|err| DaemonError::from((id, err)))?;
                 }
             }
             UserPrimitive::Report(id, report_sender) => {
                 if let Some(channel) = self.transaction_channels.get(&id) {
-                    // It's possible for the user to ask for a report after the Transaction is finished
-                    // but before the channel is cleaned up.
-                    // for now ignore errors until a better solution is found.
-                    // maybe possible to trigger a cleanup immediately after a transaction finishes?
-                    let _ = channel.send(Command::Report(report_sender)).await;
+                    channel
+                        .send(Command::Report(report_sender))
+                        .await
+                        .map_err(|err| DaemonError::from((id, err)))?;
                 }
             }
             UserPrimitive::Prompt(id, option) => {
                 if let Some(channel) = self.transaction_channels.get(&id) {
-                    channel.send(Command::Prompt(option)).await?;
+                    channel
+                        .send(Command::Prompt(option))
+                        .await
+                        .map_err(|err| DaemonError::from((id, err)))?;
                 }
             }
         };
         Ok(())
     }
 
-    async fn forward_pdu(&mut self, pdu: PDU) -> Result<(), Box<dyn std::error::Error>> {
+    async fn forward_pdu(&mut self, pdu: PDU) -> DaemonResult<()> {
         // find the entity this entity will be sending too.
         // If this PDU is to the sender, we send to the destination
         // if this PDU is to the receiver, we send to the source
@@ -441,8 +463,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                         entity_config,
                         self.filestore.clone(),
                         self.indication_tx.clone(),
-                    )
-                    .expect("Cannot spawn new Transaction.");
+                    );
 
                     self.transaction_handles.push(handle);
                     entry.insert(channel)
@@ -468,15 +489,18 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                 .unwrap_or(&self.default_config)
                 .clone();
             if let Some(transport) = self.transport_tx_map.get(&transport_entity).cloned() {
-                let (_id, new_channel, handle) = Self::spawn_receive_transaction(
+                let (id, new_channel, handle) = Self::spawn_receive_transaction(
                     &pdu.header,
                     transport,
                     entity_config,
                     self.filestore.clone(),
                     self.indication_tx.clone(),
-                )?;
+                );
                 self.transaction_handles.push(handle);
-                new_channel.send(Command::Pdu(pdu.clone())).await?;
+                new_channel
+                    .send(Command::Pdu(pdu.clone()))
+                    .await
+                    .map_err(|err| DaemonError::from((id, err)))?;
                 // update the dict to have the new channel
                 self.transaction_channels.insert(key, new_channel);
             } else {
@@ -512,7 +536,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
     }
 
     /// This function will consist of the main logic loop in any daemon process.
-    pub async fn manage_transactions(&mut self) -> Result<(), Box<dyn std::error::Error + '_>> {
+    pub async fn manage_transactions(&mut self) -> DaemonResult<()> {
         let cleanup = {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
             // Don't start counting another tick until the currrent one has been processed.
@@ -524,7 +548,15 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         loop {
             select! {
                 pdu = self.transport_rx.recv() => match pdu {
-                    Some(pdu) =>self.forward_pdu(pdu).await?,
+                    Some(pdu) => match self.forward_pdu(pdu).await{
+                        Ok(_) => {},
+                        Err(error @ DaemonError::TransactionCommuncation(_, _)) => {
+                            // This occcurs most likely if a user is attempting to
+                            // interact with a transaction that is already finished.
+                            warn!("{error}")
+                        }
+                        Err(err) => return Err(err),
+                    },
                     None => {
                         if !self.terminate.load(Ordering::Relaxed) {
                             error!("Transport unexpectedly disconnected from daemon.");
@@ -534,7 +566,15 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                     }
                 },
                 primitive = self.primitive_rx.recv() => match primitive {
-                    Some(primitive) => self.process_primitive(primitive).await?,
+                    Some(primitive) => match self.process_primitive(primitive).await{
+                        Ok(_) => {},
+                        Err(error @ DaemonError::TransactionCommuncation(_, _)) => {
+                            // This occcurs most likely if a user is attempting to
+                            // interact with a transaction that is already finished.
+                            warn!("{error}")
+                        }
+                        Err(err) => return Err(err),
+                    },
                     None => {
                         info!("User triggered daemon shutdown.");
                         if !self.terminate.load(Ordering::Relaxed) {

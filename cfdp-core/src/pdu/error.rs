@@ -30,6 +30,9 @@ pub enum PDUError {
     #[error("Invalid Delivery Code: {0:}.")]
     InvalidDeliveryCode(u8),
 
+    #[error("Invalid TransactionState: {0:}.")]
+    InvalidState(u8),
+
     #[error("Invalid File Status: {0:}.")]
     InvalidFileStatus(u8),
 

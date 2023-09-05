@@ -3,7 +3,6 @@ pub mod filestore;
 pub mod pdu;
 
 pub mod transaction;
-pub mod transport;
 // Re-exported for convenience
 pub use tokio::sync::{
     mpsc::{channel, Receiver, Sender},

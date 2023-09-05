@@ -3,6 +3,9 @@ use cfdp_core::transaction::TransactionError;
 pub(crate) mod recv;
 pub(crate) mod send;
 
+pub use recv::RecvTransaction;
+pub use send::SendTransaction;
+
 pub type TransactionResult<T> = Result<T, TransactionError>;
 
 #[cfg(test)]

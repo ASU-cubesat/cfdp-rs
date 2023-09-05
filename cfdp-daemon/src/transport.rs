@@ -20,7 +20,7 @@ use tokio::{
 use crate::pdu::{PDUEncode, VariableID, PDU};
 
 /// Transports are designed to run in a thread in the background
-/// inside a [Daemon](crate::daemon::Daemon) process
+/// inside a [Daemon](crate::Daemon) process
 #[async_trait]
 pub trait PDUTransport {
     /// Send input PDU to the remote
@@ -30,9 +30,9 @@ pub trait PDUTransport {
     /// Provides logic for listening for incoming PDUs and sending any outbound PDUs
 
     /// A transport implementation will send any received messages through the
-    /// [Sender] channel to the [Daemon](crate::daemon::Daemon).
+    /// [Sender] channel to the [Daemon](crate::Daemon).
     /// The [Receiver] channel is used to recv PDUs from the Daemon and send them to their respective remote Entity.
-    /// The [Daemon](crate::daemon::Daemon) is responsible for receiving messages and distribute them to each
+    /// The [Daemon](crate::Daemon) is responsible for receiving messages and distribute them to each
     /// transaction [Send](crate::transaction::SendTransaction) or [Recv](crate::transaction::RecvTransaction)
     /// The signal is used to indicate a shutdown operation was requested.
     async fn pdu_handler(

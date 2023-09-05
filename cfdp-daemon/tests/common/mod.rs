@@ -28,7 +28,6 @@ use cfdp_core::{
         TransmissionMode, UserOperation, UserRequest, UserResponse, VariableID, PDU,
     },
     transaction::TransactionID,
-    transport::{PDUTransport, UdpTransport},
 };
 
 use itertools::{Either, Itertools};
@@ -46,7 +45,10 @@ use tokio::{
     task::JoinHandle,
 };
 
-use cfdp_daemon::Daemon;
+use cfdp_daemon::{
+    transport::{PDUTransport, UdpTransport},
+    Daemon,
+};
 
 #[derive(Debug)]
 pub(crate) struct JoD<'a, T> {

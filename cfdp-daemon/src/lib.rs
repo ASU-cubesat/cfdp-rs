@@ -26,15 +26,17 @@ use cfdp_core::{
         TransactionSeqNum, VariableID, PDU,
     },
     transaction::{Metadata, TransactionConfig, TransactionError, TransactionID, TransactionState},
-    transport::PDUTransport,
 };
 
-mod transaction;
-
-use transaction::{recv::RecvTransaction, send::SendTransaction};
+pub use cfdp_core::*;
 
 pub(crate) mod segments;
 pub(crate) mod timer;
+pub mod transaction;
+pub mod transport;
+
+use self::transport::PDUTransport;
+use transaction::{recv::RecvTransaction, send::SendTransaction};
 
 /// Lightweight commands
 #[derive(Debug)]
@@ -74,7 +76,8 @@ type SendSpawnerTuple = (
 );
 
 /// The CFDP Daemon is responsible for connecting [PDUTransport](crate::transport::PDUTransport) implementation
-/// with each individual [Transaction](crate::transaction::Transaction). When a PDUTransport implementation
+/// with each individual [SendTransaction](crate::transaction::SendTransaction) and [RecvTransaction](crate::transaction::RecvTransaction).
+/// When a PDUTransport implementation
 /// sends a PDU through a channel, the Daemon distributes the PDU to the necessary Transaction.
 /// PDUs are sent from each Transaction directly to their respective PDUTransport implementations.
 pub struct Daemon<T: FileStore + Send + 'static> {

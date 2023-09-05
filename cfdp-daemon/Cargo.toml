@@ -6,15 +6,15 @@
  # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
- cfdp-core = { path = "../cfdp-core" }
- camino    = { version = "~1.1" }
- log       = '~0.4'
- tokio     = { version = "1.28.2", features = ["rt-multi-thread", "macros"] }
+ async-trait = "0.1"
+ cfdp-core   = { path = "../cfdp-core" }
+ camino      = { version = "~1.1" }
+ log         = '~0.4'
+ tokio       = { version = "1.28.2", features = ["rt-multi-thread", "macros"] }
 
 
 [dev-dependencies]
- async-trait = "0.1"
- itertools   = "~0.10"
- rstest      = "0.15.0"
- tempfile    = "~3.3"
- tokio       = { version = "1.28.2", features = ["parking_lot", "macros"] }
+ itertools = "~0.10"
+ rstest    = "0.15.0"
+ tempfile  = "~3.3"
+ tokio     = { version = "1.28.2", features = ["parking_lot", "macros"] }

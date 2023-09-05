@@ -7,11 +7,12 @@ use tokio::sync::oneshot;
 use crate::{
     filestore::ChecksumType,
     pdu::{
-        error::PDUError, CRCFlag, Condition, DeliveryCode, EntityID, FaultHandlerAction,
-        FileStatusCode, FileStoreRequest, FileStoreResponse, MessageToUser, NakOrKeepAlive,
-        PDUEncode, TransactionSeqNum, TransactionStatus, TransmissionMode,
+        error::{PDUError, PDUResult},
+        CRCFlag, Condition, DeliveryCode, EntityID, FaultHandlerAction, FileStatusCode,
+        FileStoreRequest, FileStoreResponse, MessageToUser, NakOrKeepAlive, PDUEncode,
+        TransactionSeqNum, TransactionStatus, TransmissionMode,
     },
-    transaction::{TransactionError, TransactionID, TransactionState},
+    transaction::{TransactionID, TransactionState},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,7 +69,7 @@ impl Report {
         buff
     }
 
-    pub fn decode<T: Read>(buffer: &mut T) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn decode<T: Read>(buffer: &mut T) -> PDUResult<Self> {
         let id = {
             let entity_id = EntityID::decode(buffer)?;
             let sequence_num = TransactionSeqNum::decode(buffer)?;
@@ -81,7 +82,7 @@ impl Report {
         let state = {
             buffer.read_exact(&mut u8_buff)?;
             let possible = u8_buff[0];
-            TransactionState::from_u8(possible).ok_or(TransactionError::InvalidStatus(possible))?
+            TransactionState::from_u8(possible).ok_or(PDUError::InvalidState(possible))?
         };
 
         let status = {

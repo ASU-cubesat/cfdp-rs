@@ -45,7 +45,7 @@ pub enum UserPrimitive {
     /// Report progress of the given transaction.
     Report(TransactionID, oneshot::Sender<Report>),
     /// Send the designated PromptPDU from the given transaction.
-    /// This primitive is only valid for [Send](crate::transaction::SendTransaction) transactions
+    /// This primitive is only valid for Send transactions
     Prompt(TransactionID, NakOrKeepAlive),
 }
 
@@ -164,7 +164,7 @@ pub enum Indication {
     /// A running transaction has reached the Finished state.
     /// Receipt of this indications starts and post transaction actions.
     Finished(FinishedIndication),
-    /// Metadata has been received for a [RecvTransaction]
+    /// Metadata has been received for a Receive Transaction
     MetadataRecv(MetadataRecvIndication),
     /// A new file segment has been received
     FileSegmentRecv(FileSegmentIndication),

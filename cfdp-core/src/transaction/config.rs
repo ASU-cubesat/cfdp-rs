@@ -79,12 +79,12 @@ pub struct TransactionConfig {
     pub crc_flag: CRCFlag,
     /// Flag indicating whether file metadata is included with FileData
     pub segment_metadata_flag: SegmentedData,
-    /// Maximum count of timeouts on a [Timer] before a fault is generated.
+    /// Maximum count of timeouts on a timer before a fault is generated.
     pub max_count: u32,
-    /// Maximum amount timeof without activity before the inactivity [Timer] increments its count.
+    /// Maximum amount timeof without activity before the inactivity timer increments its count.
     pub inactivity_timeout: i64,
-    /// Maximum amount timeof without activity before the NAK [Timer] increments its count.
+    /// Maximum amount timeof without activity before the NAK timer increments its count.
     pub nak_timeout: i64,
-    /// Maximum amount timeof without activity before the ACK [Timer] increments its count.
+    /// Maximum amount timeof without activity before the ACK timer increments its count.
     pub ack_timeout: i64,
 }

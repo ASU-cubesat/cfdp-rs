@@ -12,12 +12,7 @@ use tokio::sync::{
     oneshot,
 };
 
-use super::{
-    config::{Metadata, TransactionConfig, TransactionState},
-    error::{TransactionError, TransactionResult},
-    TransactionID,
-};
-use crate::{
+use cfdp_core::{
     daemon::{FinishedIndication, Indication, Report, ResumeIndication, SuspendIndication},
     filestore::{FileChecksum, FileStore, FileStoreError},
     pdu::{
@@ -27,8 +22,10 @@ use crate::{
         SegmentRequestForm, SegmentationControl, SegmentedData, TransactionStatus,
         TransmissionMode, UnsegmentedFileData, VariableID, PDU, U3,
     },
-    timer::Timer,
+    transaction::{Metadata, TransactionConfig, TransactionError, TransactionID, TransactionState},
 };
+
+use crate::{timer::Timer, transaction::TransactionResult};
 
 #[derive(PartialEq, Debug)]
 enum SendState {
@@ -935,8 +932,8 @@ impl<T: FileStore> SendTransaction<T> {
 
 #[cfg(test)]
 mod test {
-    use crate::{
-        assert_err,
+    use crate::assert_err;
+    use cfdp_core::{
         filestore::{ChecksumType, NativeFileStore},
         pdu::{
             CRCFlag, FileSizeFlag, FileStoreResponse, FileStoreStatus, Finished, KeepAlivePDU,
@@ -947,8 +944,8 @@ mod test {
 
     use std::io::Write;
 
-    use super::super::config::test::default_config;
     use super::*;
+    use crate::transaction::test::default_config;
 
     use camino::{Utf8Path, Utf8PathBuf};
     use rstest::{fixture, rstest};

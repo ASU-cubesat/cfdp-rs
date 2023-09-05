@@ -21,10 +21,10 @@ pub enum PDUError {
     #[error("Invalid ChecksumType: {0:}.")]
     InvalidChecksumType(u8),
 
-    #[error("Invalid Directive value: {0:}.")]
+    #[error("Invalid Direction value: {0:}.")]
     InvalidDirection(u8),
 
-    #[error("Invalid Direction value: {0:}.")]
+    #[error("Invalid Directive value: {0:}.")]
     InvalidDirective(u8),
 
     #[error("Invalid Delivery Code: {0:}.")]

@@ -39,7 +39,7 @@ pub enum TransactionState {
     Terminated,
 }
 
-#[cfg_attr(test, derive(Debug, Clone, PartialEq))]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Metadata {
     /// Bytes of the source filename, can be null if length is 0.
     pub source_filename: Utf8PathBuf,
@@ -57,7 +57,7 @@ pub struct Metadata {
     pub checksum_type: ChecksumType,
 }
 
-#[cfg_attr(test, derive(Clone))]
+#[derive(Clone)]
 pub struct TransactionConfig {
     /// Identification number of the source (this) entity. See [EntityID]
     pub source_entity_id: EntityID,
@@ -87,33 +87,4 @@ pub struct TransactionConfig {
     pub nak_timeout: i64,
     /// Maximum amount timeof without activity before the ACK [Timer] increments its count.
     pub ack_timeout: i64,
-}
-
-#[cfg(test)]
-pub(crate) mod test {
-    use crate::pdu::VariableID;
-
-    use super::*;
-
-    use rstest::fixture;
-
-    #[fixture]
-    #[once]
-    pub(crate) fn default_config() -> TransactionConfig {
-        TransactionConfig {
-            source_entity_id: VariableID::from(12_u16),
-            destination_entity_id: VariableID::from(15_u16),
-            transmission_mode: TransmissionMode::Acknowledged,
-            sequence_number: VariableID::from(3_u16),
-            file_size_flag: FileSizeFlag::Small,
-            fault_handler_override: HashMap::new(),
-            file_size_segment: 16630_u16,
-            crc_flag: CRCFlag::NotPresent,
-            segment_metadata_flag: SegmentedData::NotPresent,
-            max_count: 5_u32,
-            inactivity_timeout: 300_i64,
-            ack_timeout: 300_i64,
-            nak_timeout: 300_i64,
-        }
-    }
 }

@@ -11,7 +11,6 @@ use crate::{
 
 use super::config::TransactionID;
 
-pub type TransactionResult<T> = Result<T, TransactionError>;
 #[derive(Error, Debug)]
 pub enum TransactionError {
     #[error("FileStore error during Transaction: {0}")]

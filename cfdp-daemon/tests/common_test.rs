@@ -1,3 +1,6 @@
+// #![allow(clippy::items_after_test_module)]
+// I'm pretty sure this is a false positive.
+
 mod common;
 use common::*;
 
@@ -13,78 +16,6 @@ use cfdp_core::{
 };
 
 use rstest::rstest;
-
-#[rstest]
-fn proxy_req(#[values(true, false)] use_mode: bool) {
-    let origin_id = TransactionID(EntityID::from(55_u16), TransactionSeqNum::from(12_u16));
-    let mut messages = vec![
-        ProxyOperation::ProxyFileStoreRequest(FileStoreRequest {
-            action_code: FileStoreAction::CreateDirectory,
-            first_filename: "/tmp".into(),
-            second_filename: "".into(),
-        }),
-        ProxyOperation::ProxyPutRequest(ProxyPutRequest {
-            destination_entity_id: EntityID::from(3_u16),
-            source_filename: "test_file".into(),
-            destination_filename: "out_file".into(),
-        }),
-        ProxyOperation::ProxyFileStoreRequest(FileStoreRequest {
-            action_code: FileStoreAction::AppendFile,
-            first_filename: "first_file".into(),
-            second_filename: "second_file".into(),
-        }),
-        ProxyOperation::ProxyMessageToUser(MessageToUser {
-            message_text: "help".as_bytes().to_vec(),
-        }),
-    ];
-
-    if use_mode {
-        messages.push(ProxyOperation::ProxyTransmissionMode(
-            TransmissionMode::Acknowledged,
-        ));
-    }
-
-    let recovered = get_proxy_request(&origin_id, messages.as_slice());
-
-    let expected = PutRequest {
-        source_filename: "test_file".into(),
-        destination_filename: "out_file".into(),
-        destination_entity_id: EntityID::from(3_u16),
-        transmission_mode: if use_mode {
-            TransmissionMode::Acknowledged
-        } else {
-            TransmissionMode::Unacknowledged
-        },
-        filestore_requests: vec![
-            FileStoreRequest {
-                action_code: FileStoreAction::CreateDirectory,
-                first_filename: "/tmp".into(),
-                second_filename: "".into(),
-            },
-            FileStoreRequest {
-                action_code: FileStoreAction::AppendFile,
-                first_filename: "first_file".into(),
-                second_filename: "second_file".into(),
-            },
-        ],
-        message_to_user: vec![
-            MessageToUser {
-                message_text: "help".as_bytes().to_vec(),
-            },
-            MessageToUser {
-                message_text: UserOperation::OriginatingTransactionIDMessage(
-                    OriginatingTransactionIDMessage {
-                        source_entity_id: origin_id.0,
-                        transaction_sequence_number: origin_id.1,
-                    },
-                )
-                .encode(),
-            },
-        ],
-    };
-    assert_eq!(1, recovered.len());
-    assert_eq!(expected, recovered[0])
-}
 
 #[test]
 fn categorize_user_message() {
@@ -178,7 +109,7 @@ fn categorize_user_message() {
                 .iter()
                 .map(|req| MessageToUser::from(UserOperation::Request(req.clone()))),
         )
-        .chain(other_message.clone().into_iter())
+        .chain(other_message.clone())
         .collect();
     user_messages.extend(vec![
         MessageToUser::from(UserOperation::ProxyOperation(
@@ -199,4 +130,76 @@ fn categorize_user_message() {
     assert_eq!(responses, resp);
     assert_eq!(cancel_id, cancel.unwrap());
     assert_eq!(other_message, message)
+}
+
+#[rstest]
+fn proxy_req(#[values(true, false)] use_mode: bool) {
+    let origin_id = TransactionID(EntityID::from(55_u16), TransactionSeqNum::from(12_u16));
+    let mut messages = vec![
+        ProxyOperation::ProxyFileStoreRequest(FileStoreRequest {
+            action_code: FileStoreAction::CreateDirectory,
+            first_filename: "/tmp".into(),
+            second_filename: "".into(),
+        }),
+        ProxyOperation::ProxyPutRequest(ProxyPutRequest {
+            destination_entity_id: EntityID::from(3_u16),
+            source_filename: "test_file".into(),
+            destination_filename: "out_file".into(),
+        }),
+        ProxyOperation::ProxyFileStoreRequest(FileStoreRequest {
+            action_code: FileStoreAction::AppendFile,
+            first_filename: "first_file".into(),
+            second_filename: "second_file".into(),
+        }),
+        ProxyOperation::ProxyMessageToUser(MessageToUser {
+            message_text: "help".as_bytes().to_vec(),
+        }),
+    ];
+
+    if use_mode {
+        messages.push(ProxyOperation::ProxyTransmissionMode(
+            TransmissionMode::Acknowledged,
+        ));
+    }
+
+    let recovered = get_proxy_request(&origin_id, messages.as_slice());
+
+    let expected = PutRequest {
+        source_filename: "test_file".into(),
+        destination_filename: "out_file".into(),
+        destination_entity_id: EntityID::from(3_u16),
+        transmission_mode: if use_mode {
+            TransmissionMode::Acknowledged
+        } else {
+            TransmissionMode::Unacknowledged
+        },
+        filestore_requests: vec![
+            FileStoreRequest {
+                action_code: FileStoreAction::CreateDirectory,
+                first_filename: "/tmp".into(),
+                second_filename: "".into(),
+            },
+            FileStoreRequest {
+                action_code: FileStoreAction::AppendFile,
+                first_filename: "first_file".into(),
+                second_filename: "second_file".into(),
+            },
+        ],
+        message_to_user: vec![
+            MessageToUser {
+                message_text: "help".as_bytes().to_vec(),
+            },
+            MessageToUser {
+                message_text: UserOperation::OriginatingTransactionIDMessage(
+                    OriginatingTransactionIDMessage {
+                        source_entity_id: origin_id.0,
+                        transaction_sequence_number: origin_id.1,
+                    },
+                )
+                .encode(),
+            },
+        ],
+    };
+    assert_eq!(1, recovered.len());
+    assert_eq!(expected, recovered[0])
 }

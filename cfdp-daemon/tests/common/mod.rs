@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use camino::Utf8PathBuf;
 use cfdp_core::{
     daemon::{
-        Daemon, EntityConfig, FinishedIndication, Indication, MetadataRecvIndication, NakProcedure,
+        EntityConfig, FinishedIndication, Indication, MetadataRecvIndication, NakProcedure,
         PutRequest, Report, UserPrimitive,
     },
     filestore::{ChecksumType, FileStore, NativeFileStore},
@@ -45,6 +45,9 @@ use tokio::{
     },
     task::JoinHandle,
 };
+
+use cfdp_daemon::Daemon;
+
 #[derive(Debug)]
 pub(crate) struct JoD<'a, T> {
     handle: Vec<JoinHandle<T>>,
@@ -1092,7 +1095,6 @@ impl PDUTransport for LossyTransport {
                         self.counter += 1;
                         Ok(())
                     } else {
-                        if operation.get_directive() == *skip_directive {}
                         self.socket
                             .send_to(pdu.encode().as_slice(), addr)
                             .await

@@ -1,8 +1,3 @@
 [workspace]
 
-members = [
-    "cfdp-core",
-]
-
-[profile.release]
-lto = "thin"
+ members = ["cfdp-core", "cfdp-daemon"]

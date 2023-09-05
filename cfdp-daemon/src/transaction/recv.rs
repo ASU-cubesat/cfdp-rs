@@ -13,12 +13,7 @@ use tokio::sync::{
     oneshot,
 };
 
-use super::{
-    config::{Metadata, TransactionConfig, TransactionState},
-    error::{TransactionError, TransactionResult},
-    TransactionID,
-};
-use crate::{
+use cfdp_core::{
     daemon::{
         FileSegmentIndication, FinishedIndication, Indication, MetadataRecvIndication,
         NakProcedure, Report, ResumeIndication, SuspendIndication,
@@ -31,8 +26,13 @@ use crate::{
         PositiveAcknowledgePDU, PromptPDU, SegmentRequestForm, SegmentationControl,
         TransactionStatus, TransmissionMode, VariableID, PDU, U3,
     },
+    transaction::{Metadata, TransactionConfig, TransactionError, TransactionID, TransactionState},
+};
+
+use crate::{
     segments::Segments,
     timer::{Counter, Timer},
+    transaction::TransactionResult,
 };
 
 #[derive(PartialEq, Debug)]
@@ -1164,8 +1164,11 @@ impl<T: FileStore> RecvTransaction<T> {
 
 #[cfg(test)]
 mod test {
-    use crate::{
-        assert_err,
+    use std::{fs::OpenOptions, io::Read};
+
+    use crate::assert_err;
+
+    use cfdp_core::{
         filestore::{ChecksumType, NativeFileStore},
         pdu::{
             CRCFlag, EndOfFile, FileSizeFlag, FileStoreAction, FileStoreRequest, FileStoreStatus,
@@ -1173,10 +1176,9 @@ mod test {
             UnsegmentedFileData,
         },
     };
-    use std::{fs::OpenOptions, io::Read};
 
-    use super::super::config::test::default_config;
     use super::*;
+    use crate::transaction::test::default_config;
 
     use camino::{Utf8Path, Utf8PathBuf};
     use rstest::{fixture, rstest};

@@ -1,28 +1,24 @@
 [package]
-name = "cfdp-core"
-version = "0.1.0"
-edition = "2021"
+ name    = "cfdp-core"
+ version = "0.1.0"
+ edition = "2021"
 
 [features]
 
 
 [dependencies]
-byteorder = "~1.4"
-camino = {version = "~1.1", features=["serde1"]}
-itertools = "~0.10"
-log = '~0.4'
-num-derive = "0.3"
-num-traits = "0.2"
-pathdiff = "~0.2"
-tempfile = "~3.3"
-thiserror = "~1.0"
-tokio = {version = "1.28.2", features = ["rt-multi-thread", "net",  "sync", "time"]}
-async-trait = "0.1"
+ byteorder   = "~1.4"
+ camino      = { version = "~1.1", features = ["serde1"] }
+ log         = '~0.4'
+ num-derive  = "0.3"
+ num-traits  = "0.2"
+ pathdiff    = "~0.2"
+ tempfile    = "~3.3"
+ thiserror   = "~1.0"
+ tokio       = { version = "1.28.2", features = ["rt-multi-thread", "net", "sync", "time"] }
+ async-trait = "0.1"
 
 [dev-dependencies]
-rstest = "0.15.0"
-rstest_reuse = "0.5.0"
-signal-hook = "~0.3"
-dirs = "~4.0"
-tokio = {version = "1.28.2", features = ["parking_lot", "macros"]}
-env_logger = "0.10"
+ rstest       = "0.15.0"
+ rstest_reuse = "0.5.0"
+ tokio        = { version = "1.28.2", features = ["parking_lot", "macros"] }

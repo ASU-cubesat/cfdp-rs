@@ -1,3 +1,3 @@
 [workspace]
-
- members = ["cfdp-core", "cfdp-daemon"]
+ resolver = "2"
+ members  = ["cfdp-core", "cfdp-daemon"]

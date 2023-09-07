@@ -10,15 +10,7 @@ use std::{
 
 use error::DaemonResult;
 use log::{error, info, warn};
-use tokio::{
-    select,
-    sync::{
-        mpsc::{channel, Receiver, Sender},
-        oneshot,
-    },
-    task::JoinHandle,
-    time::MissedTickBehavior,
-};
+use tokio::{select, task::JoinHandle, time::MissedTickBehavior};
 
 use cfdp_core::{
     daemon::{EntityConfig, Indication, PutRequest, Report, UserPrimitive},

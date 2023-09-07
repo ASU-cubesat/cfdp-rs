@@ -9,7 +9,7 @@ use crate::{
     pdu::{TransactionSeqNum, TransmissionMode, VariableID, PDU},
 };
 
-use super::config::TransactionID;
+use cfdp_core::transaction::TransactionID;
 
 #[derive(Error, Debug)]
 pub enum TransactionError {

@@ -36,6 +36,8 @@ pub struct PutRequest {
 /// Possible User Primitives sent from a end user application via the user primitive channel
 pub enum UserPrimitive {
     /// Initiate a Put transaction with the specified [PutRequest] configuration.
+    /// The channel is for the requesting entity to receive the unique transaction ID
+    /// from the Daemon.
     Put(PutRequest, oneshot::Sender<TransactionID>),
     /// Cancel the give transaction.
     Cancel(TransactionID),

@@ -22,10 +22,13 @@ use cfdp_core::{
         SegmentRequestForm, SegmentationControl, SegmentedData, TransactionStatus,
         TransmissionMode, UnsegmentedFileData, VariableID, PDU, U3,
     },
-    transaction::{Metadata, TransactionConfig, TransactionError, TransactionID, TransactionState},
+    transaction::{Metadata, TransactionConfig, TransactionID, TransactionState},
 };
 
-use crate::{timer::Timer, transaction::TransactionResult};
+use crate::{
+    timer::Timer,
+    transaction::{TransactionError, TransactionResult},
+};
 
 #[derive(PartialEq, Debug)]
 enum SendState {

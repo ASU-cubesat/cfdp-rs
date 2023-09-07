@@ -455,16 +455,31 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                         .get(&key.0)
                         .unwrap_or(&self.default_config)
                         .clone();
-                    let (_id, channel, handle) = Self::spawn_receive_transaction(
-                        &pdu.header,
-                        transport,
-                        entity_config,
-                        self.filestore.clone(),
-                        self.indication_tx.clone(),
-                    );
+                    match &pdu.header.direction {
+                        Direction::ToReceiver => {
+                            let (_id, channel, handle) = Self::spawn_receive_transaction(
+                                &pdu.header,
+                                transport,
+                                entity_config,
+                                self.filestore.clone(),
+                                self.indication_tx.clone(),
+                            );
 
-                    self.transaction_handles.push(handle);
-                    entry.insert(channel)
+                            self.transaction_handles.push(handle);
+                            entry.insert(channel)
+                        }
+                        // This is a very unlikely scenario.
+                        // We have received a PDU sent back to the Sender but we do not have a transaction running.
+                        // Likely causes are a system reboot in the middle of a transaction.
+                        // Unfortunately there is not enough information in a PDU
+                        // to completely re-create the transaciton.
+                        Direction::ToSender => {
+                            return Err(DaemonError::UnableToResume(TransactionID(
+                                pdu.header.source_entity_id,
+                                pdu.header.transaction_sequence_number,
+                            )))
+                        }
+                    }
                 } else {
                     warn!(
                         "No Transport available for EntityID: {}. Skipping Transaction creation.",
@@ -481,33 +496,50 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
             // spawn a new one
             // this is very unlikely and only results
             // if a sender is re-using a transaction id
-            let entity_config = self
-                .entity_configs
-                .get(&key.0)
-                .unwrap_or(&self.default_config)
-                .clone();
-            if let Some(transport) = self.transport_tx_map.get(&transport_entity).cloned() {
-                let (id, new_channel, handle) = Self::spawn_receive_transaction(
-                    &pdu.header,
-                    transport,
-                    entity_config,
-                    self.filestore.clone(),
-                    self.indication_tx.clone(),
-                );
-                self.transaction_handles.push(handle);
-                new_channel
-                    .send(Command::Pdu(pdu.clone()))
-                    .await
-                    .map_err(|err| DaemonError::from((id, err)))?;
-                // update the dict to have the new channel
-                self.transaction_channels.insert(key, new_channel);
-            } else {
-                warn!(
-                    "No Transport available for EntityID: {}. Skipping Transaction creation.",
-                    transport_entity
-                )
-            }
+            match pdu.header.direction {
+                Direction::ToReceiver => {
+                    let entity_config = self
+                        .entity_configs
+                        .get(&key.0)
+                        .unwrap_or(&self.default_config)
+                        .clone();
+                    if let Some(transport) = self.transport_tx_map.get(&transport_entity).cloned() {
+                        let (id, new_channel, handle) = Self::spawn_receive_transaction(
+                            &pdu.header,
+                            transport,
+                            entity_config,
+                            self.filestore.clone(),
+                            self.indication_tx.clone(),
+                        );
+                        self.transaction_handles.push(handle);
+                        new_channel
+                            .send(Command::Pdu(pdu.clone()))
+                            .await
+                            .map_err(|err| DaemonError::from((id, err)))?;
+                        // update the dict to have the new channel
+                        self.transaction_channels.insert(key, new_channel);
+                    }
+                }
+                Direction::ToSender => {
+                    // This is a very unlikely scenario.
+                    // We have received a PDU sent back to the Sender
+                    // but the transaction transaction stopped running in the background.
+                    // Likely causes are a filestore error inside the transaction.
+                    // Unfortunately there is not enough information in a PDU
+                    // to completely re-create the transaciton.
+                    return Err(DaemonError::UnableToResume(TransactionID(
+                        pdu.header.source_entity_id,
+                        pdu.header.transaction_sequence_number,
+                    )));
+                }
+            };
+        } else {
+            warn!(
+                "No Transport available for EntityID: {}. Skipping Transaction creation.",
+                transport_entity
+            )
         }
+
         Ok(())
     }
 
@@ -551,6 +583,11 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                         Err(error @ DaemonError::TransactionCommuncation(_, _)) => {
                             // This occcurs most likely if a user is attempting to
                             // interact with a transaction that is already finished.
+                            warn!("{error}")
+                        }
+                        Err(error @ DaemonError::UnableToResume(_))  => {
+                            // This entity has received a PDU in response to a SendTransaction
+                            // it has initiated but there is no active transaction.
                             warn!("{error}")
                         }
                         Err(err) => return Err(err),

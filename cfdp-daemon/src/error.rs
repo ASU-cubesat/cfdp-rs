@@ -13,6 +13,13 @@ pub enum DaemonError {
 
     #[error("Error sending Command to Transaction {0}: {1}")]
     TransactionCommuncation(TransactionID, Command),
+
+    #[error(
+        "Unable to initialize Send transaction {0}.
+Received a PDU that identified this entity as the Sender.
+Not enough information to resume the transaction. "
+    )]
+    UnableToResume(TransactionID),
 }
 impl From<(TransactionID, SendError<Command>)> for DaemonError {
     fn from(value: (TransactionID, SendError<Command>)) -> Self {

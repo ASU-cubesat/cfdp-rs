@@ -12,7 +12,7 @@ use error::DaemonResult;
 use log::{error, info, warn};
 use tokio::{select, task::JoinHandle, time::MissedTickBehavior};
 
-// Re-exported for convenience
+// Re-exported for convenience and compatibility.
 pub use tokio::sync::{
     mpsc::{channel, Receiver, Sender},
     oneshot,

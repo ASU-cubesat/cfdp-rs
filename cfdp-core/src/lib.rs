@@ -4,6 +4,9 @@ pub mod pdu;
 
 pub mod transaction;
 
+// re-exported for convenience and compatibility with the Primitives.
+pub use tokio::sync::oneshot;
+
 // this import is necessary for the template macro in rstest_reuse as of v0.5.0
 #[cfg(test)]
 #[cfg_attr(test, allow(clippy::single_component_path_imports))]

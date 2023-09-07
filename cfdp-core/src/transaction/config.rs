@@ -88,3 +88,49 @@ pub struct TransactionConfig {
     /// Maximum amount timeof without activity before the ACK timer increments its count.
     pub ack_timeout: i64,
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn id_from_u8() {
+        let id = TransactionID::from(3_u8, 5_u8);
+
+        assert_eq!(TransactionID(VariableID::U8(3), VariableID::U8(5)), id)
+    }
+
+    #[test]
+    fn id_from_u16() {
+        let id = TransactionID::from(13_u16, 541_u16);
+
+        assert_eq!(
+            TransactionID(VariableID::U16(13_u16), VariableID::U16(541_u16)),
+            id,
+        )
+    }
+
+    #[test]
+    fn id_from_u32() {
+        let id = TransactionID::from(13_u32, 541_u32);
+
+        assert_eq!(
+            TransactionID(VariableID::U32(13_u32), VariableID::U32(541_u32)),
+            id,
+        )
+    }
+
+    #[test]
+    fn id_from_u64() {
+        let id = TransactionID::from(13_u64, 541_u64);
+
+        assert_eq!(TransactionID(VariableID::U64(13), VariableID::U64(541)), id,)
+    }
+
+    #[test]
+    fn id_from_mixed() {
+        let id = TransactionID::from(13_u8, 541_u64);
+
+        assert_eq!(TransactionID(VariableID::U8(13), VariableID::U64(541)), id,)
+    }
+}

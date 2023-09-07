@@ -12,6 +12,12 @@ use error::DaemonResult;
 use log::{error, info, warn};
 use tokio::{select, task::JoinHandle, time::MissedTickBehavior};
 
+// Re-exported for convenience
+pub use tokio::sync::{
+    mpsc::{channel, Receiver, Sender},
+    oneshot,
+};
+
 use cfdp_core::{
     daemon::{EntityConfig, Indication, PutRequest, Report, UserPrimitive},
     filestore::FileStore,
@@ -19,7 +25,7 @@ use cfdp_core::{
         Direction, EntityID, FileSizeFlag, NakOrKeepAlive, PDUHeader, SegmentedData,
         TransactionSeqNum, VariableID, PDU,
     },
-    transaction::{Metadata, TransactionConfig, TransactionError, TransactionID, TransactionState},
+    transaction::{Metadata, TransactionConfig, TransactionID, TransactionState},
 };
 
 pub use cfdp_core::*;
@@ -33,7 +39,7 @@ pub mod transport;
 use self::error::DaemonError;
 
 use self::transport::PDUTransport;
-use transaction::{recv::RecvTransaction, send::SendTransaction};
+use transaction::{recv::RecvTransaction, send::SendTransaction, TransactionError};
 
 /// Lightweight commands the Daemon send to each Transaction
 #[derive(Debug)]

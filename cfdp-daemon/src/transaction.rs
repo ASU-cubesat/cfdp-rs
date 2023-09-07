@@ -1,10 +1,11 @@
-use cfdp_core::transaction::TransactionError;
-
+pub(crate) mod error;
 pub(crate) mod recv;
 pub(crate) mod send;
 
 pub use recv::RecvTransaction;
 pub use send::SendTransaction;
+
+pub(crate) use error::TransactionError;
 
 pub type TransactionResult<T> = Result<T, TransactionError>;
 

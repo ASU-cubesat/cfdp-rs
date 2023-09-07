@@ -3,11 +3,6 @@ pub mod filestore;
 pub mod pdu;
 
 pub mod transaction;
-// Re-exported for convenience
-pub use tokio::sync::{
-    mpsc::{channel, Receiver, Sender},
-    oneshot,
-};
 
 // this import is necessary for the template macro in rstest_reuse as of v0.5.0
 #[cfg(test)]

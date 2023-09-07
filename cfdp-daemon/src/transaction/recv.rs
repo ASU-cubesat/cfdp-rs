@@ -26,13 +26,13 @@ use cfdp_core::{
         PositiveAcknowledgePDU, PromptPDU, SegmentRequestForm, SegmentationControl,
         TransactionStatus, TransmissionMode, VariableID, PDU, U3,
     },
-    transaction::{Metadata, TransactionConfig, TransactionError, TransactionID, TransactionState},
+    transaction::{Metadata, TransactionConfig, TransactionID, TransactionState},
 };
 
 use crate::{
     segments::Segments,
     timer::{Counter, Timer},
-    transaction::TransactionResult,
+    transaction::{TransactionError, TransactionResult},
 };
 
 #[derive(PartialEq, Debug)]

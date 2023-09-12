@@ -477,7 +477,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                             return Err(DaemonError::UnableToResume(TransactionID(
                                 pdu.header.source_entity_id,
                                 pdu.header.transaction_sequence_number,
-                            )))
+                            )));
                         }
                     }
                 } else {
@@ -641,6 +641,14 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
 
 #[cfg(test)]
 mod test {
+    use cfdp_core::{
+        daemon::NakProcedure,
+        filestore::{ChecksumType, NativeFileStore},
+        pdu::{CRCFlag, Condition, FaultHandlerAction, PDUPayload, PositiveAcknowledgePDU, U3},
+    };
+
+    use super::*;
+
     #[macro_export]
     macro_rules! assert_err{
         ($expression:expr, $($pattern:tt)+) => {
@@ -649,5 +657,73 @@ mod test {
                 ref e => panic!("expected {} but got {:?}", stringify!($($pattern)+), e)
             }
         }
+    }
+
+    #[tokio::test]
+    async fn pdu_to_sender_no_transaction() {
+        let (_send, recv) = channel(1);
+        let (indication_tx, _indication_rx) = channel(1);
+        let (_primitive_tx, primitive_rx) = channel(1);
+        let filestore = Arc::new(NativeFileStore::new("."));
+        let mut transport_tx_map = HashMap::<_, _>::new();
+
+        let (transport_tx, _) = channel(10);
+
+        transport_tx_map.insert(1_u32.into(), transport_tx);
+
+        let mut daemon = Daemon {
+            transaction_handles: vec![],
+            transaction_channels: HashMap::<_, _>::new(),
+            transport_tx_map,
+            transport_rx: recv,
+            filestore,
+            indication_tx,
+            entity_configs: HashMap::new(),
+            default_config: EntityConfig {
+                fault_handler_override: HashMap::from([(
+                    Condition::PositiveLimitReached,
+                    FaultHandlerAction::Abandon,
+                )]),
+                file_size_segment: 1024,
+                default_transaction_max_count: 2,
+                inactivity_timeout: 0,
+                ack_timeout: 1,
+                nak_timeout: 2,
+                crc_flag: CRCFlag::NotPresent,
+                closure_requested: false,
+                checksum_type: ChecksumType::Modular,
+                nak_procedure: NakProcedure::Deferred,
+            },
+            entity_id: 0_u64.into(),
+            sequence_num: 0_u64.into(),
+            terminate: Arc::new(AtomicBool::new(false)),
+            primitive_rx,
+        };
+        let payload = PDUPayload::Directive(pdu::Operations::Ack(PositiveAcknowledgePDU {
+            directive: pdu::PDUDirective::EoF,
+            directive_subtype_code: pdu::ACKSubDirective::Other,
+            condition: Condition::NoError,
+            transaction_status: pdu::TransactionStatus::Active,
+        }));
+        let pdu = PDU {
+            header: PDUHeader {
+                version: U3::One,
+                pdu_type: pdu::PDUType::FileDirective,
+                direction: Direction::ToSender,
+                transmission_mode: pdu::TransmissionMode::Acknowledged,
+                crc_flag: CRCFlag::NotPresent,
+                large_file_flag: FileSizeFlag::Small,
+                pdu_data_field_length: payload.encoded_len(FileSizeFlag::Small),
+                segmentation_control: pdu::SegmentationControl::NotPreserved,
+                segment_metadata_flag: SegmentedData::NotPresent,
+                source_entity_id: 0_u16.into(),
+                transaction_sequence_number: 3_u64.into(),
+                destination_entity_id: 1_u32.into(),
+            },
+            payload,
+        };
+
+        let res = daemon.forward_pdu(pdu).await;
+        assert_err!(res, Err(DaemonError::UnableToResume(_)))
     }
 }

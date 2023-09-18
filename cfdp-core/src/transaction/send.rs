@@ -241,7 +241,7 @@ impl<T: FileStore> SendTransaction<T> {
                 if self.timer.inactivity.limit_reached() {
                     self.handle_fault(Condition::InactivityDetected)?
                 }
-                if self.timer.ack.timeout_occured() {
+                if self.timer.ack.timeout_occurred() {
                     if self.timer.ack.limit_reached() {
                         self.handle_fault(Condition::PositiveLimitReached)?
                     } else {
@@ -253,7 +253,7 @@ impl<T: FileStore> SendTransaction<T> {
                 if self.timer.inactivity.limit_reached() {
                     self.abandon();
                 }
-                if self.timer.ack.timeout_occured() {
+                if self.timer.ack.timeout_occurred() {
                     if self.timer.ack.limit_reached() {
                         self.abandon();
                     } else {

@@ -260,22 +260,32 @@ pub enum Indication {
 }
 
 /// The way the Nak procedure is implemented is the following:
-///  - In Immediate mode, upon reception of each file data PDU, if the received segment is at the end of the file and there is a gap
-///    between the previously received segment and the new segment, a nak is sent with the new gap.
+///  - In Immediate mode, upon reception of each file data PDU, if the received segment is at the end of the file and
+///    there is a gap between the previously received segment and the new segment, a nak is sent with the new gap but
+///    only after delay has elapsed (if any delay was set).
 ///    If the NAK timer has timed out, the nak sent covers the gaps from the entire file, not only the last gap.
 ///    After the EOF is received, the procedure is the same as in deferred mode.
-///  - In Deferred mode, a nak covering the gaps from the entire file is sent immediately after EOF and each time the nak timer times out.
+///  - In Deferred mode, a nak covering the gaps from the entire file is sent after the EOF has been received
+///    and each time the nak timer times out.    
 ///  - at any time a Prompt NAK can trigger the sending of the complete Nak list.
 ///
-/// NAK timer:
+/// The delay parameter is useful when PDUs come out of order to avoid sending NAKs prematurely. One scenario when this may
+/// happen is when utilizing multiple links of different latencies. The delay should be set to cover the difference in latency
+/// between the slowest link and the fastest link.
+/// If the delay is greater than 0, the NAKs will not be sent immediately but only if the gap persists after the delay
+/// has passed.
+///
+/// NAK timer (note that this is different and probably much larger than the delay parameter mentioned above):
 /// - In Immediate mode the NAK timer is started at the beginning of the transaction.
 /// - In Deferred mode  the NAK timer is started after EOF is received.
-/// - If the NAK timer times out and it is determined that new data has been received since the last nak sending, the timer counter is reset to 0.
-/// - If the NAK timer expired more than the predefined limit (without any new data being received), the NakLimitReached fault will be raised.
+/// - If the NAK timer times out and it is determined that new data has been received since the last nak sending,
+///   the timer counter is reset to 0.
+/// - If the NAK timer expired more than the predefined limit (without any new data being received), the NakLimitReached
+///   fault will be raised.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum NakProcedure {
-    Immediate,
-    Deferred,
+    Immediate(Duration /* delay*/),
+    Deferred(Duration /* delay */),
 }
 
 #[derive(Clone)]

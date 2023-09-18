@@ -9,6 +9,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, RwLock,
     },
+    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -752,7 +753,7 @@ pub(crate) async fn create_daemons<T: FileStore + Sync + Send + 'static>(
         crc_flag: CRCFlag::NotPresent,
         closure_requested: false,
         checksum_type: ChecksumType::Modular,
-        nak_procedure: NakProcedure::Deferred,
+        nak_procedure: NakProcedure::Deferred(Duration::ZERO),
     };
 
     let remote_config = HashMap::from([

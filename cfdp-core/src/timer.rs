@@ -10,10 +10,10 @@ pub struct Counter {
     paused: bool,
 }
 impl Counter {
-    fn new(timeout: u64, max_count: u32) -> Self {
+    pub fn new(timeout: Duration, max_count: u32) -> Self {
         Self {
             max_count,
-            timeout: Duration::from_secs(timeout),
+            timeout,
             count: 0,
             start_time: Instant::now(),
             occurred: false,
@@ -57,12 +57,16 @@ impl Counter {
         self.paused = true;
     }
 
+    pub fn start(&mut self) {
+        self.paused = false;
+    }
+
     pub fn limit_reached(&mut self) -> bool {
         self.update();
         self.count == self.max_count
     }
 
-    pub fn timeout_occured(&mut self) -> bool {
+    pub fn timeout_occurred(&mut self) -> bool {
         self.update();
         self.occurred
     }
@@ -104,9 +108,12 @@ impl Timer {
         nak_max_count: u32,
     ) -> Self {
         Self {
-            inactivity: Counter::new(inactivity_timeout as u64, inactivity_max_count),
-            ack: Counter::new(ack_timeout as u64, ack_max_count),
-            nak: Counter::new(nak_timeout as u64, nak_max_count),
+            inactivity: Counter::new(
+                Duration::from_secs(inactivity_timeout as u64),
+                inactivity_max_count,
+            ),
+            ack: Counter::new(Duration::from_secs(ack_timeout as u64), ack_max_count),
+            nak: Counter::new(Duration::from_secs(nak_timeout as u64), nak_max_count),
         }
     }
 
@@ -167,7 +174,7 @@ mod test {
         timer.inactivity.pause();
         assert_eq!(timer.inactivity.get_count(), 2);
         assert!(!timer.inactivity.limit_reached());
-        assert!(timer.inactivity.timeout_occured())
+        assert!(timer.inactivity.timeout_occurred())
     }
 
     #[test]
@@ -176,10 +183,10 @@ mod test {
         timer.restart_inactivity();
         thread::sleep(Duration::from_secs_f32(1.1_f32));
         timer.inactivity.pause();
-        assert!(!timer.inactivity.timeout_occured());
+        assert!(!timer.inactivity.timeout_occurred());
         // sleep again but make sure to cross the threshold from the original time out
         thread::sleep(Duration::from_secs_f32(1.5_f32));
-        assert!(!timer.inactivity.timeout_occured());
+        assert!(!timer.inactivity.timeout_occurred());
 
         assert_eq!(timer.inactivity.get_count(), 0)
     }
@@ -201,12 +208,12 @@ mod test {
         let mut timer = Timer::new(2_i64, 5, 1_i64, 5, 1_i64, 5);
         timer.restart_inactivity();
         thread::sleep(Duration::from_secs_f32(1.5));
-        assert!(!timer.inactivity.timeout_occured());
+        assert!(!timer.inactivity.timeout_occurred());
         timer.restart_inactivity();
         thread::sleep(Duration::from_secs_f32(2.2));
         timer.inactivity.pause();
 
-        assert!(timer.inactivity.timeout_occured())
+        assert!(timer.inactivity.timeout_occurred())
     }
 
     #[test]
@@ -216,9 +223,9 @@ mod test {
         timer.restart_ack();
         timer.restart_nak();
         thread::sleep(Duration::from_secs_f32(1.5));
-        assert!(timer.inactivity.timeout_occured());
-        assert!(timer.ack.timeout_occured());
-        assert!(timer.nak.timeout_occured());
+        assert!(timer.inactivity.timeout_occurred());
+        assert!(timer.ack.timeout_occurred());
+        assert!(timer.nak.timeout_occurred());
         assert_eq!(timer.inactivity.get_count(), 1);
         assert_eq!(timer.ack.get_count(), 1);
         assert_eq!(timer.nak.get_count(), 1);

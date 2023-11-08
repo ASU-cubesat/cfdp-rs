@@ -692,7 +692,7 @@ mod test {
                 crc_flag: CRCFlag::NotPresent,
                 closure_requested: false,
                 checksum_type: ChecksumType::Modular,
-                nak_procedure: NakProcedure::Deferred,
+                nak_procedure: NakProcedure::Deferred(Duration::from_secs(0)),
             },
             entity_id: 0_u64.into(),
             sequence_num: 0_u64.into(),

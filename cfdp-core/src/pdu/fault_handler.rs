@@ -10,10 +10,17 @@ use super::{
 
 #[repr(u8)]
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Available actions which can be taken when a fault has occurred.
 pub enum FaultHandlerAction {
+    /// Cancel the transaction and gracefully shutdown.
+    ///
+    /// This includes any handshaking required by the current transmission mode.
     Cancel,
+    /// Suspend the transaction to be resumed at a later time.
     Suspend,
+    /// Ignore the fault.
     Ignore,
+    /// Halt the transaction immediately. Do not wait for handshakes.
     Abandon,
 }
 impl FromStr for FaultHandlerAction {

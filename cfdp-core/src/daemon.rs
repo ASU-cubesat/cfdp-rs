@@ -55,10 +55,15 @@ pub enum UserPrimitive {
 /// Simple Status Report
 #[derive(Debug, Clone)]
 #[cfg_attr(test, derive(PartialEq))]
+/// Transaction status report
 pub struct Report {
+    /// The unique ID of the transaction.
     pub id: TransactionID,
+    /// Current state of the transaction
     pub state: TransactionState,
+    /// Current status of the transaction.
     pub status: TransactionStatus,
+    /// Last known condition of the transaction.
     pub condition: Condition,
 }
 impl Report {
@@ -110,47 +115,73 @@ impl Report {
 }
 
 #[derive(Debug, Clone)]
+/// Indication sent from a Transaction when [Metadata](crate::transaction::Metadata) has been received
 pub struct MetadataRecvIndication {
     pub id: TransactionID,
+    /// source file name relative to the filestore root.
     pub source_filename: Utf8PathBuf,
+    /// destination file name relative to the filestore root
     pub destination_filename: Utf8PathBuf,
+    /// Size of the file in bytes
     pub file_size: u64,
+    /// Which transmission mode will used in the transaction.
     pub transmission_mode: TransmissionMode,
+    /// All messages to the user sent with the transaction.
     pub user_messages: Vec<MessageToUser>,
 }
 
 #[derive(Debug, Clone)]
+/// Indication of the amount of data received from a [FileDataPDU](crate::pdu::FileDataPDU)
 pub struct FileSegmentIndication {
+    /// Unique transaction ID for the file data.
     pub id: TransactionID,
+    /// Byte index offset in the file.
     pub offset: u64,
+    /// Length of the file data received.
     pub length: u64,
 }
 
 #[derive(Debug, Clone)]
+/// Indication sent when a transaction has finished.
 pub struct FinishedIndication {
+    /// Unique transaction ID.
     pub id: TransactionID,
+    /// Final report of the transaction before shutting down.
     pub report: Report,
+    /// The status of the file delivered if applicable.
     pub file_status: FileStatusCode,
+    /// The final delivery result.
     pub delivery_code: DeliveryCode,
+    /// Status of all Filestore actions which were requested.
     pub filestore_responses: Vec<FileStoreResponse>,
 }
 
 #[derive(Debug, Clone)]
+/// Indication that a transaction has been suspended
 pub struct SuspendIndication {
+    /// The unique transaction ID.
     pub id: TransactionID,
+    /// Current condition when being suspended.
     pub condition: Condition,
 }
 
 #[derive(Debug, Clone)]
+/// Indication that a transaction has been resumed.
 pub struct ResumeIndication {
+    /// The unique transaction ID.
     pub id: TransactionID,
+    /// The length (in bytes) that has been received so far.
     pub progress: u64,
 }
 
 #[derive(Debug, Clone)]
+/// Indication a fault has occurred.
 pub struct FaultIndication {
+    /// Transaction which has had a fautl.
     pub id: TransactionID,
+    /// The last condition when the fault occurred.
     pub condition: Condition,
+    /// The length (in bytes) received before the fault occurred.
     pub progress: u64,
 }
 

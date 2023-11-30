@@ -15,7 +15,7 @@
  pathdiff   = "~0.2"
  tempfile   = "~3.3"
  thiserror  = "~1.0"
- tokio      = { version = "1.28.2", features = ["sync"] }
+ tokio      = { version = "1.28.2", default-features = false, features = ["sync"] }
 
 [dev-dependencies]
  rstest       = "0.15.0"

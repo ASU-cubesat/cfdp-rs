@@ -35,6 +35,7 @@ pub enum FileStoreAction {
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
+/// Resulting status from the creating a file.
 pub enum CreateFileStatus {
     Successful = 0b0000,
     NotAllowed = 0b0001,
@@ -43,6 +44,7 @@ pub enum CreateFileStatus {
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
+/// Resulting status from the deleting a file.
 pub enum DeleteFileStatus {
     Successful = 0b0000,
     FileDoesNotExist = 0b0001,
@@ -52,6 +54,7 @@ pub enum DeleteFileStatus {
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
+/// Resulting status from the renaming a file.
 pub enum RenameStatus {
     Successful = 0b0000,
     OldFilenameDoesNotExist = 0b0001,
@@ -62,6 +65,7 @@ pub enum RenameStatus {
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
+/// Resulting status from the appending file B onto file A.
 pub enum AppendStatus {
     Successful = 0b0000,
     Filename1DoesNotExist = 0b0001,
@@ -71,6 +75,7 @@ pub enum AppendStatus {
 }
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
+/// Resulting status from the Replacing the contents of file A with those of file B.
 pub enum ReplaceStatus {
     Successful = 0b0000,
     Filename1DoesNotExist = 0b0001,
@@ -81,6 +86,7 @@ pub enum ReplaceStatus {
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
+/// Resulting status from the creating a directory.
 pub enum CreateDirectoryStatus {
     Successful = 0b0000,
     DirectoryCannotBeCreated = 0b0001,
@@ -89,6 +95,7 @@ pub enum CreateDirectoryStatus {
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
+/// Resulting status from the removing a directory.
 pub enum RemoveDirectoryStatus {
     Successful = 0b0000,
     DirectoryDoesNotExist = 0b0001,
@@ -98,6 +105,7 @@ pub enum RemoveDirectoryStatus {
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive)]
+/// Resulting status from performing a Deny action.
 pub enum DenyStatus {
     Successful = 0b0000,
     NotAllowed = 0b0010,
@@ -106,6 +114,7 @@ pub enum DenyStatus {
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// All possible results of filestore actions and their associated status codes.
 pub enum FileStoreStatus {
     CreateFile(CreateFileStatus),
     DeleteFile(DeleteFileStatus),
@@ -118,6 +127,7 @@ pub enum FileStoreStatus {
     DenyDirectory(DenyStatus),
 }
 impl FileStoreStatus {
+    /// Cast the underlying status code as a u8.
     pub fn as_u8(&self) -> u8 {
         match self {
             Self::CreateFile(val) => ((FileStoreAction::CreateFile as u8) << 4) | *val as u8,
@@ -136,6 +146,7 @@ impl FileStoreStatus {
         }
     }
 
+    /// Determine whether the action was successful.
     pub fn success(&self) -> bool {
         matches!(
             self,
@@ -151,10 +162,12 @@ impl FileStoreStatus {
         )
     }
 
+    /// Determine if the action resulted in failure.
     pub fn is_fail(&self) -> bool {
         !self.success()
     }
 
+    /// Return the appropriate version of the "Not Performed" status for the given action.
     pub fn get_not_performed(action: &FileStoreAction) -> Self {
         match action {
             FileStoreAction::CreateFile => Self::CreateFile(CreateFileStatus::NotPerformed),
@@ -173,6 +186,7 @@ impl FileStoreStatus {
         }
     }
 
+    /// Given a status code value and an action, return the appropriate version of [Self].
     pub fn get_status(action: &FileStoreAction, status: u8) -> PDUResult<Self> {
         match action {
             FileStoreAction::CreateFile => {
@@ -236,6 +250,7 @@ impl FileStoreStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// A Request to perform the designated action on the given file(s).
 pub struct FileStoreRequest {
     pub action_code: FileStoreAction,
     /// LV type field, omitted when length 0.
@@ -295,6 +310,7 @@ impl PDUEncode for FileStoreRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Results of performing the action in a [FileStoreRequest].
 pub struct FileStoreResponse {
     pub action_and_status: FileStoreStatus,
     /// LV type field, omitted when length 0

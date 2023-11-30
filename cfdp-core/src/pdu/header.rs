@@ -10,25 +10,42 @@ use super::{
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, FromPrimitive)]
+/// All possible conditions a transaction may be in
 pub enum Condition {
+    /// No errors occurred yet during the transaction.
     NoError = 0b0000,
+    /// The positive acknowledgement limit has been reached.
     PositiveLimitReached = 0b0001,
+    /// The keep alive limit has been reached.
     KeepAliveLimitReached = 0b0010,
+    /// The transaction's transmission mode is not valid.
     InvalidTransmissionMode = 0b0011,
+    /// The file could not be written by the filestore.
     FileStoreRejection = 0b0100,
+    /// The final file did not pass the checksum verification.
     FileChecksumFailure = 0b0101,
+    /// Received file was a different size than expected.
     FilesizeError = 0b0110,
+    /// The negative acknowledgement limit has been reached.
     NakLimitReached = 0b0111,
+    /// No activity was detected within the allowed time limit.
     InactivityDetected = 0b1000,
+    /// File did not have the correct structure.
     InvalidFileStructure = 0b1001,
+    /// A finished PDU was not received by closure request during an
+    /// Unacklowdged transaction within the given time limit.
     CheckLimitReached = 0b1010,
+    /// The checksum method requested is not supported by this implementation.
     UnsupportedChecksumType = 0b1011,
+    /// A command to suspend the transaction has been issued.
     SuspendReceived = 0b1110,
+    /// A command to cancel the transaction has been issued.
     CancelReceived = 0b1111,
 }
 
 #[repr(u8)]
 #[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
+/// A 3 bit integer used in versioning to limit possible values.
 pub enum U3 {
     Zero = 0b000,
     One = 0b001,
@@ -42,13 +59,17 @@ pub enum U3 {
 
 #[repr(u8)]
 #[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
+/// A flag to differentiate the payalod type of the PDU.
 pub enum PDUType {
+    /// Payload contains a file directive.
     FileDirective = 0,
+    /// Payload contains file data.
     FileData = 1,
 }
 
 #[repr(u8)]
 #[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
+/// The direction in which this PDU is heading.
 pub enum Direction {
     ToReceiver = 0,
     ToSender = 1,
@@ -56,6 +77,7 @@ pub enum Direction {
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
+/// The transmission mode of this transaction.
 pub enum TransmissionMode {
     Acknowledged = 0,
     Unacknowledged = 1,
@@ -80,6 +102,7 @@ impl PDUEncode for TransmissionMode {
 }
 #[repr(u8)]
 #[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
+/// Store and Forward trace control level.
 pub enum TraceControl {
     NoTrace = 0x0,
     SourceOnly = 0x1,
@@ -89,6 +112,7 @@ pub enum TraceControl {
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
+/// Flag determining the presence of a CRC appended to a PDU.
 pub enum CRCFlag {
     NotPresent = 0,
     Present = 1,
@@ -96,6 +120,7 @@ pub enum CRCFlag {
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
+/// Flag indicating if the file size is less than the maximum u32 value.
 pub enum FileSizeFlag {
     Small = 0,
     Large = 1,
@@ -112,6 +137,7 @@ impl FileSizeFlag {
 }
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
+/// Whether segmentation control is implemented on this transaction.
 pub enum SegmentationControl {
     NotPreserved = 0,
     Preserved = 1,
@@ -119,6 +145,7 @@ pub enum SegmentationControl {
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
+/// Flag to determine if the file data in this PDU is segmented.
 pub enum SegmentedData {
     NotPresent = 0,
     Present = 1,
@@ -126,6 +153,7 @@ pub enum SegmentedData {
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
+/// The type of Prompt PDU being sent.
 pub enum NakOrKeepAlive {
     Nak = 0,
     KeepAlive = 1,
@@ -133,6 +161,7 @@ pub enum NakOrKeepAlive {
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
+/// Final transaction delivery code.
 pub enum DeliveryCode {
     Complete = 0,
     Incomplete = 1,
@@ -140,6 +169,7 @@ pub enum DeliveryCode {
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
+/// The resulting code of a file being written during a transaction.
 pub enum FileStatusCode {
     Discarded = 0b00,
     FileStoreRejection = 0b01,
@@ -149,6 +179,7 @@ pub enum FileStatusCode {
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
+/// The current status of a running transaction
 pub enum TransactionStatus {
     Undefined = 0b00,
     Active = 0b01,
@@ -158,6 +189,7 @@ pub enum TransactionStatus {
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, FromPrimitive)]
+/// All possible User Messages which can be sent as file directives.
 pub enum MessageType {
     ProxyPutRequest = 0x00,
     ProxyMessageToUser = 0x01,
@@ -216,11 +248,18 @@ pub trait FSSEncode {
     fn decode<T: Read>(buffer: &mut T, file_size_flag: FileSizeFlag) -> PDUResult<Self::PDUType>;
 }
 
+/// Provides utility functions for encoding and decoding byte streams
+/// For PDUs which require knowledge of the Segmentation state
 pub trait SegmentEncode {
     type PDUType;
 
+    /// Gets the encoded length must fit in a u16 for PDUs
     fn encoded_len(&self, file_size_flag: FileSizeFlag) -> u16;
+
+    /// Encodes the PDU to a byte stream
     fn encode(self, file_size_flag: FileSizeFlag) -> Vec<u8>;
+
+    /// Attempts to decode a PDU from a byte stream
     fn decode<T: Read>(
         buffer: &mut T,
         segmentation_flag: SegmentedData,
@@ -229,18 +268,45 @@ pub trait SegmentEncode {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// The standard header attached to all CFDP PDUs.
 pub struct PDUHeader {
+    /// header version number.
     pub version: U3,
+
+    /// The type of the underlying payload.
     pub pdu_type: PDUType,
+
+    /// The direction in which this PDU is heading.
     pub direction: Direction,
+
+    /// The mode of the transaction.
     pub transmission_mode: TransmissionMode,
+
+    /// Whether a CRC is appended to the PDU byte stream.
     pub crc_flag: CRCFlag,
+
+    /// Flag to indicate if the file size is less than the maximum u32 value.
     pub large_file_flag: FileSizeFlag,
+
+    /// The length of attached payload.
+    ///
+    /// When the CRC flag is set to [CRCFlag::Present] this struct will automatically
+    /// account for the additional length during encoding.
     pub pdu_data_field_length: u16,
+
+    /// Flag to indicate if segmentation control is enabled for this transaction.
     pub segmentation_control: SegmentationControl,
+
+    /// Flag to indicate if metadata segmentation is enabled for this transaction.
     pub segment_metadata_flag: SegmentedData,
+
+    /// Source entity identification number.
     pub source_entity_id: VariableID,
+
+    /// The sequence number of the transaction.
     pub transaction_sequence_number: VariableID,
+
+    /// Destination entity identification number.
     pub destination_entity_id: VariableID,
 }
 impl PDUEncode for PDUHeader {
@@ -384,6 +450,7 @@ impl PDUEncode for PDUHeader {
     }
 }
 
+/// Read a length-value (LV) pair from a byte stream and return the value.
 pub fn read_length_value_pair<T: Read>(buffer: &mut T) -> PDUResult<Vec<u8>> {
     let mut u8_buff = [0u8; 1];
     buffer.read_exact(&mut u8_buff)?;
@@ -393,12 +460,14 @@ pub fn read_length_value_pair<T: Read>(buffer: &mut T) -> PDUResult<Vec<u8>> {
     Ok(vector)
 }
 
+/// Read a type field (u8) from a byte stream.
 pub fn read_type<T: Read>(buffer: &mut T) -> PDUResult<u8> {
     let mut u8_buff = [0u8];
     buffer.read_exact(&mut u8_buff)?;
     Ok(u8_buff[0])
 }
 
+/// Read a Type-Length-Value (TLV) field from the byte stream. Returns the type code and value.
 pub fn read_type_length_value<T: Read>(buffer: &mut T) -> PDUResult<(u8, Vec<u8>)> {
     let message_type = read_type(buffer)?;
     let vector = read_length_value_pair(buffer)?;

@@ -275,7 +275,7 @@ impl FileStore for NativeFileStore {
         // CFDP expects to not be allowed if the "TO" file already exists
         // so add an extra check since fs::rename doesn't care
         match full_to_path.exists() {
-            true => Err(IOError::from(ErrorKind::AlreadyExists)).map_err(FileStoreError::IO),
+            true => Err(IOError::from(ErrorKind::AlreadyExists).into()),
             false => fs::rename(full_from_path, full_to_path).map_err(FileStoreError::IO),
         }
     }
@@ -306,7 +306,7 @@ impl FileStore for NativeFileStore {
         let full_path2 = self.get_native_path(path2);
         match full_path1.exists() {
             true => fs::write(full_path1, fs::read(full_path2)?).map_err(FileStoreError::IO),
-            false => Err(IOError::from(ErrorKind::NotFound)).map_err(FileStoreError::IO),
+            false => Err(IOError::from(ErrorKind::NotFound).into()),
         }
     }
 

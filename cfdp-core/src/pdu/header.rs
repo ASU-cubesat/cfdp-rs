@@ -294,7 +294,7 @@ impl PDUEncode for PDUHeader {
 
         let pdu_type = {
             let possible = (u8_buff[0] & 0x10) >> 4;
-            PDUType::from_u8(possible).ok_or(PDUError::InvalidVersion(possible))?
+            PDUType::from_u8(possible).ok_or(PDUError::InvalidPDUType(possible))?
         };
 
         let direction = {

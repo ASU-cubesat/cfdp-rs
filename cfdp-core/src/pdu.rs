@@ -14,11 +14,15 @@ pub use header::*;
 pub use ops::*;
 pub use user_ops::*;
 
-use error::{PDUError, PDUResult};
+#[doc(inline)]
+pub use error::{PDUError, PDUResult};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// All possible payloads of a cfdp PDU.
 pub enum PDUPayload {
+    /// Any non file data related PDU
     Directive(Operations),
+    /// File data only PDUs
     FileData(FileDataPDU),
 }
 impl PDUPayload {
@@ -59,8 +63,13 @@ impl PDUPayload {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// The Protocol Data Unit (PDU).
+///
+/// The main packet type for CFDP interactions.
 pub struct PDU {
+    /// Header information used to decode the rest of the packet.
     pub header: PDUHeader,
+    /// Packet payload containing filedata or a directive.
     pub payload: PDUPayload,
 }
 impl PDUEncode for PDU {

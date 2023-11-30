@@ -67,7 +67,7 @@ impl TryFrom<Vec<u8>> for VariableID {
                     .try_into()
                     .expect("Unable to coerce vec into same sized array."),
             ))),
-            other => Err(PDUError::UnkownIDLength(other as u8)),
+            other => Err(PDUError::UnknownIDLength(other as u8)),
         }
     }
 }

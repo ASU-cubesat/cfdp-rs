@@ -578,18 +578,18 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                         Err(error @ DaemonError::TransactionCommuncation(_, _)) => {
                             // This occcurs most likely if a user is attempting to
                             // interact with a transaction that is already finished.
-                            warn!("{error}")
+                            warn!("{error}");
                         }
                         Err(error @ DaemonError::UnableToResume(_))  => {
                             // This entity has received a PDU in response to a SendTransaction
                             // it has initiated but there is no active transaction.
-                            warn!("{error}")
+                            warn!("{error}");
                         }
                         Err(err) => {
                             if !self.terminate.load(Ordering::Relaxed) {
                                 self.terminate.store(true, Ordering::Relaxed);
                             }
-                            return Err(err)
+                            return Err(err);
                         }
                     },
                     None => {
@@ -607,18 +607,18 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                             // Unable to spawn a send transaction.
                             // There are lots of reasons this cound happen.
                             // Mostly if a user asked for a file that doesn't exist.
-                            warn!("{error}")
+                            warn!("{error}");
                         },
                         Err(error @ DaemonError::TransactionCommuncation(_, _)) => {
                             // This occcurs most likely if a user is attempting to
                             // interact with a transaction that is already finished.
-                            warn!("{error}")
+                            warn!("{error}");
                         }
                         Err(err) => {
                             if !self.terminate.load(Ordering::Relaxed) {
                                 self.terminate.store(true, Ordering::Relaxed);
                             }
-                            return Err(err)
+                            return Err(err);
                         }
                     },
                     None => {

@@ -223,7 +223,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                         info!("Transaction {} Received Unexpected PDU: {err}", transaction.id());
                                         // log some info on the unexpected PDU?
                                     }
-                                    Err(err) => return Err(err),
+                                    Err(err) => return Err(err)
                                 }
                             }
                             Command::Resume => transaction.resume()?,
@@ -594,7 +594,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                             if !self.terminate.load(Ordering::Relaxed) {
                                 self.terminate.store(true, Ordering::Relaxed);
                             }
-                            return Err(err),
+                            return Err(err)
                         }
                     },
                     None => {
@@ -608,7 +608,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                 primitive = self.primitive_rx.recv() => match primitive {
                     Some(primitive) => match self.process_primitive(primitive).await{
                         Ok(_) => {},
-                        Err(error & DaemonError::SpawnSend(_)) => {
+                        Err(error @ DaemonError::SpawnSend(_)) => {
                             // Unable to spawn a send transaction.
                             // There are lots of reasons this cound happen.
                             // Mostly if a user asked for a file that doesn't exist.
@@ -623,7 +623,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                             if !self.terminate.load(Ordering::Relaxed) {
                                 self.terminate.store(true, Ordering::Relaxed);
                             }
-                            return Err(err),
+                            return Err(err)
                         }
                     },
                     None => {

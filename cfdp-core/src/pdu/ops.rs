@@ -302,7 +302,7 @@ impl PDUEncode for MetadataTLV {
 
 #[repr(u8)]
 #[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
-//// The possible directive types of a PDU, used to distinguish the PDUs.
+/// The possible directive types of a PDU, used to distinguish the PDUs.
 pub enum PDUDirective {
     /// End of File PDU
     EoF = 0x04,

@@ -590,7 +590,12 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                             // it has initiated but there is no active transaction.
                             warn!("{error}")
                         }
-                        Err(err) => return Err(err),
+                        Err(err) => {
+                            if !self.terminate.load(Ordering::Relaxed) {
+                                self.terminate.store(true, Ordering::Relaxed);
+                            }
+                            return Err(err),
+                        }
                     },
                     None => {
                         if !self.terminate.load(Ordering::Relaxed) {
@@ -603,12 +608,23 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                 primitive = self.primitive_rx.recv() => match primitive {
                     Some(primitive) => match self.process_primitive(primitive).await{
                         Ok(_) => {},
+                        Err(error & DaemonError::SpawnSend(_)) => {
+                            // Unable to spawn a send transaction.
+                            // There are lots of reasons this cound happen.
+                            // Mostly if a user asked for a file that doesn't exist.
+                            warn!("{error}")
+                        },
                         Err(error @ DaemonError::TransactionCommuncation(_, _)) => {
                             // This occcurs most likely if a user is attempting to
                             // interact with a transaction that is already finished.
                             warn!("{error}")
                         }
-                        Err(err) => return Err(err),
+                        Err(err) => {
+                            if !self.terminate.load(Ordering::Relaxed) {
+                                self.terminate.store(true, Ordering::Relaxed);
+                            }
+                            return Err(err),
+                        }
                     },
                     None => {
                         info!("User triggered daemon shutdown.");

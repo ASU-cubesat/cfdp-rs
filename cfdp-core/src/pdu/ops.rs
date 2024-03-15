@@ -31,6 +31,7 @@ macro_rules! impl_id {
 pub type EntityID = VariableID;
 pub type TransactionSeqNum = VariableID;
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Copy)]
+/// All possible variable length IDs as defined in CCSDS standard.
 pub enum VariableID {
     U8(u8),
     U16(u16),
@@ -44,6 +45,7 @@ impl_id!(u64, VariableID::U64);
 impl TryFrom<Vec<u8>> for VariableID {
     type Error = PDUError;
 
+    /// attempt to construct an ID from a Vec of big endian bytes.
     fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
         let length = value.len();
         match length {
@@ -72,6 +74,7 @@ impl TryFrom<Vec<u8>> for VariableID {
     }
 }
 impl VariableID {
+    /// Incerement the internal counter of the ID. This is useful for sequence numbers.
     pub fn increment(&mut self) {
         match self {
             Self::U8(val) => *val = val.overflowing_add(1).0,
@@ -81,12 +84,14 @@ impl VariableID {
         };
     }
 
+    /// Return the current counter value and then increment.
     pub fn get_and_increment(&mut self) -> Self {
         let current = *self;
         self.increment();
         current
     }
 
+    /// Convert the internal counter to Big endian bytes.
     pub fn to_be_bytes(self) -> Vec<u8> {
         match self {
             VariableID::U8(val) => val.to_be_bytes().to_vec(),
@@ -95,6 +100,8 @@ impl VariableID {
             VariableID::U64(val) => val.to_be_bytes().to_vec(),
         }
     }
+
+    /// convert underlying ID to u64
     pub fn to_u64(&self) -> u64 {
         match self {
             VariableID::U8(val) => *val as u64,
@@ -169,6 +176,10 @@ impl PDUEncode for FlowLabel {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// A holder for all possible Messages to the User.
+///
+/// An implementation my have a unique message definiton or include
+/// human readable text.
 pub struct MessageToUser {
     pub message_text: Vec<u8>,
 }
@@ -202,6 +213,7 @@ impl From<UserOperation> for MessageToUser {
 
 #[repr(u8)]
 #[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
+/// The possible field codes for a Metadata TLV field.
 pub enum MetadataTLVFieldCode {
     FileStoreRequest = 0x00,
     FileStoreResponse = 0x01,
@@ -217,6 +229,7 @@ impl Display for MetadataTLVFieldCode {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// All TLV fields related to Metadata
 pub enum MetadataTLV {
     FileStoreRequest(FileStoreRequest),
     FileStoreResponse(FileStoreResponse),
@@ -289,24 +302,34 @@ impl PDUEncode for MetadataTLV {
 
 #[repr(u8)]
 #[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
+//// The possible directive types of a PDU, used to distinguish the PDUs.
 pub enum PDUDirective {
+    /// End of File PDU
     EoF = 0x04,
+    /// Finished PDU
     Finished = 0x05,
+    /// Positive Acknowledgement PDU
     Ack = 0x06,
+    /// Metadata PDU
     Metadata = 0x07,
+    /// Negative Acknowledgement PDU
     Nak = 0x08,
+    /// Prompt PDU
     Prompt = 0x09,
+    /// A Keep alive PDU
     KeepAlive = 0x0C,
 }
 
 #[repr(u8)]
 #[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
+/// Subdirective codes for Positive acknowledgement PDUs.
 pub enum ACKSubDirective {
     Other = 0b0000,
     Finished = 0b0001,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
+/// Continuation state of a record.
 pub enum RecordContinuationState {
     First = 0b01,
     Last = 0b10,
@@ -315,7 +338,9 @@ pub enum RecordContinuationState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Holds File data beginning at the given offset.
 pub struct UnsegmentedFileData {
+    /// Byte offset into the file where this data begins.
     pub offset: u64,
     pub file_data: Vec<u8>,
 }
@@ -351,6 +376,7 @@ impl FSSEncode for UnsegmentedFileData {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Holds segmented file data. Segmentation is implementation dependent.
 pub struct SegmentedFileData {
     pub record_continuation_state: RecordContinuationState,
     pub segment_metadata: Vec<u8>,
@@ -412,6 +438,7 @@ impl FSSEncode for SegmentedFileData {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// A holder for both possible types of File data PDUs.
 pub enum FileDataPDU {
     Unsegmented(UnsegmentedFileData),
     Segmented(SegmentedFileData),
@@ -452,6 +479,7 @@ impl SegmentEncode for FileDataPDU {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// All operations PDUs
 pub enum Operations {
     EoF(EndOfFile),
     Finished(Finished),

@@ -17,7 +17,7 @@ use tokio::{
     sync::mpsc::{Receiver, Sender},
 };
 
-use crate::pdu::{PDUEncode, VariableID, PDU};
+use crate::cfdp_core::pdu::{PDUEncode, VariableID, PDU};
 
 /// Transports are designed to run in a thread in the background
 /// inside a [Daemon](crate::Daemon) process

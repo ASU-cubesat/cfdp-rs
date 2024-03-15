@@ -28,7 +28,7 @@ use cfdp_core::{
     transaction::{Metadata, TransactionConfig, TransactionID, TransactionState},
 };
 
-pub use cfdp_core::*;
+pub use cfdp_core;
 
 pub mod error;
 pub(crate) mod segments;
@@ -644,7 +644,9 @@ mod test {
     use cfdp_core::{
         daemon::NakProcedure,
         filestore::{ChecksumType, NativeFileStore},
-        pdu::{CRCFlag, Condition, FaultHandlerAction, PDUPayload, PositiveAcknowledgePDU, U3},
+        pdu::{
+            self, CRCFlag, Condition, FaultHandlerAction, PDUPayload, PositiveAcknowledgePDU, U3,
+        },
     };
 
     use super::*;

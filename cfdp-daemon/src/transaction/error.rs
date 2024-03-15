@@ -3,7 +3,7 @@ use std::num::TryFromIntError;
 use thiserror::Error;
 use tokio::sync::mpsc::error::SendError;
 
-use crate::{
+use crate::cfdp_core::{
     daemon::{Indication, Report},
     filestore::FileStoreError,
     pdu::{TransactionSeqNum, TransmissionMode, VariableID, PDU},

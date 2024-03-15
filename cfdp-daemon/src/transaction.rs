@@ -5,7 +5,7 @@ pub(crate) mod send;
 pub use recv::RecvTransaction;
 pub use send::SendTransaction;
 
-pub(crate) use error::TransactionError;
+pub use error::TransactionError;
 
 pub type TransactionResult<T> = Result<T, TransactionError>;
 

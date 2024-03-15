@@ -533,11 +533,6 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                     )));
                 }
             };
-        } else {
-            warn!(
-                "No Transport available for EntityID: {}. Skipping Transaction creation.",
-                transport_entity
-            )
         }
 
         Ok(())

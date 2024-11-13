@@ -907,7 +907,6 @@ impl<T: FileStore> RecvTransaction<T> {
                                     || self.recv_state == RecvState::Cancelled)
                                     && ack.directive == PDUDirective::Finished
                                     && ack.directive_subtype_code == ACKSubDirective::Finished
-                                    && ack.condition == Condition::NoError
                                 {
                                     debug!(
                                         "Transaction {0} received ACK Finished({1:?}).",

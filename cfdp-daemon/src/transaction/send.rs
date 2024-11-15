@@ -738,15 +738,12 @@ impl<T: FileStore> SendTransaction<T> {
                                 delivery_code: self.delivery_code,
                             }));
 
-                            match self.condition != Condition::NoError {
-                                true => {
-                                    info!(
-                                        "Transaction {}. Ended due to condition {:?}",
-                                        self.id(),
-                                        self.condition
-                                    );
-                                }
-                                false => {}
+                            if self.condition != Condition::NoError {
+                                info!(
+                                    "Transaction {}. Ended due to condition {:?}",
+                                    self.id(),
+                                    self.condition
+                                );
                             }
                             Ok(())
                         }

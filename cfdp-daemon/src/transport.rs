@@ -7,7 +7,6 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -72,8 +71,6 @@ pub trait PDUTransport {
                     break
                 }
             }
-            // this should be at minimum made configurable
-            tokio::time::sleep(Duration::from_micros(100)).await;
         }
         Ok(())
     }

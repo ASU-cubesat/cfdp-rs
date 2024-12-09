@@ -5,10 +5,7 @@ use std::{
     marker::PhantomData,
     net::SocketAddr,
     path::Path,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, RwLock,
-    },
+    sync::{Arc, RwLock},
     time::Duration,
 };
 

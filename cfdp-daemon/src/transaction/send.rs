@@ -13,7 +13,10 @@ use tokio::sync::{
 };
 
 use cfdp_core::{
-    daemon::{FinishedIndication, Indication, Report, ResumeIndication, SuspendIndication},
+    daemon::{
+        FaultIndication, FinishedIndication, Indication, Report, ResumeIndication,
+        SuspendIndication,
+    },
     filestore::{FileChecksum, FileStore, FileStoreError},
     pdu::{
         ACKSubDirective, Condition, DeliveryCode, Direction, EndOfFile, FaultHandlerAction,
@@ -561,6 +564,15 @@ impl<T: FileStore> SendTransaction<T> {
 
     pub fn abandon(&mut self) {
         debug!("Transaction {0} abandoning.", self.id());
+
+        self.send_indication(Indication::Abandon(FaultIndication {
+            id: self.id(),
+            condition: self.condition,
+            // we don't have a tracker on the amount of progress sent by
+            // a transaction yet.
+            progress: 0,
+        }));
+
         self.status = TransactionStatus::Terminated;
         self.shutdown();
     }

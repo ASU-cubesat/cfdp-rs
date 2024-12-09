@@ -15,8 +15,8 @@ use tokio::sync::{
 
 use cfdp_core::{
     daemon::{
-        FileSegmentIndication, FinishedIndication, Indication, MetadataRecvIndication,
-        NakProcedure, Report, ResumeIndication, SuspendIndication,
+        FaultIndication, FileSegmentIndication, FinishedIndication, Indication,
+        MetadataRecvIndication, NakProcedure, Report, ResumeIndication, SuspendIndication,
     },
     filestore::{FileChecksum, FileStore, FileStoreError},
     pdu::{
@@ -471,6 +471,12 @@ impl<T: FileStore> RecvTransaction<T> {
     pub fn abandon(&mut self) {
         debug!("Transaction {0} abandoning.", self.id());
         self.status = TransactionStatus::Terminated;
+
+        self.send_indication(Indication::Abandon(FaultIndication {
+            id: self.id(),
+            condition: self.condition,
+            progress: self.get_progress(),
+        }));
         self.shutdown();
     }
 
@@ -509,7 +515,15 @@ impl<T: FileStore> RecvTransaction<T> {
                 self.shutdown();
             }
         }
+
         // make some kind of log/indication
+        self.send_indication(Indication::Finished(FinishedIndication {
+            id: self.id(),
+            report: self.generate_report(),
+            file_status: self.file_status,
+            delivery_code: self.delivery_code,
+            filestore_responses: vec![],
+        }));
     }
 
     pub fn suspend(&mut self) -> TransactionResult<()> {

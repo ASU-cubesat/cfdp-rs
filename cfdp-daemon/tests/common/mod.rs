@@ -52,7 +52,7 @@ pub(crate) struct JoD<'a, T> {
     handle: Vec<JoinHandle<T>>,
     phantom: PhantomData<&'a ()>,
 }
-impl<'a, T> From<JoinHandle<T>> for JoD<'a, T> {
+impl<T> From<JoinHandle<T>> for JoD<'_, T> {
     fn from(input: JoinHandle<T>) -> Self {
         Self {
             handle: vec![input],
@@ -716,7 +716,7 @@ impl TestUserHalf {
     }
 }
 
-impl<'a, T> Drop for JoD<'a, T> {
+impl<T> Drop for JoD<'_, T> {
     fn drop(&mut self) {
         for handle in self.handle.drain(..) {
             handle.abort();

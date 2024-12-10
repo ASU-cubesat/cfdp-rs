@@ -10,12 +10,12 @@
  byteorder  = "~1.4"
  camino     = { version = "~1.1" }
  log        = '~0.4'
- num-derive = "0.3"
+ num-derive = "~0.4"
  num-traits = "0.2"
  pathdiff   = "~0.2"
  tempfile   = "~3.3"
  thiserror  = "~1.0"
- tokio      = { version = "1.28.2", default-features = false, features = ["sync"] }
+ tokio      = { version = "1.28.2", default-features = false, features = [ "sync" ] }
 
 [dev-dependencies]
  rstest       = "0.15.0"

@@ -238,8 +238,9 @@ impl<T: FileStore> RecvTransaction<T> {
             if self.recv_state == RecvState::Cancelled {
                 warn!("Transaction {} inactivity timeout limit reached in Cancelled state, abandoning", self.id());
                 self.abandon();
-            } else {
-                self.handle_fault(Condition::InactivityDetected)?;
+                return Ok(());
+            } else if !self.handle_fault(Condition::InactivityDetected)? {
+                return Ok(());
             }
         } else if self.timer.inactivity.timeout_occurred() {
             self.timer.restart_inactivity();
@@ -253,7 +254,9 @@ impl<T: FileStore> RecvTransaction<T> {
             }
             RecvState::Finished => {
                 if self.timer.ack.limit_reached() {
-                    self.handle_fault(Condition::PositiveLimitReached)?;
+                    if !self.handle_fault(Condition::PositiveLimitReached)? {
+                        return Ok(());
+                    }
                 } else if self.timer.ack.timeout_occurred() {
                     self.set_finished_flag(true);
                     self.timer.restart_ack();
@@ -266,6 +269,7 @@ impl<T: FileStore> RecvTransaction<T> {
                         self.id()
                     );
                     self.abandon();
+                    return Ok(());
                 } else if self.timer.ack.timeout_occurred() {
                     self.set_finished_flag(true);
                     self.timer.restart_ack();

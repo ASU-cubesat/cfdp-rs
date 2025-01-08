@@ -250,6 +250,7 @@ fn fixture_f2s06(static_assets: &StaticAssets) -> EntityConstructorReturn {
 
 #[rstest]
 #[timeout(Duration::from_secs(15))]
+#[test_log::test]
 // Series F2
 // Sequence 6 Test
 // Test goal:

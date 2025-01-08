@@ -19,16 +19,17 @@ use cfdp_core::{
     filestore::{ChecksumType, FileStore, NativeFileStore},
     pdu::{
         CRCFlag, Condition, DirectoryListingResponse, EntityID, FaultHandlerAction,
-        ListingResponseCode, MessageToUser, OriginatingTransactionIDMessage, PDUDirective,
-        PDUEncode, PDUPayload, ProxyOperation, ProxyPutRequest, ProxyPutResponse,
-        RemoteStatusReportResponse, RemoteSuspendResponse, TransactionSeqNum, TransactionStatus,
-        TransmissionMode, UserOperation, UserRequest, UserResponse, VariableID, PDU,
+        ListingResponseCode, MessageToUser, Operations, OriginatingTransactionIDMessage,
+        PDUDirective, PDUEncode, PDUPayload, PositiveAcknowledgePDU, ProxyOperation,
+        ProxyPutRequest, ProxyPutResponse, RemoteStatusReportResponse, RemoteSuspendResponse,
+        TransactionSeqNum, TransactionStatus, TransmissionMode, UserOperation, UserRequest,
+        UserResponse, VariableID, PDU,
     },
     transaction::TransactionID,
 };
 
 use itertools::{Either, Itertools};
-use log::info;
+use log::{debug, info};
 use tempfile::TempDir;
 
 use rstest::fixture;
@@ -581,6 +582,12 @@ impl TestUser {
                     Indication::Report(report) => {
                         auto_history.write().unwrap().insert(report.id, report);
                     }
+                    Indication::FileSegmentRecv(filesegment) => {
+                        debug!(
+                            "Transaction {} Received file data offset {} length {}",
+                            filesegment.id, filesegment.offset, filesegment.length
+                        );
+                    }
                     // ignore everything else for now.
                     _ => {}
                 };
@@ -989,6 +996,8 @@ pub(crate) struct LossyTransport {
     pub(crate) socket: UdpSocket,
     entity_map: HashMap<VariableID, SocketAddr>,
     counter: usize,
+    //  [MetaData, Nak, ACK(EOF), Finished, ACK(Fin)]
+    every_counter: [u8; 5],
     issue: TransportIssue,
     buffer: Vec<PDU>,
     bytes: Vec<u8>,
@@ -1005,6 +1014,7 @@ impl LossyTransport {
             socket,
             entity_map,
             counter: 1,
+            every_counter: [0_u8; 5],
             issue,
             buffer: vec![],
             bytes: vec![0_u8; u16::MAX as usize],
@@ -1021,6 +1031,7 @@ impl TryFrom<(UdpSocket, HashMap<VariableID, SocketAddr>, TransportIssue)> for L
             socket: inputs.0,
             entity_map: inputs.1,
             counter: 1,
+            every_counter: [0_u8; 5],
             issue: inputs.2,
             buffer: vec![],
             bytes: vec![0_u8; u16::MAX as usize],
@@ -1127,40 +1138,68 @@ impl PDUTransport for LossyTransport {
             },
             // only drop the PDUs if we have not yet send EoF.
             // Flip the counter on EoF to signify we can send again.
-            TransportIssue::Every => match &pdu.payload {
-                PDUPayload::Directive(operation) => {
-                    match (self.counter, operation.get_directive()) {
-                        (1, PDUDirective::EoF) => {
-                            self.counter += 1;
-                            self.socket
-                                .send_to(pdu.encode().as_slice(), addr)
-                                .await
-                                .map(|_n| ())
+            TransportIssue::Every => {
+                match &pdu.payload {
+                    PDUPayload::Directive(operation) => {
+                        match operation.get_directive() {
+                            PDUDirective::Metadata => {
+                                if self.every_counter[0] == 0 {
+                                    self.every_counter[0] += 1;
+                                    debug!("skipping {pdu:?}");
+                                    return Ok(());
+                                }
+                            }
+                            PDUDirective::Nak => {
+                                // naks are sent after EoF and and AckEoF
+                                // only thing after this is to send the Fin
+                                if self.every_counter[1] == 0 {
+                                    self.every_counter[1] += 1;
+                                    debug!("skipping {pdu:?}");
+                                    return Ok(());
+                                }
+                            }
+                            PDUDirective::Ack => {
+                                if let PDUPayload::Directive(Operations::Ack(
+                                    PositiveAcknowledgePDU {
+                                        directive: PDUDirective::EoF,
+                                        ..
+                                    },
+                                )) = &pdu.payload
+                                {
+                                    if self.every_counter[2] == 0 {
+                                        self.every_counter[2] += 1;
+                                        debug!("skipping {pdu:?}");
+                                        return Ok(());
+                                    }
+                                } else if self.every_counter[4] == 0 {
+                                    self.every_counter[4] += 1;
+                                    debug!("skipping {pdu:?}");
+                                    return Ok(());
+                                }
+                            }
+                            PDUDirective::Finished => {
+                                // increment counter but still don't send it
+                                if self.every_counter[3] == 0 {
+                                    self.every_counter[3] += 1;
+                                    debug!("skipping {pdu:?}");
+                                    return Ok(());
+                                }
+                            }
+                            // others can be sent no problem or are not being used in this test
+                            _ => {}
                         }
-                        (1, PDUDirective::Ack) => {
-                            self.counter += 1;
-                            // increment counter but still don't send it
-                            Ok(())
+                    }
+                    PDUPayload::FileData(_data) => {
+                        if self.every_counter[0] == 0 {
+                            return Ok(());
                         }
-                        (1, _) => Ok(()),
-                        (_, _) => self
-                            .socket
-                            .send_to(pdu.encode().as_slice(), addr)
-                            .await
-                            .map(|_n| ()),
                     }
-                }
-                PDUPayload::FileData(_data) => {
-                    if self.counter == 1 {
-                        Ok(())
-                    } else {
-                        self.socket
-                            .send_to(pdu.encode().as_slice(), addr)
-                            .await
-                            .map(|_n| ())
-                    }
-                }
-            },
+                };
+                self.socket
+                    .send_to(pdu.encode().as_slice(), addr)
+                    .await
+                    .map(|_n| ())
+            }
             TransportIssue::Inactivity => {
                 // Send the Metadata PDU only, and nothing else.
                 if self.counter == 1 {

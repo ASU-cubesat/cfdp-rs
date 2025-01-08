@@ -10,7 +10,7 @@
  cfdp-core   = { path = "../cfdp-core" }
  camino      = { version = "~1.1" }
  log         = '~0.4'
- tokio       = { version = "1.28.2", features = ["time", "net", "rt-multi-thread", "macros"] }
+ tokio       = { version = "1.28.2", features = [ "time", "net", "rt-multi-thread", "macros" ] }
  thiserror   = "~1.0"
 
 
@@ -18,4 +18,5 @@
  itertools = "~0.10"
  rstest    = "0.15.0"
  tempfile  = "~3.3"
- tokio     = { version = "1.28.2", features = ["parking_lot", "macros"] }
+ test-log  = "0.2.16"
+ tokio     = { version = "1.28.2", features = [ "parking_lot", "macros" ] }

@@ -623,7 +623,7 @@ impl<T: FileStore> RecvTransaction<T> {
     }
 
     fn check_file_size(&mut self, file_size: u64) -> TransactionResult<()> {
-        if self.saved_segments.end_or_0() != file_size {
+        if self.saved_segments.end_or_0() > file_size {
             warn!(
                 "EOF file size {} differs from file size received in file data {}",
                 file_size, self.received_file_size

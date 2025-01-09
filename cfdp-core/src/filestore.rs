@@ -625,7 +625,7 @@ mod test {
     #[rstest]
     fn get_filesize(test_filestore: &NativeFileStore) -> FileStoreResult<()> {
         let input_text = "Hello, world!";
-        let expected = input_text.as_bytes().len() as u64;
+        let expected = input_text.len() as u64;
         {
             let mut file =
                 test_filestore.open("test.dat", OpenOptions::new().create(true).write(true))?;
@@ -703,8 +703,8 @@ f,test.txt,{s5},{t5}
             s1 = dir_size.get("one").unwrap(),
             s2 = dir_size.get("three").unwrap(),
             s3 = dir_size.get("two").unwrap(),
-            s4 = input_text2.as_bytes().len(),
-            s5 = input_text.as_bytes().len(),
+            s4 = input_text2.len(),
+            s5 = input_text.len(),
         );
         let listing = test_filestore.list_directory("listing")?;
         assert_eq!(expected_listing, listing);

@@ -494,7 +494,7 @@ mod test {
         )]
         input_message: &str,
     ) {
-        let mut buffer: Vec<u8> = vec![input_message.as_bytes().len() as u8];
+        let mut buffer: Vec<u8> = vec![input_message.len() as u8];
         buffer.extend_from_slice(input_message.as_bytes());
         let mut input_buffer = &buffer[..];
         assert_ne!(0, input_buffer.len());
@@ -518,7 +518,7 @@ mod test {
         input_message: &str,
     ) {
         let mut buffer: Vec<u8> = vec![message_type as u8];
-        buffer.push(input_message.as_bytes().len() as u8);
+        buffer.push(input_message.len() as u8);
         buffer.extend_from_slice(input_message.as_bytes());
         let mut input_buffer = &buffer[..];
         let (msg_type, message) = read_type_length_value(&mut input_buffer).unwrap();

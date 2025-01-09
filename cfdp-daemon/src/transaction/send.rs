@@ -147,6 +147,8 @@ impl<T: FileStore> SendTransaction<T> {
         Ok(me)
     }
 
+    #[allow(clippy::unnecessary_map_or)]
+    // we can revmoe this if update MSRV >= 1.70
     pub(crate) fn has_pdu_to_send(&self) -> bool {
         self.prompt.is_some()
             || match self.send_state {
@@ -1253,7 +1255,7 @@ mod test {
 
         let (indication_tx, _indication_rx) = channel(10);
         let path = Utf8PathBuf::from("test_eof.dat");
-        let metadata = test_metadata(input.as_bytes().len() as u64, path.clone());
+        let metadata = test_metadata(input.len() as u64, path.clone());
         let mut transaction =
             SendTransaction::new(config, metadata, filestore.clone(), indication_tx).unwrap();
 
@@ -1272,7 +1274,7 @@ mod test {
         let payload = PDUPayload::Directive(Operations::EoF(EndOfFile {
             condition: Condition::NoError,
             checksum,
-            file_size: input.as_bytes().len() as u64,
+            file_size: input.len() as u64,
             fault_location: None,
         }));
         let payload_len = payload.encoded_len(transaction.config.file_size_flag);
@@ -1333,7 +1335,7 @@ mod test {
 
         let (indication_tx, _indication_rx) = channel(10);
         let path = Utf8PathBuf::from(format!("test_eof_{:}.dat", config.transmission_mode as u8));
-        let metadata = test_metadata(input.as_bytes().len() as u64, path.clone());
+        let metadata = test_metadata(input.len() as u64, path.clone());
         let mut transaction =
             SendTransaction::new(config.clone(), metadata, filestore.clone(), indication_tx)
                 .unwrap();
@@ -1353,7 +1355,7 @@ mod test {
         let payload = PDUPayload::Directive(Operations::EoF(EndOfFile {
             condition: Condition::CancelReceived,
             checksum,
-            file_size: input.as_bytes().len() as u64,
+            file_size: input.len() as u64,
             fault_location: Some(config.source_entity_id),
         }));
         let payload_len = payload.encoded_len(config.file_size_flag);
@@ -1485,7 +1487,7 @@ mod test {
         let input = "Here is some test data to write!$*#*.\n";
 
         let (indication_tx, _indication_rx) = channel(10);
-        let metadata = test_metadata(input.as_bytes().len() as u64, path);
+        let metadata = test_metadata(input.len() as u64, path);
         let mut transaction =
             SendTransaction::new(config.clone(), metadata, filestore, indication_tx).unwrap();
 
@@ -2009,7 +2011,7 @@ mod test {
         let input = "Here is some test data to write!$*#*.\n";
 
         let (indication_tx, _indication_rx) = channel(10);
-        let metadata = test_metadata(input.as_bytes().len() as u64, path);
+        let metadata = test_metadata(input.len() as u64, path);
         let mut transaction =
             SendTransaction::new(config.clone(), metadata, filestore, indication_tx).unwrap();
 

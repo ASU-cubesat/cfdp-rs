@@ -171,6 +171,8 @@ impl<T: FileStore> RecvTransaction<T> {
                 self.ack.is_some() || self.prompt.is_some() || !self.naks.is_empty()
             }
             RecvState::Finished | RecvState::Cancelled => {
+                #[allow(clippy::unnecessary_map_or)]
+                // we can revmoe this if update MSRV >= 1.70
                 self.finished.as_ref().map_or(false, |x| x.1)
             }
         }
@@ -201,6 +203,8 @@ impl<T: FileStore> RecvTransaction<T> {
                     }
                 }
                 RecvState::Finished | RecvState::Cancelled => {
+                    #[allow(clippy::unnecessary_map_or)]
+                    // we can revmoe this if update MSRV >= 1.70
                     if self.ack.is_some() {
                         self.send_ack_eof(permit)?;
                     } else if self.finished.as_ref().map_or(false, |x| x.1) {
@@ -1494,7 +1498,7 @@ mod test {
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
-            file_size: input.as_bytes().len() as u64,
+            file_size: input.len() as u64,
             source_filename: path.clone(),
             destination_filename: path,
             message_to_user: vec![],
@@ -1663,7 +1667,7 @@ mod test {
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
-            file_size: input.as_bytes().len() as u64,
+            file_size: input.len() as u64,
             source_filename: path.clone(),
             destination_filename: path,
             message_to_user: vec![],
@@ -1728,7 +1732,7 @@ mod test {
 
         transaction.metadata = Some(Metadata {
             closure_requested: false,
-            file_size: input.as_bytes().len() as u64,
+            file_size: input.len() as u64,
             source_filename: path.clone(),
             destination_filename: path.clone(),
             message_to_user: vec![],

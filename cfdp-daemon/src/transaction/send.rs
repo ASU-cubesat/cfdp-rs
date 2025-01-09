@@ -61,6 +61,8 @@ pub struct SendTransaction<T: FileStore> {
     naks: VecDeque<SegmentRequestForm>,
     ///  The metadata of this Transaction
     pub(crate) metadata: Metadata,
+    /// Measurement of how much of the file has been sent so far
+    sent_file_size: u64,
     /// Measurement of how large of a file has been received so far
     received_file_size: u64,
     /// a cache of the header used for interactions in this transmission
@@ -109,7 +111,6 @@ impl<T: FileStore> SendTransaction<T> {
         // Sender channel used to propagate Message To User back up to the Daemon Thread.
         indication_tx: Sender<Indication>,
     ) -> TransactionResult<Self> {
-        let received_file_size = 0_u64;
         let timer = Timer::new(
             config.inactivity_timeout,
             config.max_count,
@@ -126,7 +127,8 @@ impl<T: FileStore> SendTransaction<T> {
             file_handle: None,
             naks: VecDeque::new(),
             metadata,
-            received_file_size,
+            sent_file_size: 0_u64,
+            received_file_size: 0_u64,
             header: None,
             condition: Condition::NoError,
             delivery_code: DeliveryCode::Incomplete,
@@ -187,7 +189,7 @@ impl<T: FileStore> SendTransaction<T> {
                         // if we have received a NAK send the missing data
                         self.send_missing_data(permit)?;
                     } else {
-                        self.send_file_segment(None, None, permit)?
+                        self.send_file_segment(None, None, permit, true)?
                     }
 
                     let handle = self.get_handle()?;
@@ -389,14 +391,13 @@ impl<T: FileStore> SendTransaction<T> {
         &mut self,
         offset: Option<u64>,
         length: Option<u16>,
+        update_progress: bool,
     ) -> TransactionResult<(u64, Vec<u8>)> {
         // use the maximum size for the receiver if no length is given
         let length = length.unwrap_or(self.config.file_size_segment);
         let handle = self.get_handle()?;
         // if no offset given read from current cursor position
         let offset = offset.unwrap_or(handle.stream_position().map_err(FileStoreError::IO)?);
-
-        // If the offset is not provided start at the current position
 
         handle
             .seek(SeekFrom::Start(offset))
@@ -412,6 +413,13 @@ impl<T: FileStore> SendTransaction<T> {
             buff
         };
 
+        // per CCSDS 727.0-B-5 sent progress is
+        // "the maximum progress value over all File Data PDUs sent so far in the course of this transaction"
+        // so we should record new progress only the first time a file segment is sent.
+        if update_progress {
+            self.sent_file_size += offset + length as u64;
+        }
+
         Ok((offset, data))
     }
 
@@ -424,8 +432,9 @@ impl<T: FileStore> SendTransaction<T> {
         offset: Option<u64>,
         length: Option<u16>,
         permit: Permit<(VariableID, PDU)>,
+        update_progress: bool,
     ) -> TransactionResult<()> {
-        let (offset, file_data) = self.get_file_segment(offset, length)?;
+        let (offset, file_data) = self.get_file_segment(offset, length, update_progress)?;
 
         let (data, segmentation_control) = match self.config.segment_metadata_flag {
             SegmentedData::NotPresent => (
@@ -475,7 +484,7 @@ impl<T: FileStore> SendTransaction<T> {
                             handle.stream_position().map_err(FileStoreError::IO)?
                         };
 
-                        self.send_file_segment(Some(offset), Some(length), permit)?;
+                        self.send_file_segment(Some(offset), Some(length), permit, false)?;
 
                         // restore to original location in the file
                         let handle = self.get_handle()?;
@@ -608,6 +617,10 @@ impl<T: FileStore> SendTransaction<T> {
         Ok(())
     }
 
+    fn get_progress(&self) -> u64 {
+        self.sent_file_size
+    }
+
     pub fn resume(&mut self) -> TransactionResult<()> {
         match self.send_state {
             SendState::SendEof | SendState::Cancelled => {
@@ -619,18 +632,11 @@ impl<T: FileStore> SendTransaction<T> {
 
         self.state = TransactionState::Active;
 
-        // use the current location in the file as the progress
-        let progress = match self.is_file_transfer() {
-            true => {
-                let handle = self.get_handle()?;
-                handle.stream_position().map_err(FileStoreError::IO)?
-            }
-            false => 0,
-        };
-
         self.send_indication(Indication::Resumed(ResumeIndication {
             id: self.id(),
-            progress,
+            // this will always be 0 for non file transfers,
+            // and the largest offset + len sent in a transfer
+            progress: self.get_progress(),
         }));
         Ok(())
     }
@@ -639,6 +645,13 @@ impl<T: FileStore> SendTransaction<T> {
     /// Returns a boolean indicating if the calling function should continue (true) or not (false.)
     fn handle_fault(&mut self, condition: Condition) -> TransactionResult<()> {
         self.condition = condition;
+
+        self.send_indication(Indication::Fault(FaultIndication {
+            id: self.id(),
+            condition: self.condition,
+            progress: self.get_progress(),
+        }));
+
         let action = self
             .config
             .fault_handler_override
@@ -1060,7 +1073,7 @@ mod test {
         );
         let pdu = PDU { header, payload };
 
-        tokio::task::spawn(async move {
+        let handle = tokio::task::spawn(async move {
             let fname = transaction.metadata.source_filename.clone();
 
             {
@@ -1085,13 +1098,21 @@ mod test {
                     Some(offset),
                     Some(length as u16),
                     transport_tx.reserve().await.unwrap(),
+                    true,
                 )
                 .unwrap();
+
+            (transaction.sent_file_size, offset + length as u64)
         });
         let (destination_id, received_pdu) = transport_rx.recv().await.unwrap();
         let expected_id = default_config.destination_entity_id;
         assert_eq!(expected_id, destination_id);
         assert_eq!(pdu, received_pdu);
+
+        let (actual_progress, expected_progress) =
+            handle.await.expect("error awaiting sent progress.");
+        assert_eq!(expected_progress, actual_progress);
+
         filestore.delete_file(path).expect("cannot remove file");
     }
 

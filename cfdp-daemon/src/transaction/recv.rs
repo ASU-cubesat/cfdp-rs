@@ -568,6 +568,13 @@ impl<T: FileStore> RecvTransaction<T> {
     fn handle_fault(&mut self, condition: Condition) -> TransactionResult<bool> {
         self.condition = condition;
         warn!("Transaction {} Handling fault {:?}", self.id(), condition);
+
+        self.send_indication(Indication::Fault(FaultIndication {
+            id: self.id(),
+            condition: self.condition,
+            progress: self.get_progress(),
+        }));
+
         match self
             .config
             .fault_handler_override

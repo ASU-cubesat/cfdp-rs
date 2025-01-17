@@ -23,7 +23,8 @@ fn fixture_f2s01(static_assets: &StaticAssets) -> EntityConstructorReturn {
 }
 
 #[rstest]
-#[timeout(Duration::from_secs(5))]
+#[timeout(Duration::from_secs(10))]
+#[test_log::test]
 // Series F2
 // Sequence 1 Test
 // Test goal:

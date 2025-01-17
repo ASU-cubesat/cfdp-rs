@@ -762,7 +762,7 @@ pub(crate) async fn create_daemons<T: FileStore + Sync + Send + 'static>(
         crc_flag: CRCFlag::NotPresent,
         closure_requested: false,
         checksum_type: ChecksumType::Modular,
-        nak_procedure: NakProcedure::Deferred(Duration::ZERO),
+        nak_procedure: NakProcedure::Deferred(Duration::from_secs_f32(0.1)),
     };
 
     let remote_config = HashMap::from([
@@ -1104,6 +1104,7 @@ impl PDUTransport for LossyTransport {
             TransportIssue::Once(skip_directive) => match &pdu.payload {
                 PDUPayload::Directive(operation) => {
                     if self.counter == 1 && operation.get_directive() == *skip_directive {
+                        debug!("Skipping instance of {skip_directive:?}");
                         self.counter += 1;
                         Ok(())
                     } else {

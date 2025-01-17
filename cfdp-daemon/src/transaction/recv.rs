@@ -228,6 +228,9 @@ impl<T: FileStore> RecvTransaction<T> {
         }
 
         if idx > 0 {
+            if self.metadata.is_none() {
+                self.naks.push_back((0_u64, 0_u64).into());
+            }
             for (_, start, end) in self.delayed_nack_timers.drain(0..idx) {
                 for (start_offset, end_offset) in self.saved_segments.gaps(start, end) {
                     self.naks.push_back(SegmentRequestForm {
@@ -715,8 +718,7 @@ impl<T: FileStore> RecvTransaction<T> {
 
     fn send_naks(&mut self, permit: Permit<(VariableID, PDU)>) -> TransactionResult<()> {
         if self.nak_received_file_size == self.received_file_size {
-            if self.timer.nak.limit_reached() {
-                self.handle_fault(Condition::NakLimitReached)?;
+            if self.timer.nak.limit_reached() && !self.handle_fault(Condition::NakLimitReached)? {
                 return Ok(());
             }
             self.timer.restart_nak();
@@ -910,8 +912,10 @@ impl<T: FileStore> RecvTransaction<T> {
                                         } else {
                                             // we need to check/send the gaps only after this delta has expired
                                             // start a counter for that
+                                            let mut counter = Counter::new(delay, 1);
+                                            counter.start();
                                             self.delayed_nack_timers.push((
-                                                Counter::new(delay, 1),
+                                                counter,
                                                 0,
                                                 eof.file_size,
                                             ));
@@ -2523,7 +2527,7 @@ mod test {
         let (transport_tx, mut transport_rx) = channel(10);
         let (indication_tx, _indication_rx) = channel(10);
         let mut config = default_config.clone();
-        config.file_size_segment = 16;
+        config.file_size_segment = 32;
         config.transmission_mode = TransmissionMode::Acknowledged;
 
         let expected_id = config.source_entity_id;
@@ -2558,10 +2562,16 @@ mod test {
             let payload = PDUPayload::Directive(Operations::Nak(NegativeAcknowledgmentPDU {
                 start_of_scope: 0,
                 end_of_scope: 16,
-                segment_requests: vec![SegmentRequestForm {
-                    start_offset: 0,
-                    end_offset: 16,
-                }],
+                segment_requests: vec![
+                    SegmentRequestForm {
+                        start_offset: 0,
+                        end_offset: 0,
+                    },
+                    SegmentRequestForm {
+                        start_offset: 0,
+                        end_offset: 16,
+                    },
+                ],
             }));
 
             let payload_len = payload.encoded_len(transaction.config.file_size_flag);

@@ -2,7 +2,7 @@ use std::{thread, time::Duration};
 
 use camino::Utf8PathBuf;
 use cfdp_core::{
-    daemon::PutRequest,
+    daemon::{NakProcedure, PutRequest},
     filestore::FileStore,
     pdu::{Condition, EntityID, PDUDirective, TransmissionMode},
 };
@@ -19,6 +19,7 @@ fn fixture_f2s01(static_assets: &StaticAssets) -> EntityConstructorReturn {
         Some(TransportIssue::Once(PDUDirective::Metadata)),
         None,
         [None; 3],
+        NakProcedure::Deferred(Duration::from_secs_f32(0.1)),
     )
 }
 
@@ -66,6 +67,7 @@ fn fixture_f2s02(static_assets: &StaticAssets) -> EntityConstructorReturn {
         Some(TransportIssue::Once(PDUDirective::EoF)),
         None,
         [None; 3],
+        NakProcedure::Deferred(Duration::ZERO),
     )
 }
 
@@ -111,6 +113,7 @@ fn fixture_f2s03(static_assets: &StaticAssets) -> EntityConstructorReturn {
         Some(TransportIssue::Once(PDUDirective::Finished)),
         None,
         [None; 3],
+        NakProcedure::Deferred(Duration::ZERO),
     )
 }
 
@@ -156,6 +159,7 @@ fn fixture_f2s04(static_assets: &StaticAssets) -> EntityConstructorReturn {
         None,
         Some(TransportIssue::Once(PDUDirective::Ack)),
         [None; 3],
+        NakProcedure::Deferred(Duration::ZERO),
     )
 }
 
@@ -201,6 +205,7 @@ fn fixture_f2s05(static_assets: &StaticAssets) -> EntityConstructorReturn {
         Some(TransportIssue::Once(PDUDirective::Ack)),
         None,
         [None; 3],
+        NakProcedure::Deferred(Duration::ZERO),
     )
 }
 
@@ -246,6 +251,7 @@ fn fixture_f2s06(static_assets: &StaticAssets) -> EntityConstructorReturn {
         Some(TransportIssue::Every),
         Some(TransportIssue::Every),
         [None; 3],
+        NakProcedure::Deferred(Duration::from_secs_f32(0.1)),
     )
 }
 
@@ -295,6 +301,7 @@ fn fixture_f2s07(static_assets: &StaticAssets) -> EntityConstructorReturn {
             PDUDirective::Ack,
         ])),
         [Some(10), None, None],
+        NakProcedure::Deferred(Duration::ZERO),
     )
 }
 
@@ -355,6 +362,7 @@ fn fixture_f2s08(static_assets: &StaticAssets) -> EntityConstructorReturn {
         Some(TransportIssue::All(vec![PDUDirective::Metadata])),
         Some(TransportIssue::All(vec![PDUDirective::Nak])),
         [Some(10), Some(1), Some(1)],
+        NakProcedure::Deferred(Duration::ZERO),
     )
 }
 
@@ -412,6 +420,7 @@ fn fixture_f2s09(static_assets: &StaticAssets) -> EntityConstructorReturn {
         None,
         Some(TransportIssue::All(vec![PDUDirective::Finished])),
         [Some(1), Some(10), Some(1)],
+        NakProcedure::Deferred(Duration::ZERO),
     )
 }
 
@@ -470,6 +479,7 @@ fn fixture_f2s10(static_assets: &StaticAssets) -> EntityConstructorReturn {
         Some(TransportIssue::Inactivity),
         None,
         [Some(1), Some(10), Some(10)],
+        NakProcedure::Deferred(Duration::ZERO),
     )
 }
 

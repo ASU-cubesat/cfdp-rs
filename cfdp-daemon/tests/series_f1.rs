@@ -2,7 +2,7 @@ use std::{thread, time::Duration};
 
 use camino::Utf8PathBuf;
 use cfdp_core::{
-    daemon::PutRequest,
+    daemon::{NakProcedure, PutRequest},
     filestore::FileStore,
     pdu::{
         Condition, EntityID, MessageToUser, ProxyOperation, ProxyPutRequest, TransmissionMode,
@@ -123,6 +123,7 @@ fn fixture_f1s04(static_assets: &StaticAssets) -> EntityConstructorReturn {
         Some(TransportIssue::Rate(13)),
         None,
         [None; 3],
+        NakProcedure::Deferred(Duration::ZERO),
     )
 }
 
@@ -167,6 +168,7 @@ fn fixture_f1s05(static_assets: &StaticAssets) -> EntityConstructorReturn {
         Some(TransportIssue::Duplicate(13)),
         None,
         [None; 3],
+        NakProcedure::Deferred(Duration::ZERO),
     )
 }
 
@@ -212,6 +214,7 @@ fn fixture_f1s06(static_assets: &StaticAssets) -> EntityConstructorReturn {
         Some(TransportIssue::Reorder(13)),
         None,
         [None; 3],
+        NakProcedure::Deferred(Duration::ZERO),
     )
 }
 

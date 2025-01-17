@@ -748,6 +748,7 @@ pub(crate) async fn create_daemons<T: FileStore + Sync + Send + 'static>(
     local_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>>,
     remote_transport_map: HashMap<Vec<EntityID>, Box<dyn PDUTransport + Send>>,
     timeouts: Timeouts,
+    nak_procedure: NakProcedure,
 ) -> DaemonType {
     let config = EntityConfig {
         fault_handler_override: HashMap::from([(
@@ -762,7 +763,7 @@ pub(crate) async fn create_daemons<T: FileStore + Sync + Send + 'static>(
         crc_flag: CRCFlag::NotPresent,
         closure_requested: false,
         checksum_type: ChecksumType::Modular,
-        nak_procedure: NakProcedure::Deferred(Duration::from_secs_f32(0.1)),
+        nak_procedure,
     };
 
     let remote_config = HashMap::from([
@@ -891,6 +892,7 @@ pub(crate) fn new_entities(
     local_transport_issue: Option<TransportIssue>,
     remote_transport_issue: Option<TransportIssue>,
     timeouts: Timeouts,
+    nak_procedure: NakProcedure,
 ) -> EntityConstructorReturn {
     let (local_user, remote_user, local_handle, remote_handle) =
         static_assets.tokio_runtime.block_on(async move {
@@ -944,6 +946,7 @@ pub(crate) fn new_entities(
                 local_transport_map,
                 remote_transport_map,
                 timeouts,
+                nak_procedure,
             )
             .await
         });
@@ -960,7 +963,13 @@ pub(crate) fn new_entities(
 #[fixture]
 #[once]
 fn make_entities(static_assets: &StaticAssets) -> EntityConstructorReturn {
-    new_entities(static_assets, None, None, [None; 3])
+    new_entities(
+        static_assets,
+        None,
+        None,
+        [None; 3],
+        NakProcedure::Deferred(Duration::ZERO),
+    )
 }
 
 pub(crate) type UsersAndFilestore = (

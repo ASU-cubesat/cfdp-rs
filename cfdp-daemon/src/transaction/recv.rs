@@ -1047,6 +1047,11 @@ impl<T: FileStore> RecvTransaction<T> {
                                         .map(|meta| meta.closure_requested)
                                         .unwrap_or(false)
                                 {
+                                    debug!(
+                                        "Transaction {0} received ACK Finished({1:?}).",
+                                        self.id(),
+                                        ack.condition
+                                    );
                                     Ok(())
                                 } else {
                                     // No other ACKs are expected for a receiver
@@ -1061,6 +1066,7 @@ impl<T: FileStore> RecvTransaction<T> {
                                 }
                             }
                             Operations::EoF(eof) => {
+                                debug!("Transaction {0} received EndOfFile.", self.id());
                                 self.condition = eof.condition;
                                 self.checksum = Some(eof.checksum);
 
@@ -1094,6 +1100,7 @@ impl<T: FileStore> RecvTransaction<T> {
                                 Ok(())
                             }
                             Operations::Metadata(metadata) => {
+                                debug!("Transaction {0} received Metadata.", self.id());
                                 if self.metadata.is_none() {
                                     let message_to_user =
                                         metadata.options.iter().filter_map(|op| match op {

@@ -13,7 +13,7 @@
  num-derive = "~0.4"
  num-traits = "0.2"
  pathdiff   = "~0.2"
- tempfile   = "~3.3"
+ tempfile   = "~3"
  thiserror  = "~1.0"
  tokio      = { version = "1.28.2", default-features = false, features = [ "sync" ] }
 

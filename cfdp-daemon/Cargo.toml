@@ -11,7 +11,7 @@
  camino      = { version = "~1.1" }
  log         = '~0.4'
  tokio       = { version = "1.28.2", features = [ "time", "net", "rt-multi-thread", "macros" ] }
- thiserror   = "~1.0"
+ thiserror   = "~2.0"
 
 
 [dev-dependencies]

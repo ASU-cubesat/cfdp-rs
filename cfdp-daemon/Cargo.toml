@@ -15,7 +15,7 @@
 
 
 [dev-dependencies]
- itertools = "~0.10"
+ itertools = "~0.14"
  rstest    = "0.15.0"
  tempfile  = "~3"
  test-log  = "0.2.16"

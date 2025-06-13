@@ -18,5 +18,5 @@
  tokio      = { version = "1.28.2", default-features = false, features = [ "sync" ] }
 
 [dev-dependencies]
- rstest       = "0.15.0"
+ rstest       = "0.25.0"
  rstest_reuse = "0.7.0"

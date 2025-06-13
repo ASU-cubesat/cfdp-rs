@@ -14,7 +14,7 @@
  num-traits = "0.2"
  pathdiff   = "~0.2"
  tempfile   = "~3"
- thiserror  = "~1.0"
+ thiserror  = "~2.0"
  tokio      = { version = "1.28.2", default-features = false, features = [ "sync" ] }
 
 [dev-dependencies]

@@ -33,7 +33,7 @@ pub enum Condition {
     /// File did not have the correct structure.
     InvalidFileStructure = 0b1001,
     /// A finished PDU was not received by closure request during an
-    /// Unacklowdged transaction within the given time limit.
+    /// Unacknowledged transaction within the given time limit.
     CheckLimitReached = 0b1010,
     /// The checksum method requested is not supported by this implementation.
     UnsupportedChecksumType = 0b1011,
@@ -59,7 +59,7 @@ pub enum U3 {
 
 #[repr(u8)]
 #[derive(Clone, Debug, PartialEq, Eq, FromPrimitive)]
-/// A flag to differentiate the payalod type of the PDU.
+/// A flag to differentiate the payload type of the PDU.
 pub enum PDUType {
     /// Payload contains a file directive.
     FileDirective = 0,

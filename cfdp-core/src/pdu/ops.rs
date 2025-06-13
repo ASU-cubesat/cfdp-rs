@@ -74,7 +74,7 @@ impl TryFrom<Vec<u8>> for VariableID {
     }
 }
 impl VariableID {
-    /// Incerement the internal counter of the ID. This is useful for sequence numbers.
+    /// Increment the internal counter of the ID. This is useful for sequence numbers.
     pub fn increment(&mut self) {
         match self {
             Self::U8(val) => *val = val.overflowing_add(1).0,
@@ -178,7 +178,7 @@ impl PDUEncode for FlowLabel {
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// A holder for all possible Messages to the User.
 ///
-/// An implementation my have a unique message definiton or include
+/// An implementation my have a unique message definition or include
 /// human readable text.
 pub struct MessageToUser {
     pub message_text: Vec<u8>,
@@ -564,7 +564,7 @@ impl FSSEncode for EndOfFile {
     type PDUType = Self;
 
     fn encoded_len(&self, file_size_flag: FileSizeFlag) -> u16 {
-        //  condidition (4 bits + 4 bits spare)
+        //  condition (4 bits + 4 bits spare)
         //  checksum (4 bytes)
         //  File_size (FSS)
         //  Fault Location (0 or TLV of fault location)
@@ -597,9 +597,9 @@ impl FSSEncode for EndOfFile {
         let mut u8_buff = [0_u8; 1];
         buffer.read_exact(&mut u8_buff)?;
         let condition = {
-            let possible_conditon = (u8_buff[0] & 0xF0) >> 4;
-            Condition::from_u8(possible_conditon)
-                .ok_or(PDUError::InvalidCondition(possible_conditon))?
+            let possible_condition = (u8_buff[0] & 0xF0) >> 4;
+            Condition::from_u8(possible_condition)
+                .ok_or(PDUError::InvalidCondition(possible_condition))?
         };
         let checksum = {
             let mut u32_buff = [0_u8; 4];
@@ -699,9 +699,9 @@ impl PDUEncode for Finished {
         let mut u8_buff = [0_u8; 1];
         buffer.read_exact(&mut u8_buff)?;
         let condition = {
-            let possible_conditon = (u8_buff[0] & 0xF0) >> 4;
-            Condition::from_u8(possible_conditon)
-                .ok_or(PDUError::InvalidCondition(possible_conditon))?
+            let possible_condition = (u8_buff[0] & 0xF0) >> 4;
+            Condition::from_u8(possible_condition)
+                .ok_or(PDUError::InvalidCondition(possible_condition))?
         };
 
         let delivery_code = {
@@ -733,12 +733,12 @@ impl PDUEncode for Finished {
                 &condition,
                 MetadataTLVFieldCode::from_u8(type_code).ok_or(PDUError::MessageType(type_code))?,
             ) {
-                // When no error is present, the only TLVS will be FileStoreResponses
+                // When no error is present, the only TLVs will be FileStoreResponses
                 (Condition::NoError, MetadataTLVFieldCode::FileStoreResponse) => {
                     let value = read_length_value_pair(remaining_buffer)?;
                     filestore_response.push(FileStoreResponse::decode(&mut value.as_slice())?)
                 }
-                // Any other TLV code is unexpectd. Probably a bit flip error.
+                // Any other TLV code is unexpected. Probably a bit flip error.
                 (Condition::NoError, code) => {
                     return Err(PDUError::UnexpectedMessage(
                         MetadataTLVFieldCode::FileStoreResponse.to_string(),
@@ -829,9 +829,9 @@ impl PDUEncode for PositiveAcknowledgePDU {
         buffer.read_exact(&mut u8_buff)?;
 
         let condition = {
-            let possible_conditon = (u8_buff[0] & 0xF0) >> 4;
-            Condition::from_u8(possible_conditon)
-                .ok_or(PDUError::InvalidCondition(possible_conditon))?
+            let possible_condition = (u8_buff[0] & 0xF0) >> 4;
+            Condition::from_u8(possible_condition)
+                .ok_or(PDUError::InvalidCondition(possible_condition))?
         };
 
         let transaction_status = {
@@ -1147,7 +1147,7 @@ mod test {
     #[case(VariableID::from(300_u16), VariableID::from(301_u16))]
     #[case(VariableID::from(867381_u32), VariableID::from(867382_u32))]
     #[case(VariableID::from(857198297_u64), VariableID::from(857198298_u64))]
-    fn increment_varible_id(#[case] id: VariableID, #[case] expected: VariableID) {
+    fn increment_variable_id(#[case] id: VariableID, #[case] expected: VariableID) {
         let mut id = id;
         id.increment();
         assert_eq!(expected, id)
@@ -1162,7 +1162,7 @@ mod test {
     }
 
     #[rstest]
-    fn variableid_encode(
+    fn variable_id_encode(
         #[values(
             VariableID::from(1_u8),
             VariableID::from(300_u16),
@@ -1185,7 +1185,7 @@ mod test {
     #[case(MetadataTLVFieldCode::FaultHandlerOverride, "FaultHandlerOverride".to_owned() )]
     #[case(MetadataTLVFieldCode::FlowLabel, "FlowLabel".to_owned() )]
     #[case(MetadataTLVFieldCode::EntityID, "EntityID".to_owned() )]
-    fn metadatatlv_display(#[case] input: MetadataTLVFieldCode, #[case] expected: String) {
+    fn metadata_tlv_display(#[case] input: MetadataTLVFieldCode, #[case] expected: String) {
         let printed = format!("{input}");
         assert_eq!(expected, printed)
     }
@@ -1203,7 +1203,7 @@ mod test {
             file_data: (0..255).step_by(2).collect::<Vec<u8>>()
         })
     )]
-    fn unsgemented_data(#[case] expected: FileDataPDU) {
+    fn unsegmented_data(#[case] expected: FileDataPDU) {
         let file_size_flag = match &expected {
             FileDataPDU::Unsegmented(UnsegmentedFileData { offset: val, .. })
                 if val <= &u32::MAX.into() =>
@@ -1449,7 +1449,7 @@ mod test {
     #[rstest]
     #[case(PDUDirective::EoF, ACKSubDirective::Other)]
     #[case(PDUDirective::Finished, ACKSubDirective::Finished)]
-    fn ackpdu(
+    fn ack_pdu(
         #[case] directive: PDUDirective,
         #[case] directive_subtype_code: ACKSubDirective,
         #[values(
@@ -1495,7 +1495,7 @@ mod test {
             FileStoreResponse{
                 action_and_status: FileStoreStatus::AppendFile(AppendStatus::NotAllowed),
                 first_filename: "/this/is/a/test/directory/".into(),
-                second_filename: "the/sescond/bad/file.txt".into(),
+                second_filename: "the/second/bad/file.txt".into(),
                 filestore_message: vec![0_u8, 1, 3, 5]
             }
         ),

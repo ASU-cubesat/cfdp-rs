@@ -155,8 +155,8 @@ impl UserRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// User Operations are transported as the paylod of a [MessageToUser]
-/// in a metadataPDU. A reserved "CFDP" identifier is used to delinate User Operations.
+/// User Operations are transported as the payload of a [MessageToUser]
+/// in a metadataPDU. A reserved "CFDP" identifier is used to delineate User Operations.
 pub enum UserOperation {
     OriginatingTransactionIDMessage(OriginatingTransactionIDMessage),
     ProxyOperation(ProxyOperation),
@@ -206,9 +206,9 @@ impl PDUEncode for UserOperation {
                 Self::SFOMessageToUser(inner) => inner.encoded_len(),
                 Self::SFOFlowLabel(inner) => inner.encoded_len(),
                 Self::SFOFaultHandlerOverride(inner) => inner.encoded_len(),
-                // add one to accound for the length field
+                // add one to account for the length field
                 Self::SFOFileStoreRequest(inner) => 1 + inner.encoded_len(),
-                // add one to accound for the length field
+                // add one to account for the length field
                 Self::SFOFileStoreResponse(inner) => 1 + inner.encoded_len(),
                 Self::SFOReport(inner) => inner.encoded_len(),
             }
@@ -1015,7 +1015,7 @@ impl PDUEncode for SFORequest {
     type PDUType = Self;
 
     fn encoded_len(&self) -> u16 {
-        // trace control, transmission mode, segment mode and closure reques
+        // trace control, transmission mode, segment mode and closure request
         1
         // prior way points
         + 1
@@ -1376,7 +1376,7 @@ mod test {
             directory_filename: "/home/me/this_is_Result11.txt".into(),
         }))
     )]
-    #[case::remote_staus_report_request(
+    #[case::remote_status_report_request(
         UserOperation::Request(UserRequest::RemoteStatusReport(RemoteStatusReportRequest{
             source_entity_id: EntityID::from(786567183_u32),
             transaction_sequence_number: TransactionSeqNum::from(u32::MAX - 3u32),
@@ -1437,7 +1437,7 @@ mod test {
                 source_entity_id: EntityID::from(873123_u32),
                 destination_entity_id: EntityID::from(9887373_u32),
                 source_filename: "/test/test/test.test".into(),
-                destination_filename: "notest/notest/notest".into(),
+                destination_filename: "notes/notes/notes".into(),
             }
     ))]
     #[case::sfo_message(UserOperation::SFOMessageToUser(

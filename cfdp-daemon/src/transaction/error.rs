@@ -29,7 +29,7 @@ pub enum TransactionError {
     Daemon(String),
 
     #[error("Error converting from integer: {0}")]
-    IntConverstion(#[from] TryFromIntError),
+    IntConversion(#[from] TryFromIntError),
 
     #[error("Transaction (ID: {0:?}, Mode: {1:?}) received unexpected PDU {2:}.")]
     UnexpectedPDU(TransactionSeqNum, TransmissionMode, String),

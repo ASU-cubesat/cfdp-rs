@@ -45,13 +45,13 @@ pub struct Metadata {
     pub source_filename: Utf8PathBuf,
     /// Bytes of the destination filename, can be null if length is 0.
     pub destination_filename: Utf8PathBuf,
-    /// The size of the file being transfered in this transaction.
+    /// The size of the file being transferred in this transaction.
     pub file_size: u64,
     /// List of any filestore requests to take after transaction is complete
     pub filestore_requests: Vec<FileStoreRequest>,
     /// Any Messages to user received either from the metadataPDU or as input
     pub message_to_user: Vec<MessageToUser>,
-    /// Flag to track whether Transaciton Closure will be requested.
+    /// Flag to track whether Transaction Closure will be requested.
     pub closure_requested: bool,
     /// Flag to track what kind of [Checksum](crate::filestore::ChecksumType) will be used in this transaction.
     pub checksum_type: ChecksumType,
@@ -81,11 +81,11 @@ pub struct TransactionConfig {
     pub segment_metadata_flag: SegmentedData,
     /// Maximum count of timeouts on a timer before a fault is generated.
     pub max_count: u32,
-    /// Maximum amount timeof without activity before the inactivity timer increments its count.
+    /// Maximum amount of time without activity before the inactivity timer increments its count.
     pub inactivity_timeout: i64,
-    /// Maximum amount timeof without activity before the NAK timer increments its count.
+    /// Maximum amount of time without activity before the NAK timer increments its count.
     pub nak_timeout: i64,
-    /// Maximum amount timeof without activity before the ACK timer increments its count.
+    /// Maximum amount of time without activity before the ACK timer increments its count.
     pub ack_timeout: i64,
 }
 

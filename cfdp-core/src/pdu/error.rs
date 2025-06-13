@@ -5,7 +5,7 @@ use super::filestore::FileStoreAction;
 
 pub type PDUResult<T> = Result<T, PDUError>;
 #[derive(Error, Debug)]
-/// Errors which can occurr during a PDU encoding/decoding.
+/// Errors which can occur during a PDU encoding/decoding.
 pub enum PDUError {
     #[error("Invalid Message type value: {0:}.")]
     /// Received a message with an unknown message type.
@@ -21,7 +21,7 @@ pub enum PDUError {
     UnexpectedIdentifier(Vec<u8>, Vec<u8>),
 
     #[error("Invalid Condition value: {0:}.")]
-    /// Unknown transaction condidtion value.
+    /// Unknown transaction condition value.
     InvalidCondition(u8),
 
     #[error("Invalid ChecksumType: {0:}.")]
@@ -33,7 +33,7 @@ pub enum PDUError {
     InvalidDirection(u8),
 
     #[error("Invalid Directive value: {0:}.")]
-    /// Unknown Transaction driective value.
+    /// Unknown Transaction directive value.
     InvalidDirective(u8),
 
     #[error("Invalid Delivery Code: {0:}.")]
@@ -48,7 +48,7 @@ pub enum PDUError {
     /// Unknown [FileStatusCode](crate::pdu::FileStatusCode) value
     InvalidFileStatus(u8),
 
-    #[error("Inavlid Trace Control {0:}.")]
+    #[error("Invalid Trace Control {0:}.")]
     /// Unknown [TraceControl](crate::pdu::TraceControl) value.
     InvalidTraceControl(u8),
 
@@ -68,7 +68,7 @@ pub enum PDUError {
     /// Unknown [FileStoreAction](crate::filestore::FileStoreAction) value.
     InvalidFileStoreAction(u8),
 
-    #[error("Inavlid FileStore Status {0:} for Action {1:?}.")]
+    #[error("Invalid FileStore Status {0:} for Action {1:?}.")]
     /// Unknown status returned as the result of a filestore action.
     InvalidFileStoreStatus(u8, FileStoreAction),
 
@@ -85,11 +85,11 @@ pub enum PDUError {
     InvalidPrompt(u8),
 
     #[error("Invalid CCSDS Version Code: {0:}.")]
-    /// Unkonwn CCSDS packet version.
+    /// Unknown CCSDS packet version.
     InvalidVersion(u8),
 
     #[error("Invalid PDU Type {0:}.")]
-    /// Received an unkown [PDUType](crate::pdu::PDUType) value.
+    /// Received an unknown [PDUType](crate::pdu::PDUType) value.
     InvalidPDUType(u8),
 
     #[error("Invalid CRC Flag {0:}.")]
@@ -97,14 +97,14 @@ pub enum PDUError {
     InvalidCRCFlag(u8),
 
     #[error("Invalid File Size Flag {0:}.")]
-    /// Unkonwn flag value for [FileSizeFlag](crate::pdu::FileSizeFlag)
+    /// Unknown flag value for [FileSizeFlag](crate::pdu::FileSizeFlag)
     InvalidFileSizeFlag(u8),
 
     #[error("Invalid Segment Metadata Flag {0:}.")]
-    /// Unkonwn value for [SegmentedData](crate::pdu::SegmentedData) flag.
+    /// Unknown value for [SegmentedData](crate::pdu::SegmentedData) flag.
     InvalidSegmentMetadataFlag(u8),
 
-    #[error("CRC Failure on PDU. Expected 0x{0:X} Receieved 0x{1:X}")]
+    #[error("CRC Failure on PDU. Expected 0x{0:X} Received 0x{1:X}")]
     /// PDU crc16 failure
     CRCFailure(u16, u16),
 
@@ -121,6 +121,6 @@ pub enum PDUError {
     InvalidFileName(#[from] FromUtf8Error),
 
     #[error("Invalid Directory Listing Response Code: {0}. ")]
-    /// Unkonwn code value for a [ListingResponseCode](crate::pdu::ListingResponseCode)
+    /// Unknown code value for a [ListingResponseCode](crate::pdu::ListingResponseCode)
     InvalidListingCode(u8),
 }

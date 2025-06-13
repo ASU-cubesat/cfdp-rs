@@ -605,7 +605,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                         Ok(_) => {},
                         Err(error @ DaemonError::SpawnSend(_)) => {
                             // Unable to spawn a send transaction.
-                            // There are lots of reasons this cound happen.
+                            // There are lots of reasons this could happen.
                             // Mostly if a user asked for a file that doesn't exist.
                             warn!("{error}");
                         },

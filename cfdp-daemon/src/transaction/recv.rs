@@ -76,7 +76,7 @@ pub struct RecvTransaction<T: FileStore> {
     // the responses of any filestore actions
     filestore_response: Vec<FileStoreResponse>,
     // Timer used to track if the Nak limit has been reached
-    // inactivity has occured
+    // inactivity has occurred
     // or the ACK limit is reached
     timer: Timer,
     // checksum cache to reduce I/0
@@ -115,7 +115,7 @@ impl<T: FileStore> RecvTransaction<T> {
     ///
     /// The [NakProcedure] is most likely passed from [EntityConfig](crate::daemon::EntityConfig)
     pub fn new(
-        // Configuation of this Transaction.
+        // Configuration of this Transaction.
         config: TransactionConfig,
         // Desired NAK procedure. This is most likely passed from an EntityConfig
         nak_procedure: NakProcedure,
@@ -172,7 +172,7 @@ impl<T: FileStore> RecvTransaction<T> {
             }
             RecvState::Finished | RecvState::Cancelled => {
                 #[allow(clippy::unnecessary_map_or)]
-                // we can revmoe this if update MSRV >= 1.70
+                // we can remove this if update MSRV >= 1.70
                 self.finished.as_ref().map_or(false, |x| x.1)
             }
         }
@@ -204,7 +204,7 @@ impl<T: FileStore> RecvTransaction<T> {
                 }
                 RecvState::Finished | RecvState::Cancelled => {
                     #[allow(clippy::unnecessary_map_or)]
-                    // we can revmoe this if update MSRV >= 1.70
+                    // we can remove this if update MSRV >= 1.70
                     if self.ack.is_some() {
                         self.send_ack_eof(permit)?;
                     } else if self.finished.as_ref().map_or(false, |x| x.1) {
@@ -625,7 +625,7 @@ impl<T: FileStore> RecvTransaction<T> {
                 Direction::ToSender,
                 PDUType::FileDirective,
                 payload_len,
-                // TODO add semgentation Control ability
+                // TODO add segmentation Control ability
                 SegmentationControl::NotPreserved,
             );
 

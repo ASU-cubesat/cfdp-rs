@@ -177,7 +177,7 @@ pub struct ResumeIndication {
 #[derive(Debug, Clone)]
 /// Indication a fault has occurred.
 pub struct FaultIndication {
-    /// Transaction which has had a fautl.
+    /// Transaction which has had a fault.
     pub id: TransactionID,
     /// The last condition when the fault occurred.
     pub condition: Condition,
@@ -260,7 +260,7 @@ pub struct EntityConfig {
     pub nak_timeout: i64,
     /// Flag to determine if the CRC protocol should be used
     pub crc_flag: CRCFlag,
-    /// Whether closure whould be requested on Unacknowledged transactions.
+    /// Whether closure would be requested on Unacknowledged transactions.
     pub closure_requested: bool,
     /// The default ChecksumType to use for file transfers
     pub checksum_type: ChecksumType,

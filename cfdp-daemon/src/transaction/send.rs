@@ -148,7 +148,7 @@ impl<T: FileStore> SendTransaction<T> {
     }
 
     #[allow(clippy::unnecessary_map_or)]
-    // we can revmoe this if update MSRV >= 1.70
+    // we can remove this if update MSRV >= 1.70
     pub(crate) fn has_pdu_to_send(&self) -> bool {
         self.prompt.is_some()
             || match self.send_state {
@@ -939,7 +939,7 @@ impl<T: FileStore> SendTransaction<T> {
             Direction::ToReceiver,
             PDUType::FileDirective,
             payload_len,
-            // TODO add semgentation Control ability
+            // TODO add segmentation Control ability
             SegmentationControl::NotPreserved,
         );
 

@@ -26,11 +26,11 @@ pub trait PDUTransport {
     /// Errors if the destination Entity does not have an associated address.
     async fn request(&mut self, destination: VariableID, pdu: PDU) -> Result<(), IoError>;
 
-    /// Recieves a PDU from the associated communication protocol.
+    /// Receives a PDU from the associated communication protocol.
     async fn receive(&mut self) -> Result<PDU, IoError>;
 
     /// Provides logic for listening for incoming PDUs and sending any outbound PDUs
-    /// A default implementeation is provided for convenience.
+    /// A default implementation is provided for convenience.
     ///
     /// This method relies on [tokio::select], as a result [request](PDUTransport::request) and [receive](PDUTransport::receive) must be cancel safe.
     ///

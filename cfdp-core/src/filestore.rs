@@ -31,7 +31,7 @@ fn normalize_path(path: &Utf8Path) -> Utf8PathBuf {
     } else {
         Utf8PathBuf::new()
     };
-    // if the path begins with any number of rootdir components skip them
+    // if the path begins with any number of root dir components skip them
     while let Some(_c @ Utf8Component::RootDir) = components.peek().cloned() {
         components.next();
     }
@@ -59,7 +59,7 @@ pub type FileStoreResult<T> = Result<T, FileStoreError>;
 pub enum FileStoreError {
     #[error("File data storage error: {0}")]
     IO(#[from] IOError),
-    #[error("Error Formating String: {0}")]
+    #[error("Error Formatting String: {0}")]
     Format(#[from] std::fmt::Error),
     #[error("Error getting SystemTime: {0}")]
     SystemTime(#[from] SystemTimeError),
@@ -122,7 +122,7 @@ pub trait FileStore {
     /// Opens a system temporary file
     fn open_tempfile(&self) -> FileStoreResult<File>;
 
-    /// Retuns the size of the file on disk relative to the root path.
+    /// Returns the size of the file on disk relative to the root path.
     fn get_size<P: AsRef<Utf8Path>>(&self, path: P) -> FileStoreResult<u64>;
 
     /// Executes an action based on an input filestore request
@@ -547,7 +547,7 @@ mod test {
 
         test_filestore.append_file(path, path2).unwrap();
 
-        let expected = "test textnew text".to_owned();
+        let expected = "test textnew text".to_owned(); // cspell:disable-line
 
         let mut recovered_text = String::with_capacity(expected.len());
         test_filestore
@@ -640,7 +640,7 @@ mod test {
     }
 
     #[rstest]
-    fn listdir(test_filestore: &NativeFileStore) -> FileStoreResult<()> {
+    fn list_dir(test_filestore: &NativeFileStore) -> FileStoreResult<()> {
         test_filestore.create_directory("listing")?;
         let basepath = Utf8Path::new("listing");
 
@@ -655,7 +655,7 @@ mod test {
             let dname = basepath.join(dirname);
             test_filestore.create_directory(&dname)?;
             let meta = fs::metadata(test_filestore.get_native_path(dname))
-                .expect("No directorr for metadata.");
+                .expect("No directory for metadata.");
             timings.insert(
                 dirname,
                 meta.modified()?
@@ -889,7 +889,7 @@ f,test.txt,{s5},{t5}
         FileStoreRequest{action_code: FileStoreAction::DenyFile, first_filename: "not_a.file".into(), second_filename: "".into()},
         FileStoreStatus::DenyFile(DenyStatus::NotAllowed)
     )]
-    fn process_failues(
+    fn process_failures(
         #[case] request: FileStoreRequest,
         #[case] expected: FileStoreStatus,
         failure_filestore: &NativeFileStore,

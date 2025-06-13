@@ -522,7 +522,7 @@ impl TestUser {
                         }
                         for message in other_messages {
                             // also log this!
-                            info!("Received Messages I can't decifer {:?}", message);
+                            info!("Received Messages I can't decipher {:?}", message);
                         }
                     }
                     Indication::Finished(FinishedIndication {
@@ -582,10 +582,10 @@ impl TestUser {
                     Indication::Report(report) => {
                         auto_history.write().unwrap().insert(report.id, report);
                     }
-                    Indication::FileSegmentRecv(filesegment) => {
+                    Indication::FileSegmentRecv(file_segment) => {
                         debug!(
                             "Transaction {} Received file data offset {} length {}",
-                            filesegment.id, filesegment.offset, filesegment.length
+                            file_segment.id, file_segment.offset, file_segment.length
                         );
                     }
                     // ignore everything else for now.
@@ -774,7 +774,7 @@ pub(crate) async fn create_daemons<T: FileStore + Sync + Send + 'static>(
     let local_filestore = filestore.clone();
 
     let local_user = TestUser::new(local_filestore.clone());
-    let (local_userhalf, local_daemonhalf, indication_tx) = local_user.split();
+    let (local_user_half, local_daemon_half, indication_tx) = local_user.split();
 
     let mut local_daemon = Daemon::new(
         EntityID::from(0_u16),
@@ -783,7 +783,7 @@ pub(crate) async fn create_daemons<T: FileStore + Sync + Send + 'static>(
         local_filestore,
         remote_config.clone(),
         config.clone(),
-        local_daemonhalf,
+        local_daemon_half,
         indication_tx,
     );
 
@@ -798,7 +798,7 @@ pub(crate) async fn create_daemons<T: FileStore + Sync + Send + 'static>(
 
     let remote_filestore = filestore;
     let remote_user = TestUser::new(remote_filestore.clone());
-    let (remote_userhalf, remote_daemonhalf, remote_indication_tx) = remote_user.split();
+    let (remote_user_half, remote_daemon_half, remote_indication_tx) = remote_user.split();
 
     let mut remote_daemon = Daemon::new(
         EntityID::from(1_u16),
@@ -807,7 +807,7 @@ pub(crate) async fn create_daemons<T: FileStore + Sync + Send + 'static>(
         remote_filestore,
         remote_config,
         config,
-        remote_daemonhalf,
+        remote_daemon_half,
         remote_indication_tx,
     );
 
@@ -822,7 +822,7 @@ pub(crate) async fn create_daemons<T: FileStore + Sync + Send + 'static>(
     let _local_h = JoD::from(local_handle);
     let _remote_h: JoD<_> = JoD::from(remote_handle);
 
-    (local_userhalf, remote_userhalf, _local_h, _remote_h)
+    (local_user_half, remote_user_half, _local_h, _remote_h)
 }
 
 pub struct StaticAssets {
@@ -989,13 +989,13 @@ pub(crate) enum TransportIssue {
     Rate(usize),
     // Every Nth packet will be duplicated
     Duplicate(usize),
-    // Stores eveyt Nth  PDU for sending out of order
+    // Stores every Nth  PDU for sending out of order
     Reorder(usize),
     // This specific PDU is dropped the first time it is sent.
     Once(PDUDirective),
     // This PDU type is dropped every time,
     All(Vec<PDUDirective>),
-    // Every singel PDU should be dropped once.
+    // Every single PDU should be dropped once.
     // except for EoF
     Every,
     // Recreates inactivity at sender

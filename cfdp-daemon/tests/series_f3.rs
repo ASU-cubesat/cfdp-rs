@@ -388,7 +388,7 @@ fn f3s06(get_filestore: &UsersAndFilestore) {
         thread::sleep(Duration::from_millis(100));
         report = local_user
             .report(id)
-            .expect("Unable to send Intrim Report Request.")
+            .expect("Unable to send Interim Report Request.")
             .unwrap();
     }
     assert!(path_to_new.exists());

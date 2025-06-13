@@ -204,7 +204,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
         );
         let id = transaction.id();
 
-        // tokio tasks can have names but that seems an unsable feature
+        // tokio tasks can have names but that seems an unstable feature
         let handle = tokio::task::spawn(async move {
             transaction.send_report(None)?;
 
@@ -312,7 +312,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                                     Err(
                                         err @ TransactionError::UnexpectedPDU(..),
                                     ) => {
-                                        info!("Recieved Unexpected PDU: {err}");
+                                        info!("Received Unexpected PDU: {err}");
                                         // log some info on the unexpected PDU?
                                     }
                                     Err(err) => {
@@ -472,7 +472,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                         // We have received a PDU sent back to the Sender but we do not have a transaction running.
                         // Likely causes are a system reboot in the middle of a transaction.
                         // Unfortunately there is not enough information in a PDU
-                        // to completely re-create the transaciton.
+                        // to completely re-create the transaction.
                         Direction::ToSender => {
                             return Err(DaemonError::UnableToResume(TransactionID(
                                 pdu.header.source_entity_id,
@@ -526,7 +526,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                     // but the transaction transaction stopped running in the background.
                     // Likely causes are a filestore error inside the transaction.
                     // Unfortunately there is not enough information in a PDU
-                    // to completely re-create the transaciton.
+                    // to completely re-create the transaction.
                     return Err(DaemonError::UnableToResume(TransactionID(
                         pdu.header.source_entity_id,
                         pdu.header.transaction_sequence_number,
@@ -564,7 +564,7 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
     pub async fn manage_transactions(&mut self) -> DaemonResult<()> {
         let cleanup = {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
-            // Don't start counting another tick until the currrent one has been processed.
+            // Don't start counting another tick until the current one has been processed.
             interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
             interval
         };
@@ -575,8 +575,8 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                 pdu = self.transport_rx.recv() => match pdu {
                     Some(pdu) => match self.forward_pdu(pdu).await{
                         Ok(_) => {},
-                        Err(error @ DaemonError::TransactionCommuncation(_, _)) => {
-                            // This occcurs most likely if a user is attempting to
+                        Err(error @ DaemonError::TransactionCommunication(_, _)) => {
+                            // This occurs most likely if a user is attempting to
                             // interact with a transaction that is already finished.
                             warn!("{error}");
                         }
@@ -609,8 +609,8 @@ impl<T: FileStore + Send + Sync + 'static> Daemon<T> {
                             // Mostly if a user asked for a file that doesn't exist.
                             warn!("{error}");
                         },
-                        Err(error @ DaemonError::TransactionCommuncation(_, _)) => {
-                            // This occcurs most likely if a user is attempting to
+                        Err(error @ DaemonError::TransactionCommunication(_, _)) => {
+                            // This occurs most likely if a user is attempting to
                             // interact with a transaction that is already finished.
                             warn!("{error}");
                         }

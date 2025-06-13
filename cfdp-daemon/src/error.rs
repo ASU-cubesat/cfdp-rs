@@ -12,7 +12,7 @@ pub enum DaemonError {
     SpawnSend(FileStoreError),
 
     #[error("Error sending Command to Transaction {0}: {1}")]
-    TransactionCommuncation(TransactionID, Command),
+    TransactionCommunication(TransactionID, Box<Command>),
 
     #[error(
         "Unable to initialize Send transaction {0}.
@@ -23,6 +23,6 @@ Not enough information to resume the transaction. "
 }
 impl From<(TransactionID, SendError<Command>)> for DaemonError {
     fn from(value: (TransactionID, SendError<Command>)) -> Self {
-        Self::TransactionCommuncation(value.0, value.1 .0)
+        Self::TransactionCommunication(value.0, Box::new(value.1 .0))
     }
 }

@@ -7,7 +7,7 @@
 
 
 [dependencies]
- byteorder  = "~1.4"
+ byteorder  = "~1.5"
  camino     = { version = "~1.1" }
  log        = '~0.4'
  num-derive = "~0.4"

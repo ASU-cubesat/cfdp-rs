@@ -209,6 +209,9 @@ impl<T: FileStore> RecvTransaction<T> {
                         self.send_ack_eof(permit)?;
                     } else if self.finished.as_ref().map_or(false, |x| x.1) {
                         self.send_finished(permit)?;
+                        if self.config.transmission_mode == TransmissionMode::Unacknowledged {
+                            self.shutdown();
+                        }
                     }
                 }
             }
@@ -785,10 +788,10 @@ impl<T: FileStore> RecvTransaction<T> {
     }
 
     fn finalize_receive(&mut self) -> TransactionResult<()> {
-        let checksum = self.checksum.ok_or(TransactionError::NoChecksum)?;
         self.delivery_code = DeliveryCode::Complete;
 
         self.file_status = if self.is_file_transfer() {
+            let checksum = self.checksum.ok_or(TransactionError::NoChecksum)?;
             if !self.verify_checksum(checksum)?
                 && !self.handle_fault(Condition::FileChecksumFailure)?
             {
@@ -1095,6 +1098,8 @@ impl<T: FileStore> RecvTransaction<T> {
                                                 Some(self.config.destination_entity_id)
                                             },
                                         );
+                                    } else {
+                                        self.shutdown()
                                     }
                                 } else {
                                     // Any other condition is essentially a

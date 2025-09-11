@@ -209,9 +209,6 @@ impl<T: FileStore> RecvTransaction<T> {
                         self.send_ack_eof(permit)?;
                     } else if self.finished.as_ref().map_or(false, |x| x.1) {
                         self.send_finished(permit)?;
-                        if self.config.transmission_mode == TransmissionMode::Unacknowledged {
-                            self.shutdown();
-                        }
                     }
                 }
             }
@@ -1059,6 +1056,7 @@ impl<T: FileStore> RecvTransaction<T> {
                                         self.id(),
                                         ack.condition
                                     );
+                                    self.shutdown();
                                     Ok(())
                                 } else {
                                     // No other ACKs are expected for a receiver

@@ -8,7 +8,7 @@
 [dependencies]
  async-trait = "0.1"
  cfdp-core   = { path = "../cfdp-core" }
- camino      = { version = "~1.1" }
+ camino      = { version = "~1.2" }
  log         = '~0.4'
  tokio       = { version = "1.28.2", features = [ "time", "net", "rt-multi-thread", "macros" ] }
  thiserror   = "~2.0"

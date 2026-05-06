@@ -173,7 +173,7 @@ impl<T: FileStore> SendTransaction<T> {
         &mut self,
         permit: Permit<'_, (VariableID, PDU)>,
     ) -> TransactionResult<()> {
-        if self.prompt.is_some() {
+        if self.prompt.is_some() && self.get_mode() == TransmissionMode::Unacknowledged {
             self.send_prompt(permit)?;
         } else {
             match self.send_state {
@@ -206,6 +206,8 @@ impl<T: FileStore> SendTransaction<T> {
                     if !self.naks.is_empty() {
                         // if we have received a NAK send the missing data
                         self.send_missing_data(permit)?;
+                        // Re-set the EOF flag so it will be resent after missing segments
+                        self.set_eof_flag(true);
                     } else {
                         self.send_eof(permit)?;
 

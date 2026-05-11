@@ -2003,7 +2003,9 @@ mod test {
         #[values(NakOrKeepAlive::Nak, NakOrKeepAlive::KeepAlive)] option: NakOrKeepAlive,
     ) {
         let (transport_tx, mut transport_rx) = channel(1);
-        let config = default_config.clone();
+        let mut config = default_config.clone();
+        // Prompts only get sent in unacknowledged mode so we need to override the default transmission mode for this test
+        config.transmission_mode = TransmissionMode::Unacknowledged;
 
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),

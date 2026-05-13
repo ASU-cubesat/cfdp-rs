@@ -204,11 +204,9 @@ impl<T: FileStore> SendTransaction<T> {
                 }
                 SendState::SendEof => {
                     if !self.naks.is_empty() {
-                        info!("Daemon handling sending missing data for transaction {}. Remaining NAKs: {:?}", self.id(), self.naks);
                         // if we have received a NAK send the missing data
                         self.send_missing_data(permit)?;
                         // Re-set the EOF flag so it will be resent after missing segments
-                        info!("Transaction {}. Re-setting EoF flag to resend EoF after missing segments are sent.", self.id());
                         self.set_eof_flag(true);
                     } else {
                         self.send_eof(permit)?;

@@ -173,8 +173,13 @@ impl<T: FileStore> SendTransaction<T> {
         &mut self,
         permit: Permit<'_, (VariableID, PDU)>,
     ) -> TransactionResult<()> {
-        if self.prompt.is_some() && self.get_mode() == TransmissionMode::Unacknowledged {
-            self.send_prompt(permit)?;
+        if self.prompt.is_some() {
+            if self.get_mode() == TransmissionMode::Unacknowledged {
+                self.send_prompt(permit)?;
+            } else {
+                // don't actively prompt XB1 since it sends a NAK by itself, but we need to consume the prompt so we dont get stuck in a loop
+                self.prompt = None;
+            }
         } else {
             match self.send_state {
                 SendState::SendMetadata => {

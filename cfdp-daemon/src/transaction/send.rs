@@ -178,6 +178,10 @@ impl<T: FileStore> SendTransaction<T> {
                 self.send_prompt(permit)?;
             } else {
                 // don't actively prompt XB1 since it sends a NAK by itself, but we need to consume the prompt so we dont get stuck in a loop
+                debug!(
+                    "Transaction {0} discarding queued Prompt (Acknowledged mode, XB1 NAKs autonomously).",
+                    self.id()
+                );
                 self.prompt = None;
             }
         } else {

@@ -174,7 +174,16 @@ impl<T: FileStore> SendTransaction<T> {
         permit: Permit<'_, (VariableID, PDU)>,
     ) -> TransactionResult<()> {
         if self.prompt.is_some() {
-            self.send_prompt(permit)?;
+            if self.get_mode() == TransmissionMode::Unacknowledged {
+                self.send_prompt(permit)?;
+            } else {
+                // don't actively prompt XB1 since it sends a NAK by itself, but we need to consume the prompt so we dont get stuck in a loop
+                debug!(
+                    "Transaction {0} discarding queued Prompt (Acknowledged mode, XB1 NAKs autonomously).",
+                    self.id()
+                );
+                self.prompt = None;
+            }
         } else {
             match self.send_state {
                 SendState::SendMetadata => {
@@ -206,6 +215,8 @@ impl<T: FileStore> SendTransaction<T> {
                     if !self.naks.is_empty() {
                         // if we have received a NAK send the missing data
                         self.send_missing_data(permit)?;
+                        // Re-set the EOF flag so it will be resent after missing segments
+                        self.set_eof_flag(true);
                     } else {
                         self.send_eof(permit)?;
 
@@ -2001,7 +2012,9 @@ mod test {
         #[values(NakOrKeepAlive::Nak, NakOrKeepAlive::KeepAlive)] option: NakOrKeepAlive,
     ) {
         let (transport_tx, mut transport_rx) = channel(1);
-        let config = default_config.clone();
+        let mut config = default_config.clone();
+        // Prompts only get sent in unacknowledged mode so we need to override the default transmission mode for this test
+        config.transmission_mode = TransmissionMode::Unacknowledged;
 
         let filestore = Arc::new(NativeFileStore::new(
             Utf8Path::from_path(tempdir_fixture.path()).expect("Unable to make utf8 tempdir"),
